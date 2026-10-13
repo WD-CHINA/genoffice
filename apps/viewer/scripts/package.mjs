@@ -15,7 +15,7 @@ await cp(
 )
 await writeFile(
   resolve(output, 'README.md'),
-  `# GenOffice Web Viewer\n\nRequires Node >=22.12.0. Run npm ci --omit=dev, then npm start.\n\nOpen http://127.0.0.1:3001. Supports read-only PPTX, PDF, DOCX previews and PPTX slideshow.\n\nSet VIEWER_CHROME_PATH for an installed Chrome/Chromium (Word HTML/MHT altChunk).\nSet VIEWER_FONT_DIR to a deployment font directory. Match browser/system fonts for consistent layout.\nSet VIEWER_PORT, VIEWER_HOST, VIEWER_DATA_DIR, VIEWER_ALLOWED_ORIGINS as needed.\nNo other GenOffice application, Electron, or AI service is needed at runtime.\n\nVisual parity for complex documents is still undergoing acceptance.\n`,
+  `# GenOffice Web Viewer\n\nRequires Node >=22.12.0. Run npm ci --omit=dev, then npm start.\n\nListens on 0.0.0.0:3001. Open http://127.0.0.1:3001 or a LAN address printed at startup. Set VIEWER_HOST=127.0.0.1 to keep it local. Supports read-only PPTX, PDF, DOCX previews and PPTX slideshow.\n\nSet VIEWER_CHROME_PATH for an installed Chrome/Chromium (Word HTML/MHT altChunk).\nSet VIEWER_FONT_DIR to a deployment font directory. Match browser/system fonts for consistent layout.\nSet VIEWER_PORT, VIEWER_HOST, VIEWER_DATA_DIR, VIEWER_ALLOWED_ORIGINS as needed.\nNo other GenOffice application, Electron, or AI service is needed at runtime.\n\nVisual parity for complex documents is still undergoing acceptance.\n`,
 )
 const front = JSON.parse(await readFile(resolve(app, 'dist/audit/frontend-modules.json'), 'utf8'))
 const server = Object.keys(

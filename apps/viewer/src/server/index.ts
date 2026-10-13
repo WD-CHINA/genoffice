@@ -13,6 +13,7 @@ import { convertAltChunk } from './altchunk'
 import { prepareDocMedia } from '@genoffice/viewer-services/docs/lazy'
 import { findChrome } from '@genoffice/viewer-services/docs/driver'
 import { HttpError } from './http-error'
+import { originAllowed, listenUrls } from './lan'
 import { downloadDocument, type UrlImportOptions } from './url-import'
 
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -220,13 +221,7 @@ export async function createViewerServer(
     try {
       const url = new URL(req.url || '/', 'http://localhost')
       const route = url.pathname.split('/').filter(Boolean)
-      const allowedOrigins = new Set([
-        `http://${req.headers.host}`,
-        ...(
-          process.env.VIEWER_ALLOWED_ORIGINS || 'http://127.0.0.1:5180,http://localhost:5180'
-        ).split(','),
-      ])
-      if (req.headers.origin && !allowedOrigins.has(req.headers.origin))
+      if (req.headers.origin && !originAllowed(req.headers.origin, req.headers.host))
         throw new HttpError(403, 'Origin not allowed')
       let owner = /(?:^|;\s*)viewer=([a-f0-9]{64})(?:;|$)/.exec(req.headers.cookie || '')?.[1]
       if (url.pathname === '/api/health') {
@@ -581,13 +576,10 @@ export async function createViewerServer(
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const server = await createViewerServer()
-  server.listen(
-    Number(process.env.VIEWER_PORT || 3001),
-    process.env.VIEWER_HOST || '127.0.0.1',
-    () =>
-      console.log(
-        `Viewer ready: http://${process.env.VIEWER_HOST || '127.0.0.1'}:${process.env.VIEWER_PORT || 3001}`,
-      ),
+  const host = process.env.VIEWER_HOST || '0.0.0.0'
+  const port = Number(process.env.VIEWER_PORT || 3001)
+  server.listen(port, host, () =>
+    console.log(`Viewer ready:\n${listenUrls(host, port).map((item) => `  ${item}`).join('\n')}`),
   )
   for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close())
 }

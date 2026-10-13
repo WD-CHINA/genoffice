@@ -14,7 +14,7 @@
 npm run dev -w @genoffice/viewer
 ```
 
-打开 http://127.0.0.1:5180。Node API 默认端口为 3001；服务端源码通过 esbuild watch 重建并重启，前端通过 Vite 更新。
+打开 http://127.0.0.1:5180。同一局域网的设备使用 Vite 启动日志里的 Network 地址。Node API 默认端口为 3001，并监听所有网卡；服务端源码通过 esbuild watch 重建并重启，前端通过 Vite 更新。
 
 生产方式运行：
 
@@ -23,7 +23,7 @@ npm run build -w @genoffice/viewer
 npm run start -w @genoffice/viewer
 ```
 
-打开 http://127.0.0.1:3001。构建只写入本目录的 `dist`。
+打开 http://127.0.0.1:3001，或启动日志里打印的局域网地址。构建只写入本目录的 `dist`。设 `VIEWER_HOST=127.0.0.1` 可恢复为仅本机访问。
 
 PPT 普通预览中点击音视频封面可打开原生播放器，提供播放/暂停和进度控制；按 Esc 或点击关闭退出，翻页会停止当前媒体。放映中点击媒体可播放/暂停。资源不存在或编码不被浏览器支持时会显示错误。
 
@@ -69,7 +69,7 @@ Word 的 HTML/MHT altChunk 使用原 `html2docx` 转换器及 Playwright 驱动�
 
 | 配置                               | 默认/用途                                                     |
 | ---------------------------------- | ------------------------------------------------------------- |
-| `VIEWER_HOST`                      | `127.0.0.1`                                                   |
+| `VIEWER_HOST`                      | `0.0.0.0`；本机与局域网可访问，设为 `127.0.0.1` 则仅本机      |
 | `VIEWER_PORT`                      | `3001`                                                        |
 | `VIEWER_DATA_DIR`                  | 构建目录下 `.viewer-data`                                     |
 | `VIEWER_MAX_UPLOAD_BYTES`          | 1 GiB                                                         |

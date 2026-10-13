@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
+import { networkInterfaces } from 'node:os'
 import type { Server } from 'node:http'
 
 let server: Server, url: string, dir: string, cookie: string, other: string
@@ -60,6 +61,18 @@ test('requires an initialized owner and accepts only this origin', async () => {
     403,
   )
   assert.equal((await request('health', { headers: { Origin: url } })).status, 200)
+  assert.equal(
+    (await request('health', { headers: { Origin: 'http://203.0.113.10:5180' } })).status,
+    403,
+  )
+  const lan = Object.values(networkInterfaces())
+    .flat()
+    .find((entry) => entry?.family === 'IPv4' && !entry.internal)
+  if (lan)
+    assert.equal(
+      (await request('health', { headers: { Origin: `http://${lan.address}:5180` } })).status,
+      200,
+    )
   assert.equal((await request('view-sessions', { method: 'POST', body: '{' })).status, 400)
 })
 test('rejects mismatched bytes and unsupported file types', async () => {

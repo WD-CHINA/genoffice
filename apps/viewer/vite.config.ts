@@ -29,7 +29,7 @@ export default defineConfig({
   ],
   resolve: { alias: aliases },
   server: {
-    host: '127.0.0.1',
+    host: true,
     port: 5180,
     fs: { allow: [root] },
     proxy: { '/api': 'http://127.0.0.1:3001', '/pdfjs': 'http://127.0.0.1:3001' },

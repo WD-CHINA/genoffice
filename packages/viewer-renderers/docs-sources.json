@@ -152,6 +152,7 @@
     "apps/docs/src/renderer/embedded-fonts.ts",
     "apps/docs/src/renderer/doc-style-css.ts",
     "apps/docs/src/renderer/doc-state.ts",
-    "apps/docs/src/renderer/hf-sections.ts"
+    "apps/docs/src/renderer/hf-sections.ts",
+    "apps/docs/src/renderer/hf-phantom.ts"
   ]
 }

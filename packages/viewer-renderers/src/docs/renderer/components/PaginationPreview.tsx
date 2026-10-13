@@ -76,6 +76,7 @@ import {
   hfWashoutFilter,
   wordArtSvgMarkup,
 } from '../editor/hf-dom'
+import { readonlyCloneHtml } from '../viewer-layout-controller'
 import { HeaderFooterArea } from './HeaderFooterArea'
 
 const twipsToPx = (twips: number) => (twips / 1440) * 96
@@ -873,6 +874,9 @@ export function PaginationPreview({
   onExportPdf,
   onClose,
   suppressEscape,
+  reading = false,
+  onLayout,
+  onReady,
 }: {
   /** Canvas geometry (final section): clone width, single-section fallbacks */
   section: SectionSettings
@@ -928,9 +932,13 @@ export function PaginationPreview({
   onExportPdf: () => void
   onClose: () => void
   /** While true (e.g. the print dialog is stacked on top), Escape must not close the preview */
+  reading?: boolean
+  onLayout?: (blocks: BlockBox[], slices: PageSlice[], sections: SectionInfo[], geoms: SectionGeom[]) => boolean
+  onReady?: (pages: number, html: string) => void
   suppressEscape?: boolean
 }) {
   const { t } = useI18n()
+  const [layoutEpoch, setLayoutEpoch] = useState(0)
   const [slices, setSlices] = useState<PageSlice[]>([])
   const [splitCss, setSplitCss] = useState('')
   const [vertCss, setVertCss] = useState('')
@@ -1160,6 +1168,7 @@ export function PaginationPreview({
           return full ? s.start + cap : Math.min(s.end, s.start + cap)
         }
       }
+      if (onLayout?.(blocks, computed, live, liveGeoms)) { setLayoutEpoch(epoch => epoch + 1); return }
       markTableSeamSlices(computed, blocks)
       // anchor-shifted textbox wrappers paint off their flow slot: the owning
       // page hides the ride-along copies and its boxes are shifted back inside
@@ -1316,6 +1325,7 @@ export function PaginationPreview({
           ? measureRevisionSpots(revisionView, pm, anchorBlocks, origin, factor, pmContentLeft)
           : [],
       )
+      onReady?.(computed.length, readonlyCloneHtml(pm.innerHTML))
       // Per-page full clones explode on large documents (pages × doc DOM →
       // renderer OOM / "Promise was collected" during printToPDF). Past the
       // budget, snapshot per-block geometry and render pruned windows instead.
@@ -1344,7 +1354,7 @@ export function PaginationPreview({
             !el.classList.contains('doc-table-float-flow')
           if (!cssFloat) gapAccum += innerGap
           metas.push({
-            html: cloneBlockHtml(el),
+            html: reading ? readonlyCloneHtml(cloneBlockHtml(el)) : cloneBlockHtml(el),
             vTop,
             vBottom: vTop + h,
             mt: parseFloat(cs.marginTop) || 0,
@@ -1356,7 +1366,7 @@ export function PaginationPreview({
         setHtml('')
       } else {
         setCloneKids(null)
-        setHtml(Array.from(pm.children, (c) => cloneBlockHtml(c as HTMLElement)).join(''))
+        setHtml(Array.from(pm.children, (c) => reading ? readonlyCloneHtml(cloneBlockHtml(c as HTMLElement)) : cloneBlockHtml(c as HTMLElement)).join(''))
       }
     } finally {
       if (measureNeutralize) pm.classList.remove('measuring-columns')
@@ -1364,7 +1374,7 @@ export function PaginationPreview({
     }
     // snapshot: measure once on open; deps intentionally empty
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [layoutEpoch])
 
   useEffect(() => {
     // stopPropagation cannot shield this window-level listener from the print
@@ -1561,7 +1571,7 @@ export function PaginationPreview({
               // inert: cloned pages carry natively focusable nodes (links,
               // contenteditable cells); keyboard focus must not enter the
               // aria-hidden subtree. Kept off .pv-scroll so it stays scrollable.
-              inert
+              inert={!reading}
               style={
                 {
                   width: pageW,

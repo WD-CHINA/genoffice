@@ -5,10 +5,13 @@ Original drawing and pagination sources from GenOffice commit
 Existing desktop applications continue importing their original files.
 `sources.json` and `docs-sources.json` record the extraction inputs.
 
-Core SlideThumb/NodeBody/ChartBody/animation and PdfPage/LinkLayer/PaginationPreview
-implementations are retained byte-for-byte. Viewer adapters inject read-only
+Core SlideThumb/NodeBody/ChartBody/animation, PdfPage/LinkLayer and pure Word
+pagination algorithms are retained byte-for-byte. PaginationPreview has Viewer-only
+measurement/settling callbacks and sanitized interactive reading snapshots. Viewer adapters inject read-only
 slide data, locale events, PDF disabled controls, document initialization and
-layout inputs. PreviewMediaLayer follows the original App native player overlay;
+layout inputs. The document controller calls the original per-block layout functions
+before snapshotting; PDF search, outline and saved note threads use original modules.
+PreviewMediaLayer follows the original App native player overlay;
 ShowMediaLayer reports resource/decoder errors and stops detached players. Desktop image-copy hooks are optional; the AI queue extension is
 not registered. Type-only editor contracts do not activate editing or AI services.
 

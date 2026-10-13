@@ -118,7 +118,16 @@
     "apps/pdf/src/renderer/date-format.ts",
     "apps/pdf/src/renderer/form-catalog.ts",
     "apps/pdf/src/shared/ipc.ts",
-    "apps/pdf/src/renderer/LinkLayer.tsx"
+    "apps/pdf/src/renderer/LinkLayer.tsx",
+    "apps/pdf/src/renderer/search.ts",
+    "apps/pdf/src/renderer/heading-outline.ts",
+    "apps/pdf/src/renderer/OutlinePanel.tsx",
+    "apps/pdf/src/renderer/note-threads.ts",
+    "apps/pdf/src/renderer/note-margin-layout.ts",
+    "apps/pdf/src/renderer/NoteMargin.tsx",
+    "apps/pdf/src/renderer/DrawLayer.tsx",
+    "apps/pdf/src/renderer/annotation-catalog.ts",
+    "apps/pdf/src/renderer/form-detect.ts"
   ],
   "typeFiles": [
     "apps/slides/src/shared/ipc.ts",
@@ -136,5 +145,11 @@
     "apps/slides/src/renderer/themes.ts",
     "apps/slides/src/renderer/components/context-tabs.ts",
     "apps/slides/src/renderer/layout-names.ts"
+  ],
+  "derivedFiles": [
+    "apps/pdf/src/renderer/PdfThumb.tsx (read-only raster component)",
+    "apps/pdf/src/renderer/edit-state.ts (saved annotation model/constants)",
+    "apps/slides/src/renderer/components/SlideShowView.tsx (hitLink)",
+    "packages/ui/src/find-text.ts (original literal matcher)"
   ]
 }

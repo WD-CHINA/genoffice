@@ -1,7 +1,15 @@
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message)
+  }
+}
 export async function api(path: string, init?: RequestInit) {
   const response = await fetch('/api/' + path, init)
   const data = await response.json()
-  if (!response.ok) throw new Error(data.error || '请求失败')
+  if (!response.ok) throw new ApiError(response.status, data.error || '请求失败')
   return data
 }
 export function post(path: string, data: unknown) {

@@ -25,6 +25,10 @@ npm run start -w @genoffice/viewer
 
 PPT 普通预览中点击音视频封面可打开原生播放器，提供播放/暂停和进度控制；按 Esc 或点击关闭退出，翻页会停止当前媒体。放映中点击媒体可播放/暂停。资源不存在或编码不被浏览器支持时会显示错误。
 
+PPT 普通预览提供元素/文字链接、幻灯片跳转、页码输入和缩放/适配，私有字体失败后自动重试并重新测量。PDF 提供缩略图、书签/标题目录、逐项搜索高亮、只读批注正文/回复、页码追踪和文档信息。Word 提供只读搜索/复制/链接、标题和书签导航、修订显示模式、页色、缩放和密码重试；混合分栏及跨节布局在原测量算法收敛后生成可见页面，大图使用原占位符与会话内 HTTP 资源链路。
+
+`Ctrl/Cmd+F` 聚焦 PDF/Word 搜索，`Ctrl/Cmd+ +/-` 缩放，非输入区域的 PageUp/PageDown 翻页。Word 可见快照与可访问正文保持一份辅助阅读树，键盘链接焦点会映射到可见页面。
+
 ## 独立发布
 
 ```sh
@@ -53,7 +57,7 @@ Word 的 HTML/MHT altChunk 使用原 `html2docx` 转换器及 Playwright 驱动�
 | `VIEWER_CHROME_PATH`      | Chrome/Chromium 可执行文件；默认探测系统安装                  |
 | `VIEWER_ALLOWED_ORIGINS`  | 额外允许的 Origin，以逗号分隔；默认包含本地 Vite 的 5180 端口 |
 
-`GET /api/health` 返回格式列表和 `altChunkAvailable`。上传文件使用随机 ID，接口不接受客户端任意文件路径。会话按 Cookie 隔离；切换文件关闭旧会话和 iframe；会话超时清理文件及 Worker。无编辑、保存写回和 AI 接口。
+`GET /api/health` 返回格式列表、`altChunkAvailable` 和活动会话续期间隔。Host 自动续期，失效时显示重新打开入口。上传文件使用随机 ID，接口不接受客户端任意文件路径。会话按 Cookie 隔离；切换文件关闭旧会话和 iframe；会话超时清理文件及 Worker。无编辑、保存写回和 AI 接口。
 
 ## 验证
 
@@ -63,6 +67,7 @@ Word 的 HTML/MHT altChunk 使用原 `html2docx` 转换器及 Playwright 驱动�
 npm run typecheck -w @genoffice/viewer
 npm run test -w @genoffice/viewer
 npm run test:browser -w @genoffice/viewer
+npm run test:reading -w @genoffice/viewer
 npm run test:media -w @genoffice/viewer
 npm run test:standalone -w @genoffice/viewer
 ```
@@ -71,4 +76,4 @@ npm run test:standalone -w @genoffice/viewer
 
 核心内容组件保留原源码，PPT 没有整份转成图片/PDF，Word 没有改用其他文档渲染器。构建检查拒绝其他 app、Electron、AI provider/agent 运行时；原 `zip-gate` 使用的纯脱敏 helper 可继续复用。
 
-[开发计划](DEVELOPMENT_PLAN.zh-CN.md) · [交付状态与剩余验收](IMPLEMENTATION_STATUS.md)
+[开发计划](DEVELOPMENT_PLAN.zh-CN.md) · [交付状态与剩余验收](IMPLEMENTATION_STATUS.md) · [逐项功能审查](FEATURE_AUDIT.zh-CN.md)

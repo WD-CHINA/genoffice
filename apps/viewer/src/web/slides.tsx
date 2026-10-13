@@ -6,6 +6,7 @@ import { createImageLoader } from '@genoffice/viewer-renderers/slides/renderer/i
 import { LocaleProvider } from '@genoffice/viewer-renderers/slides/renderer/i18n/locale'
 import type { SlidesDataSource } from '@genoffice/viewer-renderers/slides/renderer/data-source'
 import '@genoffice/viewer-renderers/slides/renderer/styles.css'
+import { hitLink } from '@genoffice/viewer-renderers/slides/renderer/preview-links'
 import { api, post } from './api'
 
 function imageUrls(data: unknown, urls = new Set<string>()) {
@@ -22,71 +23,121 @@ export function Slides({ session }: { session: string }) {
     [show, setShow] = useState(false),
     [error, setError] = useState(''),
     [width, setWidth] = useState(960)
-  const cancelled = useRef(false)
+  const [zoom, setZoom] = useState(1),
+    [fit, setFit] = useState<'width' | 'page' | null>('page'),
+    [retry, setRetry] = useState(0)
+  const pane = useRef<HTMLDivElement>(null),
+    visited = useRef<number[]>([]),
+    faces = useRef(new Map<string, FontFace>())
   useEffect(() => {
-    cancelled.current = false
-    const loader = createImageLoader((entries) => {
-      if (!cancelled.current) setImages((old) => new Map([...old, ...entries]))
-    })
-    const resize = () => setWidth(Math.max(200, Math.min(960, window.innerWidth - 240)))
+    if (!deck || !pane.current) return
+    const element = pane.current
+    const slide = deck.slides[page]
+    const resize = () =>
+      setWidth(
+        fit
+          ? Math.max(
+              100,
+              fit === 'width'
+                ? element.clientWidth - 48
+                : Math.min(
+                    element.clientWidth - 48,
+                    ((element.clientHeight - 48) * slide.widthPx) / slide.heightPx,
+                  ),
+            )
+          : slide.widthPx * zoom,
+      )
+    const observer = new ResizeObserver(resize)
+    observer.observe(element)
     resize()
-    window.addEventListener('resize', resize)
+    return () => observer.disconnect()
+  }, [deck, page, fit, zoom])
+  useEffect(() => {
+    let cancelled = false
+    setError('')
+    const loader = createImageLoader((entries) => {
+      if (!cancelled) setImages((old) => new Map([...old, ...entries]))
+    })
     void (async () => {
       let data = await api(`view-sessions/${session}/slides`)
       ;(window as any).__genofficeDocFontsSynced = false
       const loaded = new Set<string>()
+      const fontKey = (font: any) => `${font.family}:${!!font.bold}:${!!font.italic}`
       await Promise.all(
         data.fonts.map(async (font: any) => {
-          try {
-            const response = await fetch(`/api/view-sessions/${session}/fonts/${font.id}`)
-            if (!response.ok) return
-            const face = new FontFace(font.family, await response.arrayBuffer(), {
-              weight: font.bold ? '700' : '400',
-              style: font.italic ? 'italic' : 'normal',
-            })
-            await face.load()
-            document.fonts.add(face)
-            loaded.add(font.family)
-          } catch {
-            /* Retain the original fallback and pending measurement. */
+          for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
+            try {
+              let face = faces.current.get(font.id)
+              if (!face) {
+                const response = await fetch(
+                  `/api/view-sessions/${session}/fonts/${encodeURIComponent(font.id)}`,
+                  { signal: AbortSignal.timeout(15_000) },
+                )
+                if (!response.ok) throw new Error('字体下载失败')
+                face = new FontFace(font.family, await response.arrayBuffer(), {
+                  weight: font.bold ? '700' : '400',
+                  style: font.italic ? 'italic' : 'normal',
+                })
+                await face.load()
+                if (cancelled) return
+                document.fonts.add(face)
+                faces.current.set(font.id, face)
+              }
+              loaded.add(fontKey(font))
+              break
+            } catch {
+              if (attempt < 2)
+                await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)))
+            }
           }
         }),
       )
       await document.fonts.ready
       const ctx = document.createElement('canvas').getContext('2d')!
       const privateFamilies = new Set(data.fonts.map((f: any) => f.family))
-      const widths: Record<string, number> = {}
-      for (const item of data.measurements) {
-        if (privateFamilies.has(item.family) && !loaded.has(item.family)) continue
-        ctx.font =
-          (item.italic ? 'italic ' : '') +
-          (item.bold ? 'bold ' : '') +
-          '100px "' +
-          item.family +
-          "\", 'PingFang SC', 'Microsoft YaHei', 'Yu Gothic', 'Malgun Gothic', sans-serif"
-        widths[item.key] = ctx.measureText(item.text).width
+      const privateVariants = new Set(data.fonts.map(fontKey))
+      for (let round = 0; round < 6 && !cancelled; round++) {
+        const widths: Record<string, number> = {}
+        for (const item of data.measurements) {
+          if (
+            privateFamilies.has(item.family) &&
+            (privateVariants.has(fontKey(item))
+              ? !loaded.has(fontKey(item))
+              : !data.fonts.some((f: any) => f.family === item.family && loaded.has(fontKey(f))))
+          )
+            continue
+          ctx.font =
+            (item.italic ? 'italic ' : '') +
+            (item.bold ? 'bold ' : '') +
+            '100px "' +
+            item.family +
+            "\", 'PingFang SC', 'Microsoft YaHei', 'Yu Gothic', 'Malgun Gothic', sans-serif"
+          widths[item.key] = ctx.measureText(item.text).width
+        }
+        if (Object.keys(widths).length)
+          data = await post(`view-sessions/${session}/text-widths`, {
+            revision: data.revision,
+            batchId: data.batchId,
+            widths,
+          })
+        else break
+        if (!data.measurements.length) break
       }
-      if (Object.keys(widths).length)
-        data = await post(`view-sessions/${session}/text-widths`, {
-          revision: data.revision,
-          batchId: data.batchId,
-          widths,
-        })
-      if (cancelled.current) return
-      if (data.measurements.length) setError('部分字体尚未就绪，当前使用原项目的字体回退。')
+      if (cancelled) return
+      if (data.measurements.length)
+        setError('字体加载或重新测量尚未完成，当前使用原项目的字体回退，可重试。')
       ;(window as any).__genofficeDocFontsSynced = true
       document.fonts.dispatchEvent(new Event('loadingdone'))
       loader.load(imageUrls(data.slides))
       setDeck(data)
     })().catch((e) => {
-      if (!cancelled.current) setError(e.message)
+      if (!cancelled) setError(e.message)
     })
     return () => {
-      cancelled.current = true
+      cancelled = true
       loader.dispose()
-      window.removeEventListener('resize', resize)
     }
-  }, [session])
+  }, [session, retry])
   if (!deck) return <p role={error ? 'alert' : undefined}>{error || '正在加载字体和幻灯片…'}</p>
   const source: SlidesDataSource = {
     getTransition: async (i) => deck.playback[i].transition,
@@ -103,6 +154,46 @@ export function Slides({ session }: { session: string }) {
       return response.json()
     },
   }
+  const navigate = (index: number) => {
+    const next = Math.max(0, Math.min(deck.slides.length - 1, index))
+    if (!Number.isInteger(next)) return
+    visited.current.push(page)
+    setPage(next)
+  }
+  const targetAt = (event: React.MouseEvent<HTMLElement>) => {
+    const bounds = event.currentTarget.getBoundingClientRect()
+    return hitLink(
+      deck.slides[page].nodes,
+      ((event.clientX - bounds.left) * deck.slides[page].widthPx) / width,
+      ((event.clientY - bounds.top) * deck.slides[page].widthPx) / width,
+      new Map(deck.playback[page].links.map((link: any) => [link.sourceId, link.target])),
+      new Map(
+        deck.playback[page].runLinks.map((link: any) => [
+          `${link.sourceId}:${link.paraIndex}:${link.runIndex}`,
+          link.target,
+        ]),
+      ),
+    )
+  }
+  const follow = (event: React.MouseEvent<HTMLElement>) => {
+    if ((event.target as Element).closest('button,audio,video')) return
+    const target = targetAt(event)
+    if (!target) return
+    if (target.kind === 'slide') navigate(target.slideIndex)
+    else if (target.kind === 'url' && /^https?:|^mailto:/i.test(target.url))
+      window.open(target.url, '_blank', 'noopener,noreferrer')
+    else if (target.kind === 'action') {
+      const next = {
+        nextslide: page + 1,
+        previousslide: page - 1,
+        firstslide: 0,
+        lastslide: deck.slides.length - 1,
+        lastslideviewed: visited.current.pop() ?? page,
+        endshow: page,
+      }[target.action]
+      navigate(next)
+    }
+  }
   const start = () => {
     void document.documentElement.requestFullscreen?.().catch(() => {})
     setShow(true)
@@ -111,20 +202,50 @@ export function Slides({ session }: { session: string }) {
     <LocaleProvider initial="zh">
       <div className="viewer-preview">
         <header className="viewer-bar">
-          <button disabled={!page} onClick={() => setPage((p) => p - 1)}>
+          <button disabled={!page} onClick={() => navigate(page - 1)}>
             上一页
           </button>
           <span>
             {page + 1} / {deck.slides.length}
           </span>
-          <button disabled={page === deck.slides.length - 1} onClick={() => setPage((p) => p + 1)}>
+          <button disabled={page === deck.slides.length - 1} onClick={() => navigate(page + 1)}>
             下一页
           </button>
+          <label>
+            跳页
+            <input
+              aria-label="PPT 页码"
+              type="number"
+              min="1"
+              max={deck.slides.length}
+              value={page + 1}
+              onChange={(e) => navigate(Number(e.target.value) - 1)}
+            />
+          </label>
+          <button
+            onClick={() => {
+              setFit(null)
+              setZoom(Math.max(0.25, width / deck.slides[page].widthPx - 0.1))
+            }}
+          >
+            缩小
+          </button>
+          <button
+            onClick={() => {
+              setFit(null)
+              setZoom(Math.min(4, width / deck.slides[page].widthPx + 0.1))
+            }}
+          >
+            放大
+          </button>
+          <button onClick={() => setFit('width')}>适合宽度</button>
+          <button onClick={() => setFit('page')}>适合页面</button>
           <button onClick={start}>开始放映</button>
         </header>
         {error && (
           <p className="viewer-error" role="alert">
             {error}
+            <button onClick={() => setRetry((value) => value + 1)}>重试字体</button>
           </p>
         )}
         <div className="viewer-deck">
@@ -134,16 +255,20 @@ export function Slides({ session }: { session: string }) {
                 key={i}
                 aria-label={`第 ${i + 1} 页`}
                 aria-current={i === page}
-                onClick={() => setPage(i)}
+                onClick={() => navigate(i)}
               >
                 <SlideThumb slide={slide} images={images} width={126} />
                 <span>{i + 1}</span>
               </button>
             ))}
           </aside>
-          <div className="viewer-slide">
+          <div ref={pane} className="viewer-slide">
             <div
               className="viewer-slide-stage"
+              onClick={follow}
+              onMouseMove={(event) => {
+                event.currentTarget.style.cursor = targetAt(event) ? 'pointer' : ''
+              }}
               style={{
                 position: 'relative',
                 width,

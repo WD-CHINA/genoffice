@@ -71,7 +71,7 @@ try {
   await slides.locator('.viewer-thumbs button').last().waitFor()
   assert.equal(await slides.locator('.viewer-thumbs button').count(), 5)
   await slides.getByRole('button', { name: '下一页', exact: true }).click()
-  assert.equal(await slides.locator('.viewer-bar span').textContent(), '2 / 5')
+  assert.equal(await slides.locator('.viewer-bar span').first().textContent(), '2 / 5')
   await tab.screenshot({ path: resolve(output, 'pptx.png') })
   await slides.getByRole('button', { name: '开始放映' }).click()
   await slides.locator('.slideshow').waitFor()

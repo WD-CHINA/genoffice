@@ -6,6 +6,8 @@ export const aliases = {
   '@genoffice/viewer-renderers/ui': resolve(root, 'packages/viewer-renderers/src/ui/index.ts'),
   '@genoffice/viewer-renderers': resolve(root, 'packages/viewer-renderers/src'),
   '@genoffice/viewer-services': resolve(root, 'packages/viewer-services/src'),
+  '@genoffice/docx-engine/zip-splice': resolve(root, 'packages/docx-engine/src/zip-splice.ts'),
+  '@genoffice/docx-engine/lazy-media': resolve(root, 'packages/docx-engine/src/lazy-media.ts'),
   '@genoffice/docx-engine/metafile': resolve(root, 'packages/docx-engine/src/metafile.ts'),
   '@genoffice/docx-engine': resolve(root, 'packages/docx-engine/src/index.ts'),
 }

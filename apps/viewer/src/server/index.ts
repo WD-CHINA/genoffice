@@ -1,16 +1,21 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID, randomBytes, createHash } from 'node:crypto'
-import { mkdir, readFile, writeFile, rm, stat } from 'node:fs/promises'
+import { mkdir, readFile, writeFile, rm } from 'node:fs/promises'
 import { resolve, dirname, extname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
-import { decryptDocx, isEncryptedDocx } from '@genoffice/viewer-services/docs/decrypt'
+import {
+  decryptDocx,
+  isEncryptedDocx,
+  DocxDecryptError,
+} from '@genoffice/viewer-services/docs/decrypt'
 import { convertAltChunk } from './altchunk'
+import { prepareDocMedia } from '@genoffice/viewer-services/docs/lazy'
 import { findChrome } from '@genoffice/viewer-services/docs/driver'
 
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const dataDir = resolve(process.env.VIEWER_DATA_DIR || resolve(runtimeRoot, '.viewer-data'))
-const limit = Number(process.env.VIEWER_MAX_UPLOAD_BYTES || 64 * 1024 * 1024)
+const limit = Number(process.env.VIEWER_MAX_UPLOAD_BYTES || 1024 * 1024 * 1024)
 const ttl = Number(process.env.VIEWER_SESSION_TTL_MS || 30 * 60 * 1000)
 type FileRecord = {
   owner: string
@@ -31,9 +36,13 @@ type Session = {
   touched: number
   rpc?: Rpc
   locked?: boolean
+  docMedia?: Awaited<ReturnType<typeof prepareDocMedia>>
+  docPreparing?: Promise<void>
+  docPrepared?: boolean
   plain?: Buffer
   abort?: AbortController
   measuring?: boolean
+  opening?: boolean
   closed?: boolean
 }
 class HttpError extends Error {
@@ -159,7 +168,9 @@ function bytes(req: IncomingMessage, res: ServerResponse, buffer: Buffer, mime: 
   }
 }
 
-export async function createViewerServer() {
+export async function createViewerServer(options: { sessionTtlMs?: number } = {}) {
+  const sessionTtl = options.sessionTtlMs ?? ttl
+  const heartbeatMs = Math.max(50, Math.min(60_000, Math.floor(sessionTtl / 3)))
   await mkdir(dataDir, { recursive: true })
   const files = new Map<string, FileRecord>(),
     sessions = new Map<string, Session>()
@@ -168,23 +179,32 @@ export async function createViewerServer() {
     session.closed = true
     sessions.delete(session.id)
     session.abort?.abort()
+    await session.docPreparing?.catch(() => {})
+    await session.docMedia?.close()
     session.plain?.fill(0)
     await session.rpc?.close()
   }
   const timer = setInterval(
     async () => {
       for (const session of sessions.values())
-        if (Date.now() - session.touched > ttl) await close(session)
+        if (
+          Date.now() - session.touched > sessionTtl &&
+          !session.abort &&
+          !session.measuring &&
+          !session.opening &&
+          !session.docPreparing
+        )
+          await close(session)
       for (const file of files.values())
         if (
           ![...sessions.values()].some((s) => s.file.id === file.id) &&
-          Date.now() - file.touched > ttl
+          Date.now() - file.touched > sessionTtl
         ) {
           files.delete(file.id)
           await rm(file.path, { force: true })
         }
     },
-    Math.min(ttl, 30_000),
+    Math.min(sessionTtl, 30_000),
   )
   timer.unref()
   const server = createServer(async (req, res) => {
@@ -216,6 +236,7 @@ export async function createViewerServer() {
           formats: ['pptx', 'pdf', 'docx'],
           electron: false,
           altChunkAvailable,
+          heartbeatMs,
         })
       }
       if (route[0] === 'api') {
@@ -265,6 +286,7 @@ export async function createViewerServer() {
             batchId: randomUUID(),
             data: null,
             touched: Date.now(),
+            opening: true,
           }
           if (file.format === 'docx') session.locked = isEncryptedDocx(await readFile(file.path))
           sessions.set(session.id, session)
@@ -276,6 +298,9 @@ export async function createViewerServer() {
           } catch (e) {
             await close(session)
             throw e
+          } finally {
+            session.opening = false
+            session.touched = Date.now()
           }
           return json(res, 201, { id: session.id, format: file.format, name: file.name })
         }
@@ -293,6 +318,7 @@ export async function createViewerServer() {
               id: session.id,
               format: session.file.format,
               name: session.file.name,
+              heartbeatMs,
               locked: session.locked,
             })
           if (req.method === 'POST' && route[3] === 'unlock') {
@@ -301,16 +327,50 @@ export async function createViewerServer() {
             const input = await inputJSON(req, 8192)
             if (typeof input.password !== 'string' || !input.password)
               throw new HttpError(400, 'Password required')
-            session.plain = await decryptDocx(await readFile(session.file.path), input.password)
+            try {
+              const plain = await decryptDocx(await readFile(session.file.path), input.password)
+              if (session.closed) {
+                plain.fill(0)
+                throw new HttpError(410, 'Preview session closed')
+              }
+              session.plain?.fill(0)
+              session.plain = plain
+            } catch (error) {
+              if (error instanceof DocxDecryptError && error.reason === 'wrong-password')
+                throw new HttpError(422, 'Password incorrect')
+              throw error
+            }
             session.locked = false
             return json(res, 200, { unlocked: true })
           }
+          if (req.method === 'GET' && route[3] === 'doc-media') {
+            const media = await session.docMedia?.media(
+              route[4],
+              url.searchParams.get('part') || '',
+            )
+            if (!media) throw new HttpError(404, 'Media not found')
+            return bytes(req, res, media.bytes, media.mime)
+          }
           if (req.method === 'GET' && route[3] === 'content') {
             if (session.locked) throw new HttpError(423, 'Password required')
+            if (session.file.format === 'docx' && !session.docPrepared && !session.docPreparing)
+              session.docPreparing = (async () => {
+                const media = await prepareDocMedia(session.file.path, session.plain)
+                if (session.closed) {
+                  await media?.close()
+                  throw new HttpError(410, 'Preview session closed')
+                }
+                session.docMedia = media
+                session.docPrepared = true
+              })().finally(() => {
+                session.docPreparing = undefined
+              })
+            await session.docPreparing
+            if (session.closed) throw new HttpError(410, 'Preview session closed')
             return bytes(
               req,
               res,
-              session.plain || (await readFile(session.file.path)),
+              session.docMedia?.bytes || session.plain || (await readFile(session.file.path)),
               session.file.format === 'pdf' ? 'application/pdf' : 'application/octet-stream',
             )
           }
@@ -384,7 +444,7 @@ export async function createViewerServer() {
             }
           }
           if (req.method === 'GET' && route[3] === 'fonts') {
-            const data = await session.rpc?.call('font', route[4])
+            const data = await session.rpc?.call('font', decodeURIComponent(route[4]))
             if (!data) throw new HttpError(404, 'Font not found')
             return bytes(req, res, Buffer.from(data), 'font/ttf')
           }

@@ -1,0 +1,5 @@
+dist/
+.viewer-data/
+test-results/
+node_modules/
+releases/

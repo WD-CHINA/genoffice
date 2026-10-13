@@ -1,0 +1,11 @@
+{
+  "name": "@genoffice/viewer-renderers",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "exports": {
+    "./*": "./src/*"
+  },
+  "description": "Viewer-owned rendering snapshot; original applications are unchanged."
+}

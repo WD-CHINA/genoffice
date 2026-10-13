@@ -1,0 +1,23 @@
+{
+  "sourceCommit": "4863835963c99793c47b72473900c483e9fa0c2a",
+  "runtimeFiles": [
+    "apps/slides/src/main/fonts.ts",
+    "apps/slides/src/shared/cjk-script.ts",
+    "apps/slides/src/main/font-scan.ts",
+    "apps/slides/src/main/shaped-metrics.ts",
+    "apps/slides/src/main/tiff-decode.ts",
+    "apps/slides/src/main/jpeg-orientation.ts",
+    "apps/slides/src/main/media-mime.ts",
+    "apps/slides/src/main/metafile-fonts.ts",
+    "apps/slides/src/main/session-state.ts",
+    "apps/docs/src/main/docs-main.ts",
+    "packages/html2docx/src/drivers/playwright.ts",
+    "packages/html2docx/src/driver.ts"
+  ],
+  "typeFiles": [],
+  "notes": {
+    "session-state.ts": "Only the original retintThemedSvg and makeMediaResolver helpers were copied.",
+    "docs-main.ts": "Only the original DOCX password decryption helpers were copied.",
+    "playwright.ts": "Chrome lookup accepts VIEWER_CHROME_PATH."
+  }
+}

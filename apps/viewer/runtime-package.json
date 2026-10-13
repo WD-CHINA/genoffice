@@ -1,0 +1,10 @@
+{
+  "name": "genoffice-viewer-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": { "node": ">=22.12.0" },
+  "scripts": { "start": "node server/index.mjs" },
+  "dependencies": { "playwright-core": "1.61.1" }
+}

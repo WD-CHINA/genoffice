@@ -1,0 +1,138 @@
+:root {
+  --viewer-error: #b42318;
+  --accent: #2962b6;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  font:
+    14px system-ui,
+    sans-serif;
+  color: var(--text);
+  background: var(--surface);
+}
+.viewer-host {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.viewer-bar {
+  height: 48px;
+  padding: 0 20px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.viewer-bar span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.viewer-button,
+.viewer-bar button {
+  border: 1px solid var(--border);
+  color: var(--text);
+  background: var(--surface);
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+}
+.viewer-button input {
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  position: absolute;
+}
+.viewer-host iframe {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  min-height: 0;
+}
+.viewer-empty {
+  margin: auto;
+  padding: 32px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.viewer-empty h1 {
+  font-size: 24px;
+  color: var(--text);
+}
+.viewer-error {
+  color: var(--viewer-error);
+  padding: 8px 20px;
+}
+.viewer-preview {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.viewer-deck {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.viewer-thumbs {
+  overflow: auto;
+  width: 156px;
+  flex-shrink: 0;
+  padding: 12px;
+  background: var(--surface);
+}
+.viewer-thumbs button {
+  display: block;
+  border: 2px solid transparent;
+  background: transparent;
+  cursor: pointer;
+  margin-bottom: 12px;
+  padding: 4px;
+  color: var(--text);
+}
+.viewer-thumbs button[aria-current='true'] {
+  border-color: var(--accent);
+}
+.viewer-slide {
+  flex: 1;
+  overflow: auto;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--surface-subtle);
+}
+.viewer-pdf-scroll {
+  overflow: auto;
+  flex: 1;
+  background: var(--surface-subtle);
+  padding: 24px;
+}
+.viewer-pdf-page {
+  position: relative;
+  margin: 0 auto 20px;
+  background: white;
+}
+.viewer-doc-canvas {
+  position: absolute;
+  left: -20000px;
+  top: 0;
+  visibility: hidden;
+}
+.viewer-doc .pagination-preview {
+  top: 0;
+}
+.viewer-doc .pv-toolbar button {
+  display: none;
+}
+
+.viewer-doc .pv-hint {
+  display: none;
+}

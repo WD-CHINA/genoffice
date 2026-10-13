@@ -4,6 +4,8 @@
 
 改动范围仅为 `apps/viewer` 和新增的 `packages/viewer-renderers`、`packages/viewer-services`。现有 app、package、根配置及根锁文件不修改。
 
+最新产品范围、三格式能力、界面约束及文件保留规则见 [需求文档](REQUIREMENTS.zh-CN.md)。
+
 ## 开发运行
 
 要求 Node ≥22.12.0，以及已有仓库开发依赖。本阶段源码构建复用现有 monorepo 依赖，尚未提供仅安装 Viewer 源码依赖的 staging 安装器。以下命令在 `repo` 下执行，均不会调用其他 app 的启动或构建：
@@ -80,6 +82,8 @@ Word 的 HTML/MHT altChunk 使用原 `html2docx` 转换器及 Playwright 驱动�
 
 `GET /api/health` 返回格式列表、`altChunkAvailable` 和活动会话续期间隔。Host 自动续期，失效时显示重新打开入口。上传文件使用随机 ID，接口不接受客户端任意文件路径。会话按 Cookie 隔离；切换文件关闭旧会话和 iframe；会话超时清理文件及 Worker。无编辑、保存写回和 AI 接口。
 
+data 中的源文件在服务持续运行时，按“无活动会话且超过 TTL 未使用”删除，默认每 30 秒检查一次。服务重启会丢失内存文件/会话索引，但不会扫描清理磁盘残留文件；当前不能保证所有 data 文件在 30 分钟后删除。详细场景及待确认策略见 [需求文档的文件保留规则](REQUIREMENTS.zh-CN.md#6-会话有效期与-data-文件保留)。
+
 ## 验证
 
 先构建，然后执行：
@@ -98,4 +102,4 @@ npm run test:standalone -w @genoffice/viewer
 
 核心内容组件保留原源码，PPT 没有整份转成图片/PDF，Word 没有改用其他文档渲染器。构建检查拒绝其他 app、Electron、AI provider/agent 运行时；原 `zip-gate` 使用的纯脱敏 helper 可继续复用。
 
-[开发计划](DEVELOPMENT_PLAN.zh-CN.md) · [交付状态与剩余验收](IMPLEMENTATION_STATUS.md) · [逐项功能审查](FEATURE_AUDIT.zh-CN.md)
+[需求文档](REQUIREMENTS.zh-CN.md) · [开发计划](DEVELOPMENT_PLAN.zh-CN.md) · [交付状态与剩余验收](IMPLEMENTATION_STATUS.md) · [逐项功能审查](FEATURE_AUDIT.zh-CN.md)

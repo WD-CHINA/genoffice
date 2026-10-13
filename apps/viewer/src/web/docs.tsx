@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
+import { ToolbarIcon } from './toolbar-icon'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { parseLazyMediaUrl } from '@genoffice/docx-engine/lazy-media'
 import { readPageColor, setAltChunkHtmlConverter } from '@genoffice/docx-engine'
@@ -416,9 +417,16 @@ export function Docs({ session }: { session: string }) {
         className={`viewer-doc viewer-preview rev-display-${revision === 'final' ? 'none' : revision}${revision === 'all' ? ' rev-balloon' : ''}`}
         onKeyDown={(event) => {
           const command = event.ctrlKey || event.metaKey
-          if (command && event.key.toLowerCase() === 'f') {
+          const searchInput =
+            event.currentTarget.querySelector<HTMLInputElement>('[aria-label="搜索 Word"]')
+          if (
+            command &&
+            event.key.toLowerCase() === 'f' &&
+            searchInput &&
+            !searchInput.closest('[hidden]')
+          ) {
             event.preventDefault()
-            event.currentTarget.querySelector<HTMLInputElement>('[aria-label="搜索 Word"]')?.focus()
+            searchInput.focus()
           } else if (command && ['+', '=', '-'].includes(event.key)) {
             event.preventDefault()
             setFit(null)
@@ -436,63 +444,82 @@ export function Docs({ session }: { session: string }) {
       >
         {ready && (
           <header className="viewer-bar">
-            <button disabled={currentPage <= 1} onClick={() => goPage(currentPage - 1)}>
-              上一页
-            </button>
-            <label>
-              页码
+            <div className="viewer-toolbar-group" role="group" aria-label="Word 页面导航">
+              <button disabled={currentPage <= 1} onClick={() => goPage(currentPage - 1)}>
+                <ToolbarIcon name="previous" />
+                上一页
+              </button>
+              <label>
+                页码
+                <input
+                  aria-label="Word 页码"
+                  type="number"
+                  min="1"
+                  max={pages}
+                  value={currentPage}
+                  onChange={(e) => goPage(Number(e.target.value))}
+                />
+              </label>
+              <span className="viewer-page-count">/ {pages}</span>
+              <button disabled={currentPage >= pages} onClick={() => goPage(currentPage + 1)}>
+                下一页
+                <ToolbarIcon name="next" />
+              </button>
+            </div>
+            <div className="viewer-toolbar-group" role="group" aria-label="Word 缩放">
+              <button
+                onClick={() => {
+                  setFit(null)
+                  setZoom((z) => Math.max(0.25, z - 0.1))
+                }}
+              >
+                <ToolbarIcon name="minus" />
+                缩小
+              </button>
+              <button
+                onClick={() => {
+                  setFit(null)
+                  setZoom((z) => Math.min(3, z + 0.1))
+                }}
+              >
+                <ToolbarIcon name="plus" />
+                放大
+              </button>
+              <button aria-pressed={fit === 'width'} onClick={() => setFit('width')}>
+                <ToolbarIcon name="width" />
+                适合宽度
+              </button>
+              <button aria-pressed={fit === 'page'} onClick={() => setFit('page')}>
+                <ToolbarIcon name="page" />
+                适合页面
+              </button>
+            </div>
+            <div className="viewer-search-controls" hidden>
               <input
-                aria-label="Word 页码"
-                type="number"
-                min="1"
-                max={pages}
-                value={currentPage}
-                onChange={(e) => goPage(Number(e.target.value))}
+                aria-label="搜索 Word"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') search()
+                }}
               />
+              <button onClick={search}>搜索</button>
+              <span>{matches.length ? `${matchIndex + 1}/${matches.length}` : '无匹配'}</span>
+              <button onClick={() => stepMatch(-1)}>上一处</button>
+              <button onClick={() => stepMatch(1)}>下一处</button>
+            </div>
+            <label className="viewer-revision-control viewer-toolbar-end">
+              修订
+              <select
+                aria-label="修订显示"
+                value={revision}
+                onChange={(e) => setRevision(e.target.value)}
+              >
+                <option value="all">全部标记</option>
+                <option value="final">最终版本</option>
+                <option value="original">原始版本</option>
+              </select>
             </label>
-            <span>/ {pages}</span>
-            <button disabled={currentPage >= pages} onClick={() => goPage(currentPage + 1)}>
-              下一页
-            </button>
-            <button
-              onClick={() => {
-                setFit(null)
-                setZoom((z) => Math.max(0.25, z - 0.1))
-              }}
-            >
-              缩小
-            </button>
-            <button
-              onClick={() => {
-                setFit(null)
-                setZoom((z) => Math.min(3, z + 0.1))
-              }}
-            >
-              放大
-            </button>
-            <button onClick={() => setFit('width')}>适合宽度</button>
-            <button onClick={() => setFit('page')}>适合页面</button>
-            <input
-              aria-label="搜索 Word"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') search()
-              }}
-            />
-            <button onClick={search}>搜索</button>
-            <span>{matches.length ? `${matchIndex + 1}/${matches.length}` : '无匹配'}</span>
-            <button onClick={() => stepMatch(-1)}>上一处</button>
-            <button onClick={() => stepMatch(1)}>下一处</button>
-            <select
-              aria-label="修订显示"
-              value={revision}
-              onChange={(e) => setRevision(e.target.value)}
-            >
-              <option value="all">全部标记</option>
-              <option value="final">最终版本</option>
-              <option value="original">原始版本</option>
-            </select>
           </header>
         )}
         {error && (

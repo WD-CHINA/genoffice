@@ -221,7 +221,7 @@ try {
     },
   })
   assert.equal(await slides.getByLabel('PPT 页码').inputValue(), '2')
-  await slides.getByLabel('PPT 页码').fill('4')
+  await slides.getByLabel('PPT 页码').selectOption('4')
   assert.equal(await slides.locator('.viewer-bar span').first().textContent(), '4 / 5')
   await slides.getByRole('button', { name: '适合宽度', exact: true }).click()
   const fitWidth = (await stage.boundingBox()).width
@@ -241,6 +241,14 @@ try {
   await pdfFrame.waitForFunction(
     () => document.querySelector('[aria-label="PDF 页码"]').value === '2',
   )
+  assert.equal(await pdfFrame.getByLabel('PDF 页码').evaluate((el) => el.tagName), 'SELECT')
+  assert.equal(await pdfFrame.getByLabel('PDF 页码').locator('option').count(), 3)
+  assert.equal(await pdfFrame.locator('.viewer-search-controls').isVisible(), false)
+  assert.equal(await pdfFrame.getByLabel('搜索 PDF').isVisible(), false)
+  // Temporarily expose the retained controls to keep testing their implementation.
+  await pdfFrame.locator('.viewer-search-controls').evaluate((el) => {
+    el.hidden = false
+  })
   await pdfFrame.getByLabel('搜索 PDF').fill('viewerneedle')
   await pdfFrame.getByRole('button', { name: '搜索', exact: true }).click()
   await pdfFrame.getByRole('status').filter({ hasText: '1/3' }).waitFor()
@@ -249,7 +257,10 @@ try {
   await pdfFrame.waitForFunction(
     () => document.querySelector('[aria-label="PDF 页码"]').value === '2',
   )
-  await pdfFrame.getByLabel('PDF 页码').fill('1')
+  await pdfFrame.locator('.viewer-search-controls').evaluate((el) => {
+    el.hidden = true
+  })
+  await pdfFrame.getByLabel('PDF 页码').selectOption('1')
   await pdfFrame.getByRole('button', { name: /Saved note body/ }).click()
   await pdfFrame.getByText('Saved note body', { exact: true }).waitFor()
   await pdfFrame.getByText('Saved reply body', { exact: true }).waitFor()
@@ -296,6 +307,11 @@ try {
       .evaluate((el) => getComputedStyle(el).backgroundColor),
     'rgb(255, 244, 219)',
   )
+  assert.equal(await word.locator('.viewer-search-controls').isVisible(), false)
+  assert.equal(await word.getByLabel('搜索 Word').isVisible(), false)
+  await word.locator('.viewer-search-controls').evaluate((el) => {
+    el.hidden = false
+  })
   await word.getByLabel('搜索 Word').fill('viewerneedle')
   await word.getByRole('button', { name: '搜索', exact: true }).click()
   await word.waitForFunction(() =>
@@ -306,6 +322,9 @@ try {
   await word.waitForFunction(() =>
     document.querySelector('.viewer-bar').textContent.includes('2/3'),
   )
+  await word.locator('.viewer-search-controls').evaluate((el) => {
+    el.hidden = true
+  })
   await word.getByLabel('Word 页码').fill('1')
   await word.locator('.pv-content a').filter({ hasText: 'Jump to Viewer Beta' }).first().click()
   await word.waitForFunction(() => document.querySelector('[aria-label="Word 页码"]').value === '2')

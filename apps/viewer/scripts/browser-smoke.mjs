@@ -70,6 +70,37 @@ try {
   )
   await slides.locator('.viewer-thumbs button').last().waitFor()
   assert.equal(await slides.locator('.viewer-thumbs button').count(), 5)
+  await tab.setViewportSize({ width: 1212, height: 657 })
+  const scrollbarStyle = await slides.addStyleTag({
+    content: '.viewer-thumbs::-webkit-scrollbar { width: 16px; height: 16px; }',
+  })
+  const thumbs = slides.locator('.viewer-thumbs')
+  assert.equal(await thumbs.evaluate((el) => el.scrollWidth <= el.clientWidth), true)
+  assert.equal(await thumbs.evaluate((el) => el.scrollHeight > el.clientHeight), true)
+  assert.equal(
+    await thumbs.evaluate((el) => {
+      const rect = el.getBoundingClientRect()
+      return [...el.querySelectorAll('button')].every((button) => {
+        const bounds = button.getBoundingClientRect()
+        const canvas = button.querySelector('canvas').getBoundingClientRect()
+        return (
+          bounds.left >= rect.left &&
+          bounds.right <= rect.left + el.clientWidth &&
+          canvas.left >= bounds.left + button.clientLeft &&
+          canvas.right <= bounds.left + button.clientLeft + button.clientWidth
+        )
+      })
+    }),
+    true,
+  )
+  await slides.locator('.viewer-thumbs button').last().click()
+  assert.equal(await slides.getByLabel('PPT 页码').inputValue(), '5')
+  assert.equal(await thumbs.evaluate((el) => el.scrollLeft), 0)
+  assert.ok(await thumbs.evaluate((el) => el.scrollTop > 0))
+  await slides.locator('.viewer-thumbs button').first().click()
+  await tab.screenshot({ path: resolve(output, 'pptx-thumbs-scroll.png') })
+  await scrollbarStyle.evaluate((el) => el.remove())
+  await tab.setViewportSize({ width: 1280, height: 900 })
   await slides.getByRole('button', { name: '下一页', exact: true }).click()
   assert.equal(await slides.locator('.viewer-bar span').first().textContent(), '2 / 5')
   await tab.screenshot({ path: resolve(output, 'pptx.png') })

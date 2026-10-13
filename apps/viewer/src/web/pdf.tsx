@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
+import { ToolbarIcon } from './toolbar-icon'
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import worker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
@@ -234,9 +235,16 @@ export function Pdf({ session }: { session: string }) {
       className="viewer-preview"
       onKeyDown={(event) => {
         const command = event.ctrlKey || event.metaKey
-        if (command && event.key.toLowerCase() === 'f') {
+        const searchInput =
+          event.currentTarget.querySelector<HTMLInputElement>('[aria-label="搜索 PDF"]')
+        if (
+          command &&
+          event.key.toLowerCase() === 'f' &&
+          searchInput &&
+          !searchInput.closest('[hidden]')
+        ) {
           event.preventDefault()
-          event.currentTarget.querySelector<HTMLInputElement>('[aria-label="搜索 PDF"]')?.focus()
+          searchInput.focus()
         } else if (command && ['+', '=', '-'].includes(event.key)) {
           event.preventDefault()
           zoom(event.key === '-' ? -1 : 1)
@@ -250,35 +258,82 @@ export function Pdf({ session }: { session: string }) {
       }}
     >
       <header className="viewer-bar">
-        <button onClick={() => setSidebar(sidebar === 'thumbs' ? null : 'thumbs')}>缩略图</button>
-        <button onClick={() => setSidebar(sidebar === 'outline' ? null : 'outline')}>目录</button>
-        <button disabled={current === 1} onClick={() => goPage(current - 1)}>
-          上一页
-        </button>
-        <label>
-          页码
-          <input
-            aria-label="PDF 页码"
-            type="number"
-            min="1"
-            max={doc?.numPages || 1}
-            value={current}
-            onChange={(e) => goPage(Number(e.target.value))}
-          />
-        </label>
-        <span>/ {doc?.numPages || 0}</span>
-        <button disabled={current === (doc?.numPages || 0)} onClick={() => goPage(current + 1)}>
-          下一页
-        </button>
-        <button onClick={() => zoom(-1)}>缩小</button>
-        <span>{Math.round(scale * 100)}%</span>
-        <button onClick={() => zoom(1)}>放大</button>
-        <button onClick={() => setFit('width')}>适合宽度</button>
-        <button onClick={() => setFit('page')}>适合页面</button>
-        <button onClick={() => setRotation((r) => (r + 90) % 360)}>旋转</button>
-        <button onClick={() => setShowInfo((v) => !v)}>文档信息</button>
+        <div className="viewer-toolbar-group" role="group" aria-label="PDF 导航面板">
+          <button
+            aria-pressed={sidebar === 'thumbs'}
+            onClick={() => setSidebar(sidebar === 'thumbs' ? null : 'thumbs')}
+          >
+            <ToolbarIcon name="thumbs" />
+            缩略图
+          </button>
+          <button
+            aria-pressed={sidebar === 'outline'}
+            onClick={() => setSidebar(sidebar === 'outline' ? null : 'outline')}
+          >
+            <ToolbarIcon name="outline" />
+            目录
+          </button>
+        </div>
+        <div className="viewer-toolbar-group" role="group" aria-label="PDF 页面导航">
+          <button disabled={current === 1} onClick={() => goPage(current - 1)}>
+            <ToolbarIcon name="previous" />
+            上一页
+          </button>
+          <label>
+            页码
+            <select
+              aria-label="PDF 页码"
+              value={current}
+              onChange={(e) => goPage(Number(e.target.value))}
+            >
+              {Array.from({ length: doc?.numPages || 1 }, (_, index) => (
+                <option key={index} value={index + 1}>
+                  第 {index + 1} 页
+                </option>
+              ))}
+            </select>
+          </label>
+          <span className="viewer-page-count">/ {doc?.numPages || 0}</span>
+          <button disabled={current === (doc?.numPages || 0)} onClick={() => goPage(current + 1)}>
+            下一页
+            <ToolbarIcon name="next" />
+          </button>
+        </div>
+        <div className="viewer-toolbar-group" role="group" aria-label="PDF 缩放">
+          <button onClick={() => zoom(-1)}>
+            <ToolbarIcon name="minus" />
+            缩小
+          </button>
+          <span className="viewer-zoom-value">{Math.round(scale * 100)}%</span>
+          <button onClick={() => zoom(1)}>
+            <ToolbarIcon name="plus" />
+            放大
+          </button>
+          <button aria-pressed={fit === 'width'} onClick={() => setFit('width')}>
+            <ToolbarIcon name="width" />
+            适合宽度
+          </button>
+          <button aria-pressed={fit === 'page'} onClick={() => setFit('page')}>
+            <ToolbarIcon name="page" />
+            适合页面
+          </button>
+        </div>
+        <div
+          className="viewer-toolbar-group viewer-toolbar-end"
+          role="group"
+          aria-label="PDF 文档操作"
+        >
+          <button onClick={() => setRotation((r) => (r + 90) % 360)}>
+            <ToolbarIcon name="rotate" />
+            旋转
+          </button>
+          <button aria-pressed={showInfo} onClick={() => setShowInfo((v) => !v)}>
+            <ToolbarIcon name="info" />
+            文档信息
+          </button>
+        </div>
       </header>
-      <div className="viewer-bar">
+      <div className="viewer-bar viewer-search-controls" hidden>
         <input
           aria-label="搜索 PDF"
           value={query}

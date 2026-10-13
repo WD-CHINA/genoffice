@@ -80,34 +80,55 @@ async function responseFor(
           abort = () => reject(signal.reason)
           signal.addEventListener('abort', abort, { once: true })
         }),
-      ]).finally(() => { if (abort) signal.removeEventListener('abort', abort) })
+      ]).finally(() => {
+        if (abort) signal.removeEventListener('abort', abort)
+      })
   signal.throwIfAborted()
   if (
     !addresses.length ||
     (!allowPrivate && addresses.some((result) => !isPublicAddress(result.address)))
   )
     throw new HttpError(403, '该链接指向本机或内网地址，当前服务未启用内网 URL 导入')
-  const chosen = addresses[0]
-  return new Promise((resolve, reject) => {
-    const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(
-      url,
-      {
-        method: 'GET',
-        signal,
-        agent: false,
-        family: chosen.family,
-        lookup: (_hostname, _options, callback) => callback(null, chosen.address, chosen.family),
-        headers: {
-          Accept:
-            'application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/octet-stream',
-          'Accept-Encoding': 'identity',
-        },
-      },
-      resolve,
-    )
-    request.on('error', reject)
-    request.end()
-  })
+  let failure: unknown
+  for (const chosen of addresses) {
+    signal.throwIfAborted()
+    try {
+      return await new Promise<IncomingMessage>((resolve, reject) => {
+        const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(
+          url,
+          {
+            method: 'GET',
+            signal,
+            agent: false,
+            family: chosen.family,
+            lookup: (_hostname, _options, callback) =>
+              callback(null, chosen.address, chosen.family),
+            headers: {
+              Accept:
+                'application/pdf,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/octet-stream',
+              'Accept-Encoding': 'identity',
+            },
+          },
+          resolve,
+        )
+        const connectTimer = setTimeout(
+          () => request.destroy(new Error('Connection timeout')),
+          4000,
+        )
+        connectTimer.unref()
+        request.once('socket', (socket) => socket.once('connect', () => clearTimeout(connectTimer)))
+        request.once('close', () => clearTimeout(connectTimer))
+        request.on('error', (error) => {
+          clearTimeout(connectTimer)
+          reject(error)
+        })
+        request.end()
+      })
+    } catch (error) {
+      failure = error
+    }
+  }
+  throw failure
 }
 function cleanName(value: string): string {
   return basename(value.replaceAll('\\', '/'))

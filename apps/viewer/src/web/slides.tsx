@@ -8,6 +8,7 @@ import type { SlidesDataSource } from '@genoffice/viewer-renderers/slides/render
 import '@genoffice/viewer-renderers/slides/renderer/styles.css'
 import { hitLink } from '@genoffice/viewer-renderers/slides/renderer/preview-links'
 import { api, post } from './api'
+import { ToolbarIcon } from './toolbar-icon'
 
 function imageUrls(data: unknown, urls = new Set<string>()) {
   if (typeof data === 'string' && data.startsWith('data:image/')) urls.add(data)
@@ -202,45 +203,65 @@ export function Slides({ session }: { session: string }) {
     <LocaleProvider initial="zh">
       <div className="viewer-preview">
         <header className="viewer-bar">
-          <button disabled={!page} onClick={() => navigate(page - 1)}>
-            上一页
+          <div className="viewer-toolbar-group" role="group" aria-label="幻灯片导航">
+            <button disabled={!page} onClick={() => navigate(page - 1)}>
+              <ToolbarIcon name="previous" />
+              上一页
+            </button>
+            <span className="viewer-page-count">
+              {page + 1} / {deck.slides.length}
+            </span>
+            <button disabled={page === deck.slides.length - 1} onClick={() => navigate(page + 1)}>
+              下一页
+              <ToolbarIcon name="next" />
+            </button>
+            <label>
+              跳页
+              <select
+                aria-label="PPT 页码"
+                value={page + 1}
+                onChange={(e) => navigate(Number(e.target.value) - 1)}
+              >
+                {deck.slides.map((_slide: unknown, index: number) => (
+                  <option key={index} value={index + 1}>
+                    第 {index + 1} 页
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="viewer-toolbar-group" role="group" aria-label="幻灯片缩放">
+            <button
+              onClick={() => {
+                setFit(null)
+                setZoom(Math.max(0.25, width / deck.slides[page].widthPx - 0.1))
+              }}
+            >
+              <ToolbarIcon name="minus" />
+              缩小
+            </button>
+            <button
+              onClick={() => {
+                setFit(null)
+                setZoom(Math.min(4, width / deck.slides[page].widthPx + 0.1))
+              }}
+            >
+              <ToolbarIcon name="plus" />
+              放大
+            </button>
+            <button aria-pressed={fit === 'width'} onClick={() => setFit('width')}>
+              <ToolbarIcon name="width" />
+              适合宽度
+            </button>
+            <button aria-pressed={fit === 'page'} onClick={() => setFit('page')}>
+              <ToolbarIcon name="page" />
+              适合页面
+            </button>
+          </div>
+          <button className="viewer-primary-action viewer-toolbar-end" onClick={start}>
+            <ToolbarIcon name="play" />
+            开始放映
           </button>
-          <span>
-            {page + 1} / {deck.slides.length}
-          </span>
-          <button disabled={page === deck.slides.length - 1} onClick={() => navigate(page + 1)}>
-            下一页
-          </button>
-          <label>
-            跳页
-            <input
-              aria-label="PPT 页码"
-              type="number"
-              min="1"
-              max={deck.slides.length}
-              value={page + 1}
-              onChange={(e) => navigate(Number(e.target.value) - 1)}
-            />
-          </label>
-          <button
-            onClick={() => {
-              setFit(null)
-              setZoom(Math.max(0.25, width / deck.slides[page].widthPx - 0.1))
-            }}
-          >
-            缩小
-          </button>
-          <button
-            onClick={() => {
-              setFit(null)
-              setZoom(Math.min(4, width / deck.slides[page].widthPx + 0.1))
-            }}
-          >
-            放大
-          </button>
-          <button onClick={() => setFit('width')}>适合宽度</button>
-          <button onClick={() => setFit('page')}>适合页面</button>
-          <button onClick={start}>开始放映</button>
         </header>
         {error && (
           <p className="viewer-error" role="alert">

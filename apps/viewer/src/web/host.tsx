@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { api, post } from './api'
+import { ToolbarIcon } from './toolbar-icon'
 import '@genoffice/ui/tokens.css'
 import './viewer.css'
 
@@ -98,10 +99,18 @@ function Host() {
   }
   return (
     <main className="viewer-host">
-      <header className="viewer-bar">
-        <strong>Office Viewer</strong>
-        <span>{session?.name || 'PPT · PDF · Word'}</span>
+      <header className="viewer-bar viewer-file-bar">
+        <strong className="viewer-brand">
+          <span className="viewer-brand-icon">
+            <ToolbarIcon name="document" />
+          </span>
+          Office Viewer
+        </strong>
+        <span className="viewer-file-name" title={session?.name || undefined}>
+          {session?.name || 'PPT · PDF · Word'}
+        </span>
         <label className="viewer-button">
+          <ToolbarIcon name="folder" />
           打开文件
           <input
             aria-label="打开文件"
@@ -132,6 +141,7 @@ function Host() {
             onChange={(event) => setImportUrl(event.target.value)}
           />
           <button type="submit" disabled={!ready || busy || !importUrl.trim()}>
+            <ToolbarIcon name="link" />
             导入 URL
           </button>
         </form>

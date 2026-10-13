@@ -12,6 +12,8 @@ import {
 import { convertAltChunk } from './altchunk'
 import { prepareDocMedia } from '@genoffice/viewer-services/docs/lazy'
 import { findChrome } from '@genoffice/viewer-services/docs/driver'
+import { HttpError } from './http-error'
+import { downloadDocument, type UrlImportOptions } from './url-import'
 
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const dataDir = resolve(process.env.VIEWER_DATA_DIR || resolve(runtimeRoot, '.viewer-data'))
@@ -45,15 +47,6 @@ type Session = {
   opening?: boolean
   closed?: boolean
 }
-class HttpError extends Error {
-  constructor(
-    public status: number,
-    message: string,
-  ) {
-    super(message)
-  }
-}
-
 class Rpc {
   worker = new Worker(new URL('./pptx-worker.mjs', import.meta.url))
   pending = new Map<
@@ -168,13 +161,29 @@ function bytes(req: IncomingMessage, res: ServerResponse, buffer: Buffer, mime: 
   }
 }
 
-export async function createViewerServer(options: { sessionTtlMs?: number } = {}) {
+export async function createViewerServer(
+  options: { sessionTtlMs?: number; urlImport?: UrlImportOptions } = {},
+) {
   const sessionTtl = options.sessionTtlMs ?? ttl
   const heartbeatMs = Math.max(50, Math.min(60_000, Math.floor(sessionTtl / 3)))
   await mkdir(dataDir, { recursive: true })
   const files = new Map<string, FileRecord>(),
     sessions = new Map<string, Session>()
   const owners = new Set<string>()
+  let pendingFiles = 0
+  const imports = new Set<AbortController>()
+  const urlImport = {
+    allowPrivateNetwork: process.env.VIEWER_URL_ALLOW_PRIVATE_NETWORK === 'true',
+    timeoutMs: Number(process.env.VIEWER_URL_TIMEOUT_MS || 45_000),
+    ...options.urlImport,
+  }
+  const reserveFile = () => {
+    if (files.size + pendingFiles >= 64) throw new HttpError(429, 'File limit reached')
+    pendingFiles++
+    return () => {
+      pendingFiles--
+    }
+  }
   const close = async (session: Session) => {
     session.closed = true
     sessions.delete(session.id)
@@ -246,29 +255,76 @@ export async function createViewerServer(options: { sessionTtlMs?: number } = {}
           const format = extname(name).slice(1).toLowerCase()
           if (!['pptx', 'pdf', 'docx'].includes(format))
             throw new HttpError(415, 'Supported files: .pptx, .pdf, .docx')
-          if (files.size >= 64) throw new HttpError(429, 'File limit reached')
-          const buffer = await body(req)
-          if (!buffer.length) throw new HttpError(400, 'File is empty')
-          if (
-            format === 'pdf'
-              ? !buffer.subarray(0, 1024).includes(Buffer.from('%PDF-'))
-              : !['504b0304', 'd0cf11e0'].includes(buffer.subarray(0, 4).toString('hex'))
-          )
-            throw new HttpError(415, 'File content does not match its format')
+          const release = reserveFile()
+          try {
+            const buffer = await body(req)
+            if (!buffer.length) throw new HttpError(400, 'File is empty')
+            if (
+              format === 'pdf'
+                ? !buffer.subarray(0, 1024).includes(Buffer.from('%PDF-'))
+                : !['504b0304', 'd0cf11e0'].includes(buffer.subarray(0, 4).toString('hex'))
+            )
+              throw new HttpError(415, 'File content does not match its format')
+            const id = randomUUID(),
+              path = resolve(dataDir, id)
+            const file = {
+              id,
+              owner,
+              name,
+              format,
+              path,
+              hash: createHash('sha256').update(buffer).digest('hex'),
+              touched: Date.now(),
+            }
+            await writeFile(path, buffer)
+            files.set(id, file)
+            return json(res, 201, { id, name, format, hash: file.hash })
+          } finally {
+            release()
+          }
+        }
+        if (req.method === 'POST' && url.pathname === '/api/files/import-url') {
+          const input = await inputJSON(req, 16 * 1024)
+          if (typeof input.url !== 'string' || !input.url.trim() || input.url.length > 8192)
+            throw new HttpError(400, '请输入有效的文件链接（最多 8192 字符）')
+          if (imports.size >= 4) throw new HttpError(429, 'URL 导入任务已满，请稍后重试')
+          const release = reserveFile(),
+            controller = new AbortController()
           const id = randomUUID(),
             path = resolve(dataDir, id)
-          const file = {
-            id,
-            owner,
-            name,
-            format,
-            path,
-            hash: createHash('sha256').update(buffer).digest('hex'),
-            touched: Date.now(),
+          imports.add(controller)
+          const cancel = () => {
+            if (!res.writableEnded) controller.abort()
           }
-          await writeFile(path, buffer)
-          files.set(id, file)
-          return json(res, 201, { id, name, format, hash: file.hash })
+          res.on('close', cancel)
+          try {
+            const imported = await downloadDocument(
+              input.url.trim(),
+              path,
+              limit,
+              controller.signal,
+              urlImport,
+            )
+            controller.signal.throwIfAborted()
+            const file: FileRecord = {
+              id,
+              owner,
+              path,
+              name: imported.name,
+              format: imported.format,
+              hash: imported.hash,
+              touched: Date.now(),
+            }
+            files.set(id, file)
+            return json(res, 201, { id, name: file.name, format: file.format, hash: file.hash })
+          } catch (error) {
+            await rm(path, { force: true })
+            throw error
+          } finally {
+            res.off('close', cancel)
+            imports.delete(controller)
+            release()
+          }
         }
         if (req.method === 'POST' && url.pathname === '/api/view-sessions') {
           const input = await inputJSON(req, 8192)
@@ -518,6 +574,7 @@ export async function createViewerServer(options: { sessionTtlMs?: number } = {}
   })
   server.on('close', () => {
     clearInterval(timer)
+    for (const controller of imports) controller.abort()
     for (const session of sessions.values()) void close(session)
   })
   return server

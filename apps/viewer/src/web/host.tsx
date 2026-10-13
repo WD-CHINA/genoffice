@@ -4,6 +4,7 @@ import { api, post } from './api'
 import '@genoffice/ui/tokens.css'
 import './viewer.css'
 
+type Source = { kind: 'file'; file: File } | { kind: 'url'; url: string }
 function Host() {
   const [session, setSession] = useState<any>(null),
     [error, setError] = useState(''),
@@ -12,7 +13,9 @@ function Host() {
   const [heartbeatMs, setHeartbeatMs] = useState(60_000)
   const [connectionError, setConnectionError] = useState('')
   const [expired, setExpired] = useState(false)
-  const lastFile = useRef<File | null>(null)
+  const [importUrl, setImportUrl] = useState('')
+  const lastSource = useRef<Source | null>(null)
+  const opening = useRef(false)
   const current = useRef<string | null>(null)
   useEffect(() => {
     void api('health')
@@ -58,9 +61,10 @@ function Host() {
       document.removeEventListener('visibilitychange', resume)
     }
   }, [session, heartbeatMs])
-  async function open(file?: File) {
-    if (!file) return
-    lastFile.current = file
+  async function open(source?: Source) {
+    if (!source || opening.current) return
+    opening.current = true
+    lastSource.current = source
     setExpired(false)
     setConnectionError('')
     setBusy(true)
@@ -71,27 +75,31 @@ function Host() {
         await api(`view-sessions/${current.current}`, { method: 'DELETE' }).catch(() => {})
         current.current = null
       }
-      const record = await api('files', {
-        method: 'POST',
-        headers: {
-          'X-File-Name': encodeURIComponent(file.name),
-          'Content-Type': 'application/octet-stream',
-        },
-        body: file,
-      })
+      const record =
+        source.kind === 'url'
+          ? await post('files/import-url', { url: source.url })
+          : await api('files', {
+              method: 'POST',
+              headers: {
+                'X-File-Name': encodeURIComponent(source.file.name),
+                'Content-Type': 'application/octet-stream',
+              },
+              body: source.file,
+            })
       const next = await post('view-sessions', { fileId: record.id, width: 960 })
       current.current = next.id
       setSession(next)
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
+      opening.current = false
       setBusy(false)
     }
   }
   return (
     <main className="viewer-host">
       <header className="viewer-bar">
-        <strong>GenOffice Viewer</strong>
+        <strong>Office Viewer</strong>
         <span>{session?.name || 'PPT · PDF · Word'}</span>
         <label className="viewer-button">
           打开文件
@@ -101,11 +109,32 @@ function Host() {
             accept=".pptx,.pdf,.docx"
             disabled={!ready || busy}
             onChange={(e) => {
-              void open(e.target.files?.[0])
+              const file = e.target.files?.[0]
+              if (file) void open({ kind: 'file', file })
               e.target.value = ''
             }}
           />
         </label>
+        <form
+          className="viewer-url-import"
+          onSubmit={(event) => {
+            event.preventDefault()
+            if (ready && importUrl.trim()) void open({ kind: 'url', url: importUrl.trim() })
+          }}
+        >
+          <input
+            aria-label="文件 URL"
+            type="url"
+            required
+            placeholder="粘贴 PPT、Word 或 PDF 文件链接"
+            value={importUrl}
+            disabled={!ready || busy}
+            onChange={(event) => setImportUrl(event.target.value)}
+          />
+          <button type="submit" disabled={!ready || busy || !importUrl.trim()}>
+            导入 URL
+          </button>
+        </form>
       </header>
       {error && (
         <p role="alert" className="viewer-error">
@@ -116,12 +145,14 @@ function Host() {
         <p role="alert" className="viewer-error">
           {connectionError}
           {expired && (
-            <button onClick={() => void open(lastFile.current || undefined)}>重新打开</button>
+            <button onClick={() => void open(lastSource.current || undefined)}>重新打开</button>
           )}
         </p>
       )}
       {busy ? (
-        <div className="viewer-empty">正在打开…</div>
+        <div className="viewer-empty">
+          {lastSource.current?.kind === 'url' ? '正在下载并打开…' : '正在打开…'}
+        </div>
       ) : session && !expired ? (
         <iframe
           key={session.id}
@@ -134,6 +165,7 @@ function Host() {
           <h1>打开文档，开始预览</h1>
           <p>支持 .pptx、.pdf、.docx，保留项目原有渲染方式。</p>
           <p>支持预览和 PPT 放映。</p>
+          <p>可选择本地文件，或粘贴可直接下载的 HTTP/HTTPS 文件链接。</p>
         </div>
       )}
     </main>

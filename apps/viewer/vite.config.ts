@@ -4,6 +4,10 @@ import { resolve } from 'node:path'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { aliases, app, root } from './scripts/paths.mjs'
 
+const host = process.env.VIEWER_HOST || '0.0.0.0'
+const proxyHost = ['0.0.0.0', '::'].includes(host) ? '127.0.0.1' : host
+const proxyTarget = `http://${proxyHost.includes(':') ? `[${proxyHost}]` : proxyHost}:${process.env.VIEWER_PORT || 3001}`
+
 export default defineConfig({
   root: resolve(app, 'src/web'),
   plugins: [
@@ -29,10 +33,13 @@ export default defineConfig({
   ],
   resolve: { alias: aliases },
   server: {
-    host: true,
+    host,
     port: 5180,
     fs: { allow: [root] },
-    proxy: { '/api': 'http://127.0.0.1:3001', '/pdfjs': 'http://127.0.0.1:3001' },
+    proxy: {
+      '^/api(?:/|$)': { target: proxyTarget, changeOrigin: false },
+      '^/pdfjs(?:/|$)': { target: proxyTarget, changeOrigin: false },
+    },
   },
   build: {
     outDir: resolve(app, 'dist/web'),

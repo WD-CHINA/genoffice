@@ -22,6 +22,19 @@ body {
   display: flex;
   flex-direction: column;
 }
+.viewer-bar[hidden],
+.viewer-button[hidden],
+.viewer-url-import[hidden] {
+  display: none;
+}
+html[data-viewer-toolbar='false'] .viewer-preview > .viewer-bar,
+html[data-viewer-toolbar='false'] .viewer-doc .pv-toolbar,
+html[data-viewer-sidebar='false'] .viewer-thumbs,
+html[data-viewer-sidebar='false'] .viewer-navigation,
+html[data-viewer-errors='false'] #root [role='alert'],
+html[data-viewer-errors='false'] #root .viewer-warning {
+  display: none;
+}
 .viewer-bar {
   display: flex;
   align-items: center;

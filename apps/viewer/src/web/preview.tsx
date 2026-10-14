@@ -1,5 +1,6 @@
 import React, { Suspense, lazy } from 'react'
 import { createRoot } from 'react-dom/client'
+import { applyViewerUi, readViewerUi } from './ui-options'
 import '@genoffice/ui/tokens.css'
 import './viewer.css'
 const Slides = lazy(() => import('./slides').then((m) => ({ default: m.Slides })))
@@ -8,6 +9,7 @@ const Docs = lazy(() => import('./docs').then((m) => ({ default: m.Docs })))
 const params = new URLSearchParams(location.search),
   session = params.get('session') || '',
   format = params.get('format')
+applyViewerUi(readViewerUi(params))
 class Boundary extends React.Component<{ children: React.ReactNode }, { error: string }> {
   state = { error: '' }
   static getDerivedStateFromError(e: Error) {

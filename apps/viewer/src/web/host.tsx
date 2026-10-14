@@ -2,10 +2,16 @@ import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { api, post } from './api'
 import { ToolbarIcon } from './toolbar-icon'
+import { applyViewerUi, readViewerUi, viewerUiParams } from './ui-options'
 import '@genoffice/ui/tokens.css'
 import './viewer.css'
 
 type Source = { kind: 'file'; file: File } | { kind: 'url'; url: string }
+const linkParams = new URLSearchParams(location.search)
+const ui = readViewerUi(linkParams)
+const initialUrl = linkParams.get('url')?.trim() || ''
+applyViewerUi(ui)
+
 function Host() {
   const [session, setSession] = useState<any>(null),
     [error, setError] = useState(''),
@@ -14,7 +20,7 @@ function Host() {
   const [heartbeatMs, setHeartbeatMs] = useState(60_000)
   const [connectionError, setConnectionError] = useState('')
   const [expired, setExpired] = useState(false)
-  const [importUrl, setImportUrl] = useState('')
+  const [importUrl, setImportUrl] = useState(initialUrl)
   const lastSource = useRef<Source | null>(null)
   const opening = useRef(false)
   const current = useRef<string | null>(null)
@@ -29,6 +35,9 @@ function Host() {
       if (current.current) void api(`view-sessions/${current.current}`, { method: 'DELETE' })
     }
   }, [])
+  useEffect(() => {
+    if (ready && initialUrl) void open({ kind: 'url', url: initialUrl })
+  }, [ready])
   useEffect(() => {
     if (!session) return
     let cancelled = false,
@@ -99,7 +108,7 @@ function Host() {
   }
   return (
     <main className="viewer-host">
-      <header className="viewer-bar viewer-file-bar">
+      <header className="viewer-bar viewer-file-bar" hidden={!ui.showHeader}>
         <strong className="viewer-brand">
           <span className="viewer-brand-icon">
             <ToolbarIcon name="document" />
@@ -109,7 +118,7 @@ function Host() {
         <span className="viewer-file-name" title={session?.name || undefined}>
           {session?.name || 'PPT · PDF · Word'}
         </span>
-        <label className="viewer-button">
+        <label className="viewer-button" hidden={!ui.showImport}>
           <ToolbarIcon name="folder" />
           打开文件
           <input
@@ -126,6 +135,7 @@ function Host() {
         </label>
         <form
           className="viewer-url-import"
+          hidden={!ui.showUrlImport}
           onSubmit={(event) => {
             event.preventDefault()
             if (ready && importUrl.trim()) void open({ kind: 'url', url: importUrl.trim() })
@@ -167,7 +177,7 @@ function Host() {
         <iframe
           key={session.id}
           title={session.name}
-          src={`/preview.html?session=${session.id}&format=${session.format}`}
+          src={`/preview.html?${new URLSearchParams({ session: session.id, format: session.format, ...viewerUiParams(ui) })}`}
           allow="fullscreen"
         />
       ) : (

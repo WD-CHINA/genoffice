@@ -35,6 +35,42 @@ PPT 普通预览提供元素/文字链接、幻灯片跳转、原生下拉页码
 
 搜索控件隐藏时，`Ctrl/Cmd+F` 使用浏览器查找；`Ctrl/Cmd+ +/-` 缩放，非输入区域的 PageUp/PageDown 翻页。Word 可见快照与可访问正文保持一份辅助阅读树，键盘链接焦点会映射到可见页面。
 
+## 链接控制界面与自动打开
+
+主页面支持通过 query 参数控制界面显示，并将选项传递到三格式预览 iframe。没有参数时保持现有界面。`1`/`true` 为显示，`0`/`false` 为隐藏；未识别的值使用默认值。
+
+| 参数            | 默认 | 用途                                                           |
+| --------------- | ---- | -------------------------------------------------------------- |
+| `embed`         | `0`  | 设为 `1` 时，下列六项显示开关默认关闭，适合嵌入预览            |
+| `showHeader`    | `1`  | 顶部文件栏，包含品牌、文件名及导入入口                         |
+| `showImport`    | `1`  | 本地“打开文件”入口                                             |
+| `showUrlImport` | `1`  | URL 输入框和“导入 URL”按钮                                     |
+| `showToolbar`   | `1`  | PPT/PDF/Word 操作栏及 Word 分页预览工具栏                      |
+| `showSidebar`   | `1`  | PPT 缩略图、PDF/Word 导航侧栏                                  |
+| `showErrors`    | `1`  | 主页面和预览的错误/告警区域，包括字体、媒体错误及 PDF XFA 提示 |
+| `url`           | 无   | 主页面初始化后自动导入该 HTTP/HTTPS 文件直链，无需点击导入按钮 |
+
+显式显示开关优先于 `embed` 的默认值。例如 `?embed=1&showToolbar=1` 只恢复文档操作栏；若要恢复导入控件，需要同时恢复文件栏及对应导入项。`showToolbar=1` 不会恢复此前按产品要求隐藏的 PDF/Word 搜索控件。
+
+单独隐藏导入入口、操作栏和错误区，保留文件名和侧栏：
+
+```text
+/?showImport=0&showUrlImport=0&showToolbar=0&showErrors=0
+```
+
+通过链接自动打开并隐藏全部宿主控件，请用 `URLSearchParams` 编码文件 URL，确保文件签名中的 `&`、`+`、`?` 等不会被当成 Viewer 参数：
+
+```js
+const link = new URL('http://127.0.0.1:3001/') // 替换为部署地址
+link.searchParams.set('url', 'https://files.example.com/document.pptx?token=...&signature=...')
+link.searchParams.set('embed', '1')
+console.log(link.href)
+```
+
+显示开关只控制界面，不移除代码、不停用会话续期、不改变文件授权或 URL 导入校验；隐藏错误区时错误仍会被处理。主页面的 `url` 沿用既有下载限制和超时，内网文件直链仍需显式启用 `VIEWER_URL_ALLOW_PRIVATE_NETWORK=true`。没有 `url` 的隐藏界面不会自动生成文档。
+
+现有 `/preview.html?session=...&format=pptx` 链接也支持 `embed` 与显示开关，但仍需要同一 Cookie 所有者及有效会话；自动 URL 导入、心跳和过期重新打开由主页面负责。参数在页面加载时读取，修改链接后重新加载生效。
+
 ## URL 导入
 
 在顶部粘贴文件链接，点击“导入 URL”。Node 下载文件后，自动进入原有 PPTX、DOCX、PDF 预览/解析流程；PPT 可继续放映。支持带签名参数的链接、最多 5 次重定向、UTF-8 下载文件名，以及没有扩展名的下载地址（通过文件内容识别格式）。普通网页、需要浏览器登录的分享页不作为文档导入；此类文件请使用可直接下载的授权/签名链接。
@@ -98,6 +134,7 @@ npm run test -w @genoffice/viewer
 npm run test:browser -w @genoffice/viewer
 npm run test:reading -w @genoffice/viewer
 npm run test:url -w @genoffice/viewer
+npm run test:ui -w @genoffice/viewer
 npm run test:media -w @genoffice/viewer
 npm run test:standalone -w @genoffice/viewer
 ```

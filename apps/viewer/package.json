@@ -13,6 +13,7 @@
     "test:browser": "node scripts/browser-smoke.mjs",
     "test:reading": "node scripts/reading-smoke.mjs",
     "test:url": "node scripts/url-import-smoke.mjs",
+    "test:ui": "node scripts/ui-options-smoke.mjs",
     "test:standalone": "node scripts/standalone-smoke.mjs",
     "package": "node scripts/build.mjs && node scripts/package.mjs",
     "test:media": "node --import tsx scripts/media-smoke.mts"

@@ -353,7 +353,9 @@ export function Pdf({ session }: { session: string }) {
       </div>
       {error && <p role="alert">{error}</p>}
       {info?.info?.IsXFAPresent && (
-        <p role="status">该文档包含 XFA，部分动态表单可能无法完整展示。</p>
+        <p className="viewer-warning" role="status">
+          该文档包含 XFA，部分动态表单可能无法完整展示。
+        </p>
       )}
       {showInfo && (
         <div className="viewer-info">

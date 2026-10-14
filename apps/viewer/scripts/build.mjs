@@ -79,6 +79,8 @@ export async function buildServer({ watch = false, onRebuild } = {}) {
     await cp(resolve(pdf, dir), resolve(app, 'dist/web/pdfjs', dir), { recursive: true })
   await copyFile(resolve(app, 'runtime-package.json'), resolve(app, 'dist/package.json'))
   await copyFile(resolve(app, 'runtime-package-lock.json'), resolve(app, 'dist/package-lock.json'))
+  await copyFile(resolve(app, 'ecosystem.config.cjs'), resolve(app, 'dist/ecosystem.config.cjs'))
+  await copyFile(resolve(app, 'pm2-start.sh'), resolve(app, 'dist/pm2-start.sh'))
   if (watch) {
     await result.watch()
     return result

@@ -577,7 +577,7 @@ export async function createViewerServer(
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const server = await createViewerServer()
   const host = process.env.VIEWER_HOST || '0.0.0.0'
-  const port = Number(process.env.VIEWER_PORT || 3001)
+  const port = Number(process.env.VIEWER_PORT || 11000)
   server.listen(port, host, () =>
     console.log(`Viewer ready:\n${listenUrls(host, port).map((item) => `  ${item}`).join('\n')}`),
   )

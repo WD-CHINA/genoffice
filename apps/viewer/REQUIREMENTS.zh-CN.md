@@ -175,20 +175,20 @@ URL 导入使用可直接下载的文件地址。普通网页和需要浏览器�
 本地仓库在已有开发依赖的环境下执行：
 
 ```sh
-npm run dev -w @genoffice/viewer       # API 3001 + Web 5180
+npm run dev -w @genoffice/viewer       # API 11000 + Web 11001
 npm run build -w @genoffice/viewer     # 输出本 app 的 dist
 npm run package -w @genoffice/viewer   # 生成独立发布目录
 ```
 
 部署产物为整个 `apps/viewer/releases/genoffice-viewer/`：包含 `server/`、`web/`、`assets/`、运行时 `package.json`/锁文件及许可证。发布包不携带本机 `.viewer-data`、构建审计文件或开发源码。
 
-服务器要求 Node ≥22.12.0；在发布目录执行 `npm ci --omit=dev` 和 `npm start`。唯一外部 npm 运行依赖是锁定版本的 `playwright-core`；其余实现已打包。Node 同时提供页面、API 与受控资源，可由反向代理提供同一域名访问。默认监听 `0.0.0.0`，开发访问 `http://服务器局域网IP:5180`，生产访问 `http://服务器局域网IP:3001`；设置 `VIEWER_HOST=127.0.0.1` 可限制为仅本机访问。
+服务器要求 Node ≥22.12.0；在发布目录执行 `npm ci --omit=dev` 和 `npm start`。唯一外部 npm 运行依赖是锁定版本的 `playwright-core`；其余实现已打包。Node 同时提供页面、API 与受控资源，可由反向代理提供同一域名访问。默认监听 `0.0.0.0`，开发前端访问 `http://服务器局域网IP:11001`，后端与生产访问 `http://服务器局域网IP:11000`；设置 `VIEWER_HOST=127.0.0.1` 可限制为仅本机访问。
 
 普通 PPTX、PDF、DOCX 不需要服务端浏览器；DOCX HTML/MHT altChunk 需要安装 Chrome/Chromium。部署字体及客户端浏览器/字体环境需纳入视觉验收。源码构建当前仍使用 monorepo 安装环境，独立发布运行不依赖原仓库。
 
 | 配置                               | 当前默认与用途                                                        |
 | ---------------------------------- | --------------------------------------------------------------------- |
-| `VIEWER_HOST` / `VIEWER_PORT`      | `0.0.0.0` / `3001`；Node 默认允许局域网访问，开发前端使用同一监听地址 |
+| `VIEWER_HOST` / `VIEWER_PORT`      | `0.0.0.0` / `11000`；Node 默认允许局域网访问。开发前端为 11001 |
 | `VIEWER_DATA_DIR`                  | 运行目录下 `.viewer-data`；源文件目录，要求可写                       |
 | `VIEWER_SESSION_TTL_MS`            | `1800000`；会话和源文件共用的空闲 TTL                                 |
 | `VIEWER_MAX_UPLOAD_BYTES`          | `1073741824`（1 GiB）；本地上传和 URL 下载的大小限制                  |

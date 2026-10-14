@@ -59,7 +59,7 @@ apps/viewer/
     runtime-package.json       生成独立产物时改名为 package.json
 ```
 
-开发时由该 workspace 的 `dev` 一次启动 API 和 Vite，建议 API 端口 `3001`、Web 端口 `5180`，均可配置；Vite 代理 API/资源到 Node，客户端使用相对 URL。生产环境由 Node 在一个端口提供 Web 页面、API 和受控资源，不需要其他 app 进程或 Vite。
+开发时由该 workspace 的 `dev` 一次启动 API 和 Vite，API 端口 `11000`、Web 端口 `11001`；Vite 代理 API/资源到 Node，客户端使用相对 URL。生产环境由 Node 在 `11000` 提供 Web 页面、API 和受控资源，不需要其他 app 进程或 Vite。
 
 预览 iframe 加载的是本应用编译出的受信入口，不是用户上传 HTML。它隔离原组件的全局 CSS、模块级状态、FontFace 和 Worker；允许本应用 Worker/同源 API，按需要授予 fullscreen。父页面与 iframe 只交换受校验的生命周期/导航消息，浏览器全屏仍由用户点击触发。DOCX altChunk 的不受信 HTML只在独立转换 BrowserContext 中运行。
 

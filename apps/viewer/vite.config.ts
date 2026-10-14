@@ -6,7 +6,7 @@ import { aliases, app, root } from './scripts/paths.mjs'
 
 const host = process.env.VIEWER_HOST || '0.0.0.0'
 const proxyHost = ['0.0.0.0', '::'].includes(host) ? '127.0.0.1' : host
-const proxyTarget = `http://${proxyHost.includes(':') ? `[${proxyHost}]` : proxyHost}:${process.env.VIEWER_PORT || 3001}`
+const proxyTarget = `http://${proxyHost.includes(':') ? `[${proxyHost}]` : proxyHost}:${process.env.VIEWER_PORT || 11000}`
 
 export default defineConfig({
   root: resolve(app, 'src/web'),
@@ -34,7 +34,8 @@ export default defineConfig({
   resolve: { alias: aliases },
   server: {
     host,
-    port: 5180,
+    port: 11001,
+    strictPort: true,
     fs: { allow: [root] },
     proxy: {
       '^/api(?:/|$)': { target: proxyTarget, changeOrigin: false },

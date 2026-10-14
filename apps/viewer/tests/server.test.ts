@@ -62,7 +62,7 @@ test('requires an initialized owner and accepts only this origin', async () => {
   )
   assert.equal((await request('health', { headers: { Origin: url } })).status, 200)
   assert.equal(
-    (await request('health', { headers: { Origin: 'http://203.0.113.10:5180' } })).status,
+    (await request('health', { headers: { Origin: 'http://203.0.113.10:11001' } })).status,
     403,
   )
   const lan = Object.values(networkInterfaces())
@@ -70,7 +70,7 @@ test('requires an initialized owner and accepts only this origin', async () => {
     .find((entry) => entry?.family === 'IPv4' && !entry.internal)
   if (lan)
     assert.equal(
-      (await request('health', { headers: { Origin: `http://${lan.address}:5180` } })).status,
+      (await request('health', { headers: { Origin: `http://${lan.address}:11001` } })).status,
       200,
     )
   assert.equal((await request('view-sessions', { method: 'POST', body: '{' })).status, 400)

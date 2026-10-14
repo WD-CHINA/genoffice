@@ -14,7 +14,7 @@
 npm run dev -w @genoffice/viewer
 ```
 
-本机打开 http://127.0.0.1:5180，局域网设备打开 `http://服务器局域网IP:5180`。前端和 Node 默认监听 `0.0.0.0`，Node API 默认端口为 3001；服务端源码通过 esbuild watch 重建并重启，前端通过 Vite 更新。
+本机打开 http://127.0.0.1:11001，局域网设备打开 `http://服务器局域网IP:11001`。前端和 Node 默认监听 `0.0.0.0`，前端端口为 11001，Node API 默认端口为 11000；服务端源码通过 esbuild watch 重建并重启，前端通过 Vite 更新。
 
 生产方式运行：
 
@@ -23,7 +23,7 @@ npm run build -w @genoffice/viewer
 npm run start -w @genoffice/viewer
 ```
 
-本机打开 http://127.0.0.1:3001，局域网设备打开 `http://服务器局域网IP:3001`。服务启动时输出可访问的 IPv4 局域网地址。构建只写入本目录的 `dist`。
+本机打开 http://127.0.0.1:11000，局域网设备打开 `http://服务器局域网IP:11000`。生产包由 Node 同时提供页面和 API，默认端口 11000。服务启动时输出可访问的 IPv4 局域网地址。构建只写入本目录的 `dist`。
 
 如需仅本机访问，可用 `VIEWER_HOST=127.0.0.1 npm run dev -w @genoffice/viewer` 或在生产启动时设置 `VIEWER_HOST=127.0.0.1`。局域网使用默认同源 API，无需额外配置 Origin；开发代理保留访问方 Host。监听地址与 URL 导入内网地址权限是独立配置，局域网访问不自动启用内网 URL 下载。
 
@@ -61,7 +61,7 @@ PPT 普通预览提供元素/文字链接、幻灯片跳转、原生下拉页码
 通过链接自动打开并隐藏全部宿主控件，请用 `URLSearchParams` 编码文件 URL，确保文件签名中的 `&`、`+`、`?` 等不会被当成 Viewer 参数：
 
 ```js
-const link = new URL('http://127.0.0.1:3001/') // 替换为部署地址
+const link = new URL('http://127.0.0.1:11000/') // 替换为部署地址
 link.searchParams.set('url', 'https://files.example.com/document.pptx?token=...&signature=...')
 link.searchParams.set('embed', '1')
 console.log(link.href)
@@ -99,18 +99,19 @@ npm run package -w @genoffice/viewer
 生成 `apps/viewer/releases/genoffice-viewer/`。复制该目录到部署机器，在目录内执行：
 
 ```sh
-npm ci --omit=dev
-npm start
+sh pm2-start.sh
 ```
 
-发布目录包含编译后的服务/Worker、Web 页面、原字体、HarfBuzz WASM、PDF.js 资源、运行时 manifest/lockfile 和许可证。唯一外部 npm 运行依赖为固定版本的 `playwright-core`，其余实现内联；运行不依赖原仓库和其他 app，也不执行根目录的 Electron postinstall。
+这条命令会安装运行依赖，并用 PM2 以单进程 fork 模式启动、保存进程列表。开机自启只需再执行一次 `npx pm2 startup`。前台调试仍可使用 `npm ci --omit=dev && npm start`。不要把实例数调到 1 以上。
+
+发布目录包含编译后的服务/Worker、Web 页面、原字体、HarfBuzz WASM、PDF.js 资源、PM2 配置、运行时 manifest/lockfile 和许可证。外部 npm 运行依赖为固定版本的 `playwright-core` 和 `pm2`，其余实现内联；运行不依赖原仓库和其他 app，也不执行根目录的 Electron postinstall。
 
 Word 的 HTML/MHT altChunk 使用原 `html2docx` 转换器及 Playwright 驱动，部署机器需安装 Chrome/Chromium。普通 DOCX、PPTX、PDF 不要求服务端 Chrome。请使用与原程序一致的字体和浏览器环境进行视觉验收。
 
 | 配置                               | 默认/用途                                                     |
 | ---------------------------------- | ------------------------------------------------------------- |
 | `VIEWER_HOST`                      | `0.0.0.0`；开发前端与 Node 监听地址                           |
-| `VIEWER_PORT`                      | `3001`                                                        |
+| `VIEWER_PORT`                      | `11000`；生产 Node 端口。开发前端固定为 11001                 |
 | `VIEWER_DATA_DIR`                  | 构建目录下 `.viewer-data`                                     |
 | `VIEWER_MAX_UPLOAD_BYTES`          | 1 GiB                                                         |
 | `VIEWER_SESSION_TTL_MS`            | 30 分钟                                                       |
@@ -118,7 +119,7 @@ Word 的 HTML/MHT altChunk 使用原 `html2docx` 转换器及 Playwright 驱动�
 | `VIEWER_URL_ALLOW_PRIVATE_NETWORK` | false；可信部署中可设 true 导入内网地址                       |
 | `VIEWER_FONT_DIR`                  | PPT 服务端附加字体目录                                        |
 | `VIEWER_CHROME_PATH`               | Chrome/Chromium 可执行文件；默认探测系统安装                  |
-| `VIEWER_ALLOWED_ORIGINS`           | 额外允许的 Origin，以逗号分隔；默认包含本地 Vite 的 5180 端口 |
+| `VIEWER_ALLOWED_ORIGINS`           | 额外允许的 Origin，以逗号分隔；默认包含本地 Vite 的 11001 端口 |
 
 `GET /api/health` 返回格式列表、`altChunkAvailable` 和活动会话续期间隔。Host 自动续期，失效时显示重新打开入口。上传文件使用随机 ID，接口不接受客户端任意文件路径。会话按 Cookie 隔离；切换文件关闭旧会话和 iframe；会话超时清理文件及 Worker。无编辑、保存写回和 AI 接口。
 

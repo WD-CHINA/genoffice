@@ -5,21 +5,21 @@ import { networkInterfaces } from 'node:os'
 import { lanHosts, listenUrls, originAllowed } from '../src/server/lan.ts'
 
 test('keeps loopback origins on other ports blocked', () => {
-  assert.equal(originAllowed('http://127.0.0.1:9999', '127.0.0.1:3001'), false)
-  assert.equal(originAllowed('http://203.0.113.10:5180', '127.0.0.1:3001'), false)
-  assert.equal(originAllowed('http://127.0.0.1:3001', '127.0.0.1:3001'), true)
-  assert.equal(originAllowed('http://127.0.0.1:5180', '127.0.0.1:3001'), true)
+  assert.equal(originAllowed('http://127.0.0.1:9999', '127.0.0.1:11000'), false)
+  assert.equal(originAllowed('http://203.0.113.10:11001', '127.0.0.1:11000'), false)
+  assert.equal(originAllowed('http://127.0.0.1:11000', '127.0.0.1:11000'), true)
+  assert.equal(originAllowed('http://127.0.0.1:11001', '127.0.0.1:11000'), true)
 })
 
 test('allows this machine LAN address and advertises it', () => {
   const lan = Object.values(networkInterfaces())
     .flat()
     .find((entry) => entry?.family === 'IPv4' && !entry.internal)
-  assert.deepEqual(listenUrls('127.0.0.1', 3001), ['http://127.0.0.1:3001'])
+  assert.deepEqual(listenUrls('127.0.0.1', 11000), ['http://127.0.0.1:11000'])
   if (!lan) return
   assert.ok(lanHosts().includes(lan.address))
-  assert.equal(originAllowed(`http://${lan.address}:5180`, '127.0.0.1:3001'), true)
-  assert.ok(listenUrls('0.0.0.0', 3001).includes(`http://${lan.address}:3001`))
+  assert.equal(originAllowed(`http://${lan.address}:11001`, '127.0.0.1:11000'), true)
+  assert.ok(listenUrls('0.0.0.0', 11000).includes(`http://${lan.address}:11000`))
 })
 
 test('accepts a request sent to the LAN address', async () => {

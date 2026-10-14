@@ -5,6 +5,12 @@
   "type": "module",
   "license": "Apache-2.0",
   "engines": { "node": ">=22.12.0" },
-  "scripts": { "start": "node server/index.mjs" },
-  "dependencies": { "playwright-core": "1.61.1" }
+  "scripts": {
+    "start": "node server/index.mjs",
+    "pm2": "pm2 startOrReload ecosystem.config.cjs --update-env && pm2 save"
+  },
+  "dependencies": {
+    "playwright-core": "1.61.1",
+    "pm2": "7.0.4"
+  }
 }

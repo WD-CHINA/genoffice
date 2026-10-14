@@ -13,7 +13,7 @@ export function originAllowed(origin: string, hostHeader: string | undefined): b
     [
       hostHeader ? `http://${hostHeader}` : '',
       hostHeader ? `https://${hostHeader}` : '',
-      ...(process.env.VIEWER_ALLOWED_ORIGINS || 'http://127.0.0.1:5180,http://localhost:5180')
+      ...(process.env.VIEWER_ALLOWED_ORIGINS || 'http://127.0.0.1:11001,http://localhost:11001')
         .split(',')
         .map((item) => item.trim()),
     ].filter(Boolean),

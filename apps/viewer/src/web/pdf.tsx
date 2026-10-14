@@ -47,7 +47,7 @@ const labels: Record<string, string> = {
   noteOpen: '查看批注',
   noteThread: '批注',
 }
-export function Pdf({ session }: { session: string }) {
+export function Pdf({ src }: { src: string }) {
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null),
     [catalog, setCatalog] = useState<any>(null),
     [geoms, setGeoms] = useState<any[]>([]),
@@ -80,7 +80,7 @@ export function Pdf({ session }: { session: string }) {
   const renderState = useCallback(noop, [])
   useEffect(() => {
     let stopped = false
-    const task = getDocument({ url: `/api/view-sessions/${session}/content`, ...DOC_OPTS })
+    const task = getDocument({ url: src, ...DOC_OPTS })
     task.onPassword = (update: (password: string) => void, reason: number) => {
       const value = window.prompt(reason === 2 ? 'PDF 密码不正确，请重试' : '请输入 PDF 打开密码')
       if (value !== null) update(value)
@@ -127,7 +127,7 @@ export function Pdf({ session }: { session: string }) {
       stopped = true
       void task.destroy()
     }
-  }, [session])
+  }, [src])
   useEffect(() => {
     if (!doc) return
     let cancelled = false

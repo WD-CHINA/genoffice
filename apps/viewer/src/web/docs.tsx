@@ -3,6 +3,8 @@ import { ToolbarIcon } from './toolbar-icon'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { parseLazyMediaUrl } from '@genoffice/docx-engine/lazy-media'
 import { readPageColor, setAltChunkHtmlConverter } from '@genoffice/docx-engine'
+import JSZip from 'jszip'
+import { decryptDocx, DocxDecryptError, isEncryptedDocx } from '@genoffice/viewer-services/docs/decrypt'
 import { parseDocxOffThread } from '@genoffice/viewer-renderers/docs/renderer/parse-off-thread'
 import {
   editorExtensions,
@@ -50,7 +52,6 @@ import {
   hfLayoutResolved,
   hfWithPhantom,
 } from '@genoffice/viewer-renderers/docs/renderer/hf-phantom'
-import { api, post, ApiError } from './api'
 import {
   findDocMatches,
   paintDocMatches,
@@ -65,7 +66,7 @@ import {
   cancelPhasedContent,
 } from '@genoffice/viewer-renderers/docs/renderer/phased-content'
 
-export function Docs({ session }: { session: string }) {
+export function Docs({ src }: { src: string }) {
   const [parsed, setParsed] = useState<any>(null),
     [error, setError] = useState(''),
     [ready, setReady] = useState(false)
@@ -82,7 +83,7 @@ export function Docs({ session }: { session: string }) {
     [fit, setFit] = useState<'width' | 'page' | null>(null)
   const container = useRef<HTMLDivElement>(null)
   const conversionError = useRef<string | null>(null)
-  const opening = useRef<{ session: string; promise: Promise<any> } | null>(null)
+  const opening = useRef<{ src: string; promise: Promise<any> } | null>(null)
   const editor = useEditor({
     extensions: editorExtensions,
     editable: false,
@@ -91,47 +92,78 @@ export function Docs({ session }: { session: string }) {
   useEffect(() => {
     if (!editor) return
     let cancelled = false
-    setAltChunkHtmlConverter(async (html) => {
-      try {
-        const response = await fetch(`/api/view-sessions/${session}/altchunks`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ html }),
-        })
-        if (!response.ok) {
-          const data = await response.json()
-          throw new Error(data.error)
-        }
-        return new Uint8Array(await response.arrayBuffer())
-      } catch (error) {
-        conversionError.current = error instanceof Error ? error.message : String(error)
-        throw error
-      }
+    setAltChunkHtmlConverter(async () => {
+      const message = '纯前端无法转换内嵌 HTML/MHT，这类内容需要服务端 Chrome。'
+      conversionError.current = message
+      throw new Error(message)
     })
     void (async () => {
-      if (!opening.current || opening.current.session !== session) {
+      if (!opening.current || opening.current.src !== src) {
         conversionError.current = null
         opening.current = {
-          session,
+          src,
           promise: (async () => {
-            const meta = await api(`view-sessions/${session}`)
-            if (meta.locked) {
+            const response = await fetch(src)
+            if (!response.ok) throw new Error('无法读取文档')
+            let bytes = new Uint8Array(await response.arrayBuffer())
+            if (isEncryptedDocx(bytes)) {
               let unlocked = false
               while (!unlocked) {
                 const password = window.prompt('请输入 Word 打开密码')
                 if (password === null) throw new Error('已取消密码输入')
                 try {
-                  await post(`view-sessions/${session}/unlock`, { password })
+                  bytes = new Uint8Array(await decryptDocx(bytes, password))
                   unlocked = true
                 } catch (error) {
-                  if (!(error instanceof ApiError) || error.status !== 422) throw error
+                  if (!(error instanceof DocxDecryptError) || error.reason !== 'wrong-password') throw error
                   window.alert('密码不正确，请重试。')
                 }
               }
             }
-            const response = await fetch(`/api/view-sessions/${session}/content`)
-            if (!response.ok) throw new Error('无法读取文档')
-            return parseDocxOffThread(new Uint8Array(await response.arrayBuffer()), { owned: true })
+            const zip = await JSZip.loadAsync(bytes.slice())
+            const mediaUrls = new Map<string, string>()
+            const doc = await parseDocxOffThread(bytes, { owned: true })
+            const rewriteMedia = async (value: any, seen = new Set<object>()): Promise<any> => {
+              if (typeof value === 'string') {
+                const ref = parseLazyMediaUrl(value)
+                if (!ref) return value
+                const key = ref.hash + '/' + ref.partPath
+                const cached = mediaUrls.get(key)
+                if (cached) return cached
+                const file = zip.file(ref.partPath)
+                if (!file) return value
+                const ext = ref.partPath.split('.').pop()?.toLowerCase() || ''
+                const mime: Record<string, string> = {
+                  png: 'image/png',
+                  jpg: 'image/jpeg',
+                  jpeg: 'image/jpeg',
+                  gif: 'image/gif',
+                  bmp: 'image/bmp',
+                  webp: 'image/webp',
+                  svg: 'image/svg+xml',
+                }
+                const mediaBytes = await file.async('uint8array')
+                const url = URL.createObjectURL(
+                  new Blob([mediaBytes.buffer.slice(mediaBytes.byteOffset, mediaBytes.byteOffset + mediaBytes.byteLength) as ArrayBuffer], {
+                    type: mime[ext] || '',
+                  }),
+                )
+                mediaUrls.set(key, url)
+                return url
+              }
+              if (!value || typeof value !== 'object' || ArrayBuffer.isView(value) || seen.has(value))
+                return value
+              seen.add(value)
+              if (value instanceof Map) {
+                for (const [key, item] of value) value.set(key, await rewriteMedia(item, seen))
+              } else
+                for (const key of Object.keys(value)) {
+                  if (key !== 'internal') value[key] = await rewriteMedia(value[key], seen)
+                }
+              return value
+            }
+            await rewriteMedia(doc)
+            return doc
           })(),
         }
       }
@@ -139,25 +171,6 @@ export function Docs({ session }: { session: string }) {
       if (conversionError.current) throw new Error('嵌入 HTML 转换失败：' + conversionError.current)
       if (cancelled) return
       setLazyMediaHashes(doc.extras.lazyMediaHashes)
-      const rewriteMedia = (value: any, seen = new Set<object>()): any => {
-        if (typeof value === 'string') {
-          const ref = parseLazyMediaUrl(value)
-          return ref
-            ? `/api/view-sessions/${session}/doc-media/${ref.hash}?part=${encodeURIComponent(ref.partPath)}`
-            : value
-        }
-        if (!value || typeof value !== 'object' || ArrayBuffer.isView(value) || seen.has(value))
-          return value
-        seen.add(value)
-        if (value instanceof Map) {
-          for (const [key, item] of value) value.set(key, rewriteMedia(item, seen))
-        } else
-          for (const key of Object.keys(value)) {
-            if (key !== 'internal') value[key] = rewriteMedia(value[key], seen)
-          }
-        return value
-      }
-      rewriteMedia(doc)
       await adoptEmbeddedFonts(doc.embeddedFonts)
       setDocFontTable(doc.fontTable)
       editor.storage.listNumbering.styles = doc.styles
@@ -198,7 +211,7 @@ export function Docs({ session }: { session: string }) {
       cancelPhasedContent()
       setAltChunkHtmlConverter(null)
     }
-  }, [editor, session])
+  }, [editor, src])
   useEffect(() => {
     if (!parsed) return
     let stopped = false,

@@ -390,7 +390,7 @@ export async function createViewerServer(
                 throw new HttpError(410, 'Preview session closed')
               }
               session.plain?.fill(0)
-              session.plain = plain
+              session.plain = Buffer.from(plain)
             } catch (error) {
               if (error instanceof DocxDecryptError && error.reason === 'wrong-password')
                 throw new HttpError(422, 'Password incorrect')

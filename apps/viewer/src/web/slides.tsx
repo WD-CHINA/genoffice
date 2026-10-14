@@ -7,8 +7,8 @@ import { LocaleProvider } from '@genoffice/viewer-renderers/slides/renderer/i18n
 import type { SlidesDataSource } from '@genoffice/viewer-renderers/slides/renderer/data-source'
 import '@genoffice/viewer-renderers/slides/renderer/styles.css'
 import { hitLink } from '@genoffice/viewer-renderers/slides/renderer/preview-links'
-import { api, post } from './api'
 import { ToolbarIcon } from './toolbar-icon'
+import { createPptxSession, type PptxDeck } from './pptx-session'
 
 function imageUrls(data: unknown, urls = new Set<string>()) {
   if (typeof data === 'string' && data.startsWith('data:image/')) urls.add(data)
@@ -17,7 +17,7 @@ function imageUrls(data: unknown, urls = new Set<string>()) {
     for (const value of Object.values(data)) imageUrls(value, urls)
   return urls
 }
-export function Slides({ session }: { session: string }) {
+export function Slides({ src }: { src: string }) {
   const [deck, setDeck] = useState<any>(null),
     [images, setImages] = useState(new Map<string, HTMLImageElement>()),
     [page, setPage] = useState(0),
@@ -29,7 +29,8 @@ export function Slides({ session }: { session: string }) {
     [retry, setRetry] = useState(0)
   const pane = useRef<HTMLDivElement>(null),
     visited = useRef<number[]>([]),
-    faces = useRef(new Map<string, FontFace>())
+    faces = useRef(new Map<string, FontFace>()),
+    pptx = useRef<ReturnType<typeof createPptxSession> | null>(null)
   useEffect(() => {
     if (!deck || !pane.current) return
     const element = pane.current
@@ -59,29 +60,40 @@ export function Slides({ session }: { session: string }) {
     const loader = createImageLoader((entries) => {
       if (!cancelled) setImages((old) => new Map([...old, ...entries]))
     })
+    const session = createPptxSession()
+    pptx.current = session
     void (async () => {
-      let data = await api(`view-sessions/${session}/slides`)
+      const file = await fetch(src)
+      if (!file.ok) throw new Error('无法读取演示文稿')
+      let data: PptxDeck = await session.open(await file.arrayBuffer())
       ;(window as any).__genofficeDocFontsSynced = false
       const loaded = new Set<string>()
-      const fontKey = (font: any) => `${font.family}:${!!font.bold}:${!!font.italic}`
+      const fontKey = (font: { family: string; bold: boolean; italic: boolean }) =>
+        `${font.family}:${!!font.bold}:${!!font.italic}`
       await Promise.all(
-        data.fonts.map(async (font: any) => {
+        data.fonts.map(async (font) => {
           for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
             try {
               let face = faces.current.get(font.id)
               if (!face) {
-                const response = await fetch(
-                  `/api/view-sessions/${session}/fonts/${encodeURIComponent(font.id)}`,
-                  { signal: AbortSignal.timeout(15_000) },
-                )
-                if (!response.ok) throw new Error('字体下载失败')
-                face = new FontFace(font.family, await response.arrayBuffer(), {
+                const source = font.url
+                  ? `url(${font.url})`
+                  : await session.font(font.id)
+                if (!source) throw new Error('字体下载失败')
+                face = new FontFace(font.family, source, {
                   weight: font.bold ? '700' : '400',
                   style: font.italic ? 'italic' : 'normal',
                 })
                 await face.load()
                 if (cancelled) return
                 document.fonts.add(face)
+                for (const name of font.also || [])
+                  document.fonts.add(
+                    new FontFace(name, source, {
+                      weight: font.bold ? '700' : '400',
+                      style: font.italic ? 'italic' : 'normal',
+                    }),
+                  )
                 faces.current.set(font.id, face)
               }
               loaded.add(fontKey(font))
@@ -95,7 +107,7 @@ export function Slides({ session }: { session: string }) {
       )
       await document.fonts.ready
       const ctx = document.createElement('canvas').getContext('2d')!
-      const privateFamilies = new Set(data.fonts.map((f: any) => f.family))
+      const privateFamilies = new Set(data.fonts.map((font) => font.family))
       const privateVariants = new Set(data.fonts.map(fontKey))
       for (let round = 0; round < 6 && !cancelled; round++) {
         const widths: Record<string, number> = {}
@@ -104,7 +116,7 @@ export function Slides({ session }: { session: string }) {
             privateFamilies.has(item.family) &&
             (privateVariants.has(fontKey(item))
               ? !loaded.has(fontKey(item))
-              : !data.fonts.some((f: any) => f.family === item.family && loaded.has(fontKey(f))))
+              : !data.fonts.some((font) => font.family === item.family && loaded.has(fontKey(font))))
           )
             continue
           ctx.font =
@@ -115,18 +127,17 @@ export function Slides({ session }: { session: string }) {
             "\", 'PingFang SC', 'Microsoft YaHei', 'Yu Gothic', 'Malgun Gothic', sans-serif"
           widths[item.key] = ctx.measureText(item.text).width
         }
-        if (Object.keys(widths).length)
-          data = await post(`view-sessions/${session}/text-widths`, {
-            revision: data.revision,
-            batchId: data.batchId,
-            widths,
-          })
+        if (Object.keys(widths).length) data = await session.measure(widths)
         else break
         if (!data.measurements.length) break
       }
       if (cancelled) return
-      if (data.measurements.length)
-        setError('字体加载或重新测量尚未完成，当前使用原项目的字体回退，可重试。')
+      if (data.measurements.length || data.fallbacks.length)
+        setError(
+          data.fallbacks.length
+            ? `以下字体未包含在字体包中，已使用度量替代：${data.fallbacks.join('、')}`
+            : '字体加载或重新测量尚未完成，当前使用原项目的字体回退，可重试。',
+        )
       ;(window as any).__genofficeDocFontsSynced = true
       document.fonts.dispatchEvent(new Event('loadingdone'))
       loader.load(imageUrls(data.slides))
@@ -136,9 +147,10 @@ export function Slides({ session }: { session: string }) {
     })
     return () => {
       cancelled = true
+      session.close()
       loader.dispose()
     }
-  }, [session, retry])
+  }, [src, retry])
   if (!deck)
     return (
       <p className="viewer-status" role={error ? 'alert' : undefined}>
@@ -152,12 +164,9 @@ export function Slides({ session }: { session: string }) {
     getSlideLinks: async (i) => deck.playback[i].links,
     getRunLinks: async (i) => deck.playback[i].runLinks,
     getMediaData: async (i, id) => {
-      const response = await fetch(
-        `/api/view-sessions/${session}/media/${i}/${encodeURIComponent(id)}?metadata`,
-      )
-      if (response.status === 404) return null
-      if (!response.ok) throw new Error('无法加载媒体资源，请重新打开文档后重试。')
-      return response.json()
+      const media = await pptx.current?.media(i, id)
+      if (!media) return null
+      return { kind: media.kind === 'audio' ? 'audio' : 'video', dataUrl: media.dataUrl }
     },
   }
   const navigate = (index: number) => {
@@ -304,7 +313,7 @@ export function Slides({ session }: { session: string }) {
               <SlideThumb slide={deck.slides[page]} images={images} width={width} />
               {!show && (
                 <PreviewMediaLayer
-                  key={`${session}-${page}`}
+                  key={`${src}-${page}`}
                   slide={deck.slides[page]}
                   slideIndex={page}
                   width={width}

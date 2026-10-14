@@ -31,7 +31,14 @@ export default defineConfig({
       },
     },
   ],
-  resolve: { alias: aliases },
+  resolve: {
+    alias: {
+      ...aliases,
+      crypto: resolve(app, 'src/web/shims/crypto.ts'),
+      'node:crypto': resolve(app, 'src/web/shims/crypto.ts'),
+      'node:zlib': resolve(app, 'src/web/shims/zlib.ts'),
+    },
+  },
   server: {
     host,
     port: 11001,

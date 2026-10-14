@@ -7,7 +7,7 @@ const Slides = lazy(() => import('./slides').then((m) => ({ default: m.Slides })
 const Pdf = lazy(() => import('./pdf').then((m) => ({ default: m.Pdf })))
 const Docs = lazy(() => import('./docs').then((m) => ({ default: m.Docs })))
 const params = new URLSearchParams(location.search),
-  session = params.get('session') || '',
+  src = params.get('src') || '',
   format = params.get('format')
 applyViewerUi(readViewerUi(params))
 class Boundary extends React.Component<{ children: React.ReactNode }, { error: string }> {
@@ -28,12 +28,16 @@ class Boundary extends React.Component<{ children: React.ReactNode }, { error: s
 createRoot(document.getElementById('root')!).render(
   <Boundary>
     <Suspense fallback={<p className="viewer-status">正在加载预览…</p>}>
-      {format === 'pptx' ? (
-        <Slides session={session} />
+      {!src ? (
+        <p className="viewer-status" role="alert">
+          没有可预览的文件
+        </p>
+      ) : format === 'pptx' ? (
+        <Slides src={src} />
       ) : format === 'pdf' ? (
-        <Pdf session={session} />
+        <Pdf src={src} />
       ) : (
-        <Docs session={session} />
+        <Docs src={src} />
       )}
     </Suspense>
   </Boundary>,

@@ -1,104 +1,95 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { api, post } from './api'
+import JSZip from 'jszip'
 import { ToolbarIcon } from './toolbar-icon'
 import { applyViewerUi, readViewerUi, viewerUiParams } from './ui-options'
 import '@genoffice/ui/tokens.css'
 import './viewer.css'
 
+type Format = 'pptx' | 'pdf' | 'docx'
 type Source = { kind: 'file'; file: File } | { kind: 'url'; url: string }
+type Opened = { id: string; name: string; format: Format; src: string }
 const linkParams = new URLSearchParams(location.search)
 const ui = readViewerUi(linkParams)
 const initialUrl = linkParams.get('url')?.trim() || ''
 applyViewerUi(ui)
 
+function extensionOf(name: string): Format | null {
+  const ext = name.split('.').pop()?.toLowerCase()
+  return ext === 'pptx' || ext === 'pdf' || ext === 'docx' ? ext : null
+}
+
+async function formatOf(name: string, bytes: Uint8Array): Promise<Format> {
+  const named = extensionOf(name)
+  if (bytes.length >= 5 && new TextDecoder().decode(bytes.subarray(0, 5)) === '%PDF-') return 'pdf'
+  if (named === 'pdf') return 'pdf'
+  if (bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b) {
+    const zip = await JSZip.loadAsync(bytes)
+    const types = await zip.file('[Content_Types].xml')?.async('string')
+    if (types?.includes('presentationml.presentation') || named === 'pptx') return 'pptx'
+    if (types?.includes('wordprocessingml.document') || named === 'docx') return 'docx'
+  }
+  if (bytes.length >= 8 && bytes[0] === 0xd0 && bytes[1] === 0xcf && (named === 'docx' || named === 'pptx'))
+    return named
+  if (named) return named
+  throw new Error('只能打开 .pptx、.pdf 或 .docx 文件')
+}
+
+function nameFrom(url: string, header: string | null) {
+  const match = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(header || '')
+  const named = decodeURIComponent(match?.[1] || match?.[2] || '')
+  if (named) return named
+  try {
+    const path = new URL(url).pathname.split('/').pop() || ''
+    return decodeURIComponent(path) || 'document'
+  } catch {
+    return 'document'
+  }
+}
+
 function Host() {
-  const [session, setSession] = useState<any>(null),
+  const [opened, setOpened] = useState<Opened | null>(null),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
-    [ready, setReady] = useState(false)
-  const [heartbeatMs, setHeartbeatMs] = useState(60_000)
-  const [connectionError, setConnectionError] = useState('')
-  const [expired, setExpired] = useState(false)
-  const [importUrl, setImportUrl] = useState(initialUrl)
+    [importUrl, setImportUrl] = useState(initialUrl)
   const lastSource = useRef<Source | null>(null)
   const opening = useRef(false)
-  const current = useRef<string | null>(null)
+  const currentUrl = useRef<string | null>(null)
   useEffect(() => {
-    void api('health')
-      .then((data) => {
-        setHeartbeatMs(data.heartbeatMs || 60_000)
-        setReady(true)
-      })
-      .catch((e) => setError(e.message))
+    if (initialUrl) void open({ kind: 'url', url: initialUrl })
     return () => {
-      if (current.current) void api(`view-sessions/${current.current}`, { method: 'DELETE' })
+      if (currentUrl.current) URL.revokeObjectURL(currentUrl.current)
     }
   }, [])
-  useEffect(() => {
-    if (ready && initialUrl) void open({ kind: 'url', url: initialUrl })
-  }, [ready])
-  useEffect(() => {
-    if (!session) return
-    let cancelled = false,
-      running = false
-    const renew = async () => {
-      if (running || cancelled) return
-      running = true
-      try {
-        const response = await fetch(`/api/view-sessions/${session.id}`)
-        if (cancelled) return
-        if (response.status === 404 || response.status === 401) {
-          setExpired(true)
-          setConnectionError('预览会话已失效，请重新打开文件。')
-          cancelled = true
-        } else if (!response.ok) throw new Error('Connection unavailable')
-        else setConnectionError('')
-      } catch {
-        if (!cancelled) setConnectionError('连接暂时中断，正在尝试恢复…')
-      } finally {
-        running = false
-      }
-    }
-    const timer = setInterval(() => void renew(), heartbeatMs)
-    const resume = () => {
-      if (document.visibilityState === 'visible') void renew()
-    }
-    document.addEventListener('visibilitychange', resume)
-    return () => {
-      cancelled = true
-      clearInterval(timer)
-      document.removeEventListener('visibilitychange', resume)
-    }
-  }, [session, heartbeatMs])
   async function open(source?: Source) {
     if (!source || opening.current) return
     opening.current = true
     lastSource.current = source
-    setExpired(false)
-    setConnectionError('')
     setBusy(true)
     setError('')
-    setSession(null)
+    setOpened(null)
     try {
-      if (current.current) {
-        await api(`view-sessions/${current.current}`, { method: 'DELETE' }).catch(() => {})
-        current.current = null
-      }
-      const record =
-        source.kind === 'url'
-          ? await post('files/import-url', { url: source.url })
-          : await api('files', {
-              method: 'POST',
-              headers: {
-                'X-File-Name': encodeURIComponent(source.file.name),
-                'Content-Type': 'application/octet-stream',
-              },
-              body: source.file,
-            })
-      const next = await post('view-sessions', { fileId: record.id, width: 960 })
-      current.current = next.id
-      setSession(next)
+      const loaded =
+        source.kind === 'file'
+          ? { name: source.file.name, bytes: new Uint8Array(await source.file.arrayBuffer()) }
+          : await (async () => {
+              let response: Response
+              try {
+                response = await fetch(source.url)
+              } catch {
+                throw new Error('无法下载该链接。文件服务器需要允许当前页面跨域访问（CORS）。')
+              }
+              if (!response.ok) throw new Error('下载失败（HTTP ' + response.status + '）')
+              const bytes = new Uint8Array(await response.arrayBuffer())
+              if (!bytes.length) throw new Error('文件是空的')
+              return { name: nameFrom(source.url, response.headers.get('content-disposition')), bytes }
+            })()
+      if (loaded.bytes.length > 1024 * 1024 * 1024) throw new Error('文件超过 1 GiB')
+      const format = await formatOf(loaded.name, loaded.bytes)
+      if (currentUrl.current) URL.revokeObjectURL(currentUrl.current)
+      const src = URL.createObjectURL(new Blob([loaded.bytes]))
+      currentUrl.current = src
+      setOpened({ id: src, name: loaded.name, format, src })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -115,8 +106,8 @@ function Host() {
           </span>
           Office Viewer
         </strong>
-        <span className="viewer-file-name" title={session?.name || undefined}>
-          {session?.name || 'PPT · PDF · Word'}
+        <span className="viewer-file-name" title={opened?.name || undefined}>
+          {opened?.name || 'PPT · PDF · Word'}
         </span>
         <label className="viewer-button" hidden={!ui.showImport}>
           <ToolbarIcon name="folder" />
@@ -125,7 +116,7 @@ function Host() {
             aria-label="打开文件"
             type="file"
             accept=".pptx,.pdf,.docx"
-            disabled={!ready || busy}
+            disabled={busy}
             onChange={(e) => {
               const file = e.target.files?.[0]
               if (file) void open({ kind: 'file', file })
@@ -138,7 +129,7 @@ function Host() {
           hidden={!ui.showUrlImport}
           onSubmit={(event) => {
             event.preventDefault()
-            if (ready && importUrl.trim()) void open({ kind: 'url', url: importUrl.trim() })
+            if (importUrl.trim()) void open({ kind: 'url', url: importUrl.trim() })
           }}
         >
           <input
@@ -147,10 +138,10 @@ function Host() {
             required
             placeholder="粘贴 PPT、Word 或 PDF 文件链接"
             value={importUrl}
-            disabled={!ready || busy}
+            disabled={busy}
             onChange={(event) => setImportUrl(event.target.value)}
           />
-          <button type="submit" disabled={!ready || busy || !importUrl.trim()}>
+          <button type="submit" disabled={busy || !importUrl.trim()}>
             <ToolbarIcon name="link" />
             导入 URL
           </button>
@@ -159,12 +150,7 @@ function Host() {
       {error && (
         <p role="alert" className="viewer-error">
           {error}
-        </p>
-      )}
-      {connectionError && (
-        <p role="alert" className="viewer-error">
-          {connectionError}
-          {expired && (
+          {lastSource.current && (
             <button onClick={() => void open(lastSource.current || undefined)}>重新打开</button>
           )}
         </p>
@@ -173,19 +159,19 @@ function Host() {
         <div className="viewer-empty">
           {lastSource.current?.kind === 'url' ? '正在下载并打开…' : '正在打开…'}
         </div>
-      ) : session && !expired ? (
+      ) : opened ? (
         <iframe
-          key={session.id}
-          title={session.name}
-          src={`/preview.html?${new URLSearchParams({ session: session.id, format: session.format, ...viewerUiParams(ui) })}`}
+          key={opened.id}
+          title={opened.name}
+          src={`/preview.html?${new URLSearchParams({ src: opened.src, format: opened.format, name: opened.name, ...viewerUiParams(ui) })}`}
           allow="fullscreen"
         />
       ) : (
         <div className="viewer-empty">
           <h1>打开文档，开始预览</h1>
-          <p>支持 .pptx、.pdf、.docx，保留项目原有渲染方式。</p>
+          <p>支持 .pptx、.pdf、.docx。解析和绘制都在这台浏览器里完成。</p>
           <p>支持预览和 PPT 放映。</p>
-          <p>可选择本地文件，或粘贴可直接下载的 HTTP/HTTPS 文件链接。</p>
+          <p>可选择本地文件，或粘贴允许跨域下载的 HTTP/HTTPS 文件链接。</p>
         </div>
       )}
     </main>

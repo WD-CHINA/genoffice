@@ -102,9 +102,9 @@ npm run package -w @genoffice/viewer
 sh pm2-start.sh
 ```
 
-这条命令会安装运行依赖，并用 PM2 以单进程 fork 模式启动、保存进程列表。开机自启只需再执行一次 `npx pm2 startup`。前台调试仍可使用 `npm ci --omit=dev && npm start`。不要把实例数调到 1 以上。
+这条命令会在缺少时用国内镜像安装 nvm 和 Node 22，再安装运行依赖，并用 PM2 以单进程 fork 模式启动、保存进程列表。开机自启只需再执行一次 `pm2 startup`。前台调试仍可使用 `npm ci --omit=dev && npm start`。不要把实例数调到 1 以上。
 
-发布目录包含编译后的服务/Worker、Web 页面、原字体、HarfBuzz WASM、PDF.js 资源、PM2 配置、运行时 manifest/lockfile 和许可证。外部 npm 运行依赖为固定版本的 `playwright-core` 和 `pm2`，其余实现内联；运行不依赖原仓库和其他 app，也不执行根目录的 Electron postinstall。
+发布目录包含编译后的服务/Worker、Web 页面、原字体、HarfBuzz WASM、PDF.js 资源、PM2 配置、运行时 manifest/lockfile 和许可证。包内 npm 运行依赖只有固定版本的 `playwright-core`。PM2 使用系统已安装的命令；没有时脚本会执行 `npm i -g pm2`。其余实现内联；运行不依赖原仓库和其他 app，也不执行根目录的 Electron postinstall。
 
 Word 的 HTML/MHT altChunk 使用原 `html2docx` 转换器及 Playwright 驱动，部署机器需安装 Chrome/Chromium。普通 DOCX、PPTX、PDF 不要求服务端 Chrome。请使用与原程序一致的字体和浏览器环境进行视觉验收。
 

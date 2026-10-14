@@ -574,7 +574,16 @@ export async function createViewerServer(
   })
   return server
 }
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+const entryPath = fileURLToPath(import.meta.url)
+const launchedAsServer = [process.argv[1], process.env.pm_exec_path].some((value) => {
+  if (!value) return false
+  try {
+    return resolve(value) === entryPath
+  } catch {
+    return false
+  }
+})
+if (launchedAsServer) {
   const server = await createViewerServer()
   const host = process.env.VIEWER_HOST || '0.0.0.0'
   const port = Number(process.env.VIEWER_PORT || 11000)

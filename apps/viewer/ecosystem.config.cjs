@@ -24,7 +24,9 @@ module.exports = {
   apps: [
     {
       name: 'genoffice-viewer',
+      cwd: __dirname,
       script: 'server/index.mjs',
+      interpreter: 'node',
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,

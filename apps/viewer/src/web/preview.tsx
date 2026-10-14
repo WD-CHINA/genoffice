@@ -16,12 +16,18 @@ class Boundary extends React.Component<{ children: React.ReactNode }, { error: s
     return { error: e.message }
   }
   render() {
-    return this.state.error ? <p role="alert">{this.state.error}</p> : this.props.children
+    return this.state.error ? (
+      <p className="viewer-status" role="alert">
+        {this.state.error}
+      </p>
+    ) : (
+      this.props.children
+    )
   }
 }
 createRoot(document.getElementById('root')!).render(
   <Boundary>
-    <Suspense fallback={<p>正在加载预览…</p>}>
+    <Suspense fallback={<p className="viewer-status">正在加载预览…</p>}>
       {format === 'pptx' ? (
         <Slides session={session} />
       ) : format === 'pdf' ? (

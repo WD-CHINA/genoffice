@@ -139,7 +139,12 @@ export function Slides({ session }: { session: string }) {
       loader.dispose()
     }
   }, [session, retry])
-  if (!deck) return <p role={error ? 'alert' : undefined}>{error || '正在加载字体和幻灯片…'}</p>
+  if (!deck)
+    return (
+      <p className="viewer-status" role={error ? 'alert' : undefined}>
+        {error || '正在加载字体和幻灯片…'}
+      </p>
+    )
   const source: SlidesDataSource = {
     getTransition: async (i) => deck.playback[i].transition,
     getAnimations: async (i) => deck.playback[i].animations,

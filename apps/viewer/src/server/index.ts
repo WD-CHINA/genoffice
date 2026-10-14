@@ -91,8 +91,13 @@ class Rpc {
   }
 }
 function json(res: ServerResponse, status: number, value: unknown) {
-  res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
-  res.end(JSON.stringify(value))
+  const payload = Buffer.from(JSON.stringify(value))
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'Cache-Control': 'no-store',
+    'Content-Length': payload.length,
+  })
+  res.end(payload)
 }
 async function inputJSON(req: IncomingMessage, cap: number) {
   try {

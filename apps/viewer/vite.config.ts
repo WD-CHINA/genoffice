@@ -56,12 +56,19 @@ export default defineConfig({
     },
   ],
   resolve: {
-    alias: {
-      ...aliases,
-      crypto: resolve(app, 'src/web/shims/crypto.ts'),
-      'node:crypto': resolve(app, 'src/web/shims/crypto.ts'),
-      'node:zlib': resolve(app, 'src/web/shims/zlib.ts'),
-    },
+    // Viewer pins React under apps/viewer, while react-konva resolves the root
+    // copy. Two Reacts make the hook dispatcher null: "reading 'useRef'".
+    dedupe: ['react', 'react-dom'],
+    alias: [
+      {
+        find: /^react(-dom)?(\/.*)?$/,
+        replacement: resolve(app, 'node_modules/react$1$2'),
+      },
+      { find: 'crypto', replacement: resolve(app, 'src/web/shims/crypto.ts') },
+      { find: 'node:crypto', replacement: resolve(app, 'src/web/shims/crypto.ts') },
+      { find: 'node:zlib', replacement: resolve(app, 'src/web/shims/zlib.ts') },
+      ...Object.entries(aliases).map(([find, replacement]) => ({ find, replacement })),
+    ],
   },
   server: {
     host,

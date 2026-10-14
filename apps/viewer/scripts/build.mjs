@@ -73,21 +73,21 @@ export async function buildServer({ watch = false, onRebuild } = {}) {
       js: "import { createRequire as __createRequire } from 'node:module';const require=__createRequire(import.meta.url);",
     },
   })
-  const pdf = resolve(root, 'node_modules/pdfjs-dist')
-  await mkdir(resolve(app, 'dist/web/pdfjs'), { recursive: true })
-  for (const dir of ['cmaps', 'standard_fonts', 'wasm'])
-    await cp(resolve(pdf, dir), resolve(app, 'dist/web/pdfjs', dir), { recursive: true })
-  await copyFile(resolve(app, 'runtime-package.json'), resolve(app, 'dist/package.json'))
-  await copyFile(resolve(app, 'runtime-package-lock.json'), resolve(app, 'dist/package-lock.json'))
-  await copyFile(resolve(app, 'ecosystem.config.cjs'), resolve(app, 'dist/ecosystem.config.cjs'))
-  await copyFile(resolve(app, 'pm2-start.sh'), resolve(app, 'dist/pm2-start.sh'))
   if (watch) {
     await result.watch()
     return result
   }
 }
 
+export async function copyPdfAssets() {
+  const pdf = resolve(root, 'node_modules/pdfjs-dist')
+  await mkdir(resolve(app, 'dist/web/pdfjs'), { recursive: true })
+  for (const dir of ['cmaps', 'standard_fonts', 'wasm'])
+    await cp(resolve(pdf, dir), resolve(app, 'dist/web/pdfjs', dir), { recursive: true })
+}
+
 if (process.argv[1] === new URL(import.meta.url).pathname) {
   await viteBuild({ configFile: resolve(app, 'vite.config.ts') })
-  await buildServer()
+  await copyPdfAssets()
+  if (!process.argv.includes('--web')) await buildServer()
 }

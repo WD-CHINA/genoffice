@@ -1,17 +1,41 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { resolve } from 'node:path'
+import { createReadStream, existsSync, statSync } from 'node:fs'
+import { extname, resolve, sep } from 'node:path'
 import { writeFile, mkdir } from 'node:fs/promises'
 import { aliases, app, root } from './scripts/paths.mjs'
 
 const host = process.env.VIEWER_HOST || '0.0.0.0'
-const proxyHost = ['0.0.0.0', '::'].includes(host) ? '127.0.0.1' : host
-const proxyTarget = `http://${proxyHost.includes(':') ? `[${proxyHost}]` : proxyHost}:${process.env.VIEWER_PORT || 11000}`
+
+function pdfjsAssets() {
+  const base = resolve(root, 'node_modules/pdfjs-dist')
+  const types = {
+    '.bcmap': 'application/octet-stream',
+    '.pfb': 'application/octet-stream',
+    '.ttf': 'font/ttf',
+    '.wasm': 'application/wasm',
+    '.json': 'application/json',
+  }
+  return {
+    name: 'pdfjs-assets',
+    configureServer(server) {
+      server.middlewares.use('/pdfjs', (req, res, next) => {
+        const url = decodeURIComponent((req.url || '/').split('?')[0]).replace(/^\/+/, '')
+        const file = resolve(base, url)
+        if (file !== base && !file.startsWith(base + sep)) return next()
+        if (!existsSync(file) || !statSync(file).isFile()) return next()
+        res.setHeader('Content-Type', types[extname(file)] || 'application/octet-stream')
+        createReadStream(file).pipe(res)
+      })
+    },
+  }
+}
 
 export default defineConfig({
   root: resolve(app, 'src/web'),
   plugins: [
     react(),
+    pdfjsAssets(),
     {
       name: 'viewer-runtime-boundary',
       async generateBundle() {
@@ -44,10 +68,6 @@ export default defineConfig({
     port: 11001,
     strictPort: true,
     fs: { allow: [root] },
-    proxy: {
-      '^/api(?:/|$)': { target: proxyTarget, changeOrigin: false },
-      '^/pdfjs(?:/|$)': { target: proxyTarget, changeOrigin: false },
-    },
   },
   build: {
     outDir: resolve(app, 'dist/web'),

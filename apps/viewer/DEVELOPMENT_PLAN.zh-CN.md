@@ -4,26 +4,28 @@
 
 日期：2026-10-13。源码基线：`4863835963c99793c47b72473900c483e9fa0c2a`。
 依据：[移植调研与审查补充](/Applications/work/genoffice/repo/docs/web-viewer-migration.zh-CN.md)。
-状态：**初始设计与阶段计划，保留用于追溯。** Viewer 现已实现独立运行；本文件中的部分目录、包、API 和启动命令仍是历史拟建方案，不代表当前结构。最新产品范围及文件保留策略见 [需求文档](REQUIREMENTS.zh-CN.md)，实际实现及剩余验收见 [实现状态](IMPLEMENTATION_STATUS.md)。
+状态：**2026-10-13 的初始设计，保留用于追溯。** 现行预览是纯前端：浏览器打开本地文件或允许跨域的链接，PDF、DOCX、PPTX 的解析、排版和绘制都在浏览器内完成。下文里的 Node 服务、`/api` 会话、11000 端口、PM2、`.viewer-data` 和服务端 Chrome altChunk 都已退出预览路径，不要按那些接口部署。最新范围见 [需求文档](REQUIREMENTS.zh-CN.md)，当前实现见 [实现状态](IMPLEMENTATION_STATUS.md)。
 
 ## 1. 产品范围与完成标准
 
-在 `repo/apps/viewer` 新增一个 npm workspace，包名拟为 `@genoffice/viewer`。一个 app 内含 Node 服务与 React Web 页面，独立启动、构建和发布；复用共享包，不需要启动 Docs、Slides、PDF、HTML 或 Shell 等其他应用。
+在 `repo/apps/viewer` 新增一个 npm workspace，包名拟为 `@genoffice/viewer`。当时计划一个 app 内含 Node 服务与 React 页面。现行产品只发布静态页面，开发时只启动 Vite。
 
-首期按 **PPTX → PDF → DOCX** 交付；三个格式共用文件上传、资源、会话、状态和只读操作栏：
+首期按 **PPTX → PDF → DOCX** 交付；三个格式现在共用浏览器内的打开、预览和只读操作栏：
 
 - PPT：`.pptx` 缩略图、静态预览、缩放、翻页/跳页、全屏放映、现有动画/转场、隐藏页规则、超链接和嵌入音视频。
 - PDF：`.pdf` 原页面/文字层、缩略图、翻页、缩放、旋转、搜索/复制、链接及已填写表单/签名字段的原展示。
-- Word：`.docx` 原自定义节点、分页、页眉页脚、分栏、表格、浮动对象、图片、公式、脚注/尾注、原修订/批注显示和只读搜索；包含项目已支持的 HTML/MHT altChunk 展示。
+- Word：`.docx` 原自定义节点、分页、页眉页脚、分栏、表格、浮动对象、图片、公式、脚注/尾注、原修订/批注显示和只读搜索。含 HTML/MHT 的 altChunk 在纯前端明确失败，不再用服务端 Chrome 转换。
 - 原读取链路已支持的 PDF 密码与 DOCX 解密保留；密码仅供当前读取会话，不保留加密/重加密或密码修改功能。PPTX 对加密或不支持的容器沿用原打开限制，不能自行声明支持。
 
 本期不提供编辑、保存写回、插入/删除、批注新增、表单填写/签署、AI、桌面菜单和系统文件关联。Tiptap 保留为 DOCX 底层只读展示依赖。旧二进制 `.ppt/.doc`、XLSX、独立 HTML/Markdown Viewer、双屏 Presenter、自动定时轮播、Office 格式导出和账号管理留给后续范围。
 
 **还原对象为原 GenOffice 的显示/播放行为。** 保留原解析器、字体度量、渲染算法、节点 DOM 与 CSS；禁止整份 Word/PPT 转 PDF、图片或换渲染库作为达标捷径。仅改宿主、文件/资源访问、通信和编辑权限。
 
-第一版同一 Viewer 页面只展示一个活动文档，切换时销毁旧的 preview iframe 和 view session；不在同一个 document 中挂多个格式的全局 CSS/FontFace。不同浏览器页面可以独立打开文件，各自持有隔离会话。
+同一 Viewer 页面只展示一个活动文档，切换时销毁旧的 preview iframe 和浏览器 Worker；不在同一个 document 中挂多个格式的全局 CSS/FontFace。不同浏览器页面各自持有自己打开的文件。
 
 ## 2. 一个 app 的目录和启动模型
+
+以下目录、端口和 `/api` 清单是当时的拟建方案，不是现行结构。现行开发只启动 Vite，现行发布是静态目录。
 
 ```text
 apps/viewer/
@@ -53,13 +55,10 @@ apps/viewer/
   e2e/{pptx,pdf,docx,fixtures,baselines}/
   scripts/                     dev、基线采集、独立产物生成
   dist/
-    server/                    可直接由 Node 运行的 JS
-    web/                       HTML / CSS / JS / module workers
-    assets/                    字体、HarfBuzz wasm、PDF.js 数据
-    runtime-package.json       生成独立产物时改名为 package.json
+    web/                       静态页面、Worker、字体和 PDF.js 资源
 ```
 
-开发时由该 workspace 的 `dev` 一次启动 API 和 Vite，API 端口 `11000`、Web 端口 `11001`；Vite 代理 API/资源到 Node，客户端使用相对 URL。生产环境由 Node 在 `11000` 提供 Web 页面、API 和受控资源，不需要其他 app 进程或 Vite。
+开发时由该 workspace 的 `dev` 启动 Vite，端口 `11001`。生产环境发布静态目录，由浏览器完成打开、解析和绘制。
 
 预览 iframe 加载的是本应用编译出的受信入口，不是用户上传 HTML。它隔离原组件的全局 CSS、模块级状态、FontFace 和 Worker；允许本应用 Worker/同源 API，按需要授予 fullscreen。父页面与 iframe 只交换受校验的生命周期/导航消息，浏览器全屏仍由用户点击触发。DOCX altChunk 的不受信 HTML只在独立转换 BrowserContext 中运行。
 
@@ -91,6 +90,8 @@ packages/viewer-services/     Node 服务逻辑；明确导出 ./pptx、./docx�
 4. 开发提取阶段仍构建原应用做回归，但它们仅是验证工具，不是 Viewer 的运行依赖。
 
 ## 4. 按格式划分的移植任务
+
+本节描述当时计划把 PPT 排版和 Word 预处理放在 Node。现行 PPT 排版、字宽测量、Word 解密和 zip 内媒体都在浏览器内完成。
 
 ### 4.1 PPT：服务端排版与浏览器测量闭环
 
@@ -141,6 +142,8 @@ packages/viewer-services/     Node 服务逻辑；明确导出 ./pptx、./docx�
 
 ## 5. 首期协议和生命周期
 
+本节的 `/api` 会话、心跳和磁盘保留是当时的协议，现行预览不提供这些接口。只读仍指不修改用户打开的原文档。
+
 不开放文档修改接口。上传和派生计算可以使用 POST；“只读”指不修改原文档，不意味着所有请求都必须 GET。
 
 ```text
@@ -180,7 +183,7 @@ Word/PDF catalog、DOM 测量与分页不重复实现成服务端 JSON。PPT fin
 ```sh
 npm run dev -w @genoffice/viewer
 npm run build -w @genoffice/viewer
-npm run start -w @genoffice/viewer
+npm run package -w @genoffice/viewer
 npm run test -w @genoffice/viewer
 npm run typecheck -w @genoffice/viewer
 npm run test:browser -w @genoffice/viewer

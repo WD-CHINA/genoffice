@@ -1,13 +1,10 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { basename, resolve } from 'node:path'
+import { resolve } from 'node:path'
 import { app, root } from './paths.mjs'
 const output = resolve(app, 'releases/genoffice-viewer')
 await rm(output, { recursive: true, force: true })
 await mkdir(output, { recursive: true })
-await cp(resolve(app, 'dist'), output, {
-  recursive: true,
-  filter: (source) => !['.viewer-data', 'audit', 'metafile.json'].includes(basename(source)),
-})
+await cp(resolve(app, 'dist/web'), output, { recursive: true })
 await cp(resolve(root, 'LICENSE'), resolve(output, 'LICENSE'))
 await cp(
   resolve(root, 'packages/viewer-renderers/src/docs/renderer/fonts/LICENSE-OFL.txt'),
@@ -15,22 +12,23 @@ await cp(
 )
 await writeFile(
   resolve(output, 'README.md'),
-  `# GenOffice Web Viewer\n\nRequires Node >=22.12.0.\n\nProcess supervision (one PM2 fork process):\n\n\`\`\`sh\nsh pm2-start.sh\n\`\`\`\n\nThis installs nvm and Node 22 when missing, then installs runtime dependencies, starts the viewer, and saves the PM2 process list. PM2 is taken from PATH, or installed with \`npm i -g pm2\` when missing. Enable reboot restart once with \`pm2 startup\`.\n\nForeground start without PM2: \`npm ci --omit=dev && npm start\`.\n\nThe server listens on 0.0.0.0:11000 by default. Open http://127.0.0.1:11000 locally, or http://SERVER_LAN_IP:11000 from your LAN. Development frontend is http://127.0.0.1:11001. Set VIEWER_HOST=127.0.0.1 before starting to listen on localhost only. Supports read-only PPTX, PDF, DOCX previews and PPTX slideshow.\n\nSet VIEWER_CHROME_PATH for an installed Chrome/Chromium (Word HTML/MHT altChunk).\nSet VIEWER_FONT_DIR to a deployment font directory. Match browser/system fonts for consistent layout.\nSet VIEWER_PORT, VIEWER_HOST, VIEWER_DATA_DIR, VIEWER_ALLOWED_ORIGINS as needed.\nDo not scale this app above one process. Sessions live in memory.\nNo other GenOffice application, Electron, or AI service is needed at runtime.\n\nVisual parity for complex documents is still undergoing acceptance.\n`,
+  `# GenOffice Web Viewer
+
+静态站点。用 nginx 或其他静态托管把网站根目录指到本目录即可。
+
+打开、解析和绘制都在浏览器中完成，不需要 Node、PM2 或后端端口。本地文件直接选择；URL 导入由浏览器 fetch，文件服务器需要允许当前页面跨域访问。
+
+支持只读 PPTX、PDF、DOCX 预览和 PPT 放映。字体包中没有的字体会在界面标出回退。含 HTML/MHT 的 Word altChunk 会提示无法在纯前端转换。
+`,
 )
 const front = JSON.parse(await readFile(resolve(app, 'dist/audit/frontend-modules.json'), 'utf8'))
-const server = Object.keys(
-  JSON.parse(await readFile(resolve(app, 'dist/server/metafile.json'), 'utf8')).inputs,
-)
 const names = [
   ...new Set(
-    [...front, ...server]
-      .map((path) => /node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(path)?.[1])
-      .filter(Boolean),
+    front.map((path) => /node_modules\/((?:@[^/]+\/)?[^/]+)/.exec(path)?.[1]).filter(Boolean),
   ),
-  'playwright-core',
 ].sort()
 const notices = []
-for (const name of new Set(names)) {
+for (const name of names) {
   const dir = resolve(root, 'node_modules', name)
   const pkg = JSON.parse(await readFile(resolve(dir, 'package.json'), 'utf8'))
   notices.push({ name, version: pkg.version, license: pkg.license })

@@ -7,5 +7,16 @@
   "exports": {
     "./*": "./src/*"
   },
-  "description": "Viewer-owned rendering snapshot; original applications are unchanged."
+  "description": "Viewer-owned rendering snapshot; original applications are unchanged.",
+  "dependencies": {
+    "@genoffice/docx-engine": "*",
+    "@genoffice/pptx-engine": "*",
+    "@genoffice/pptx-render": "*",
+    "@genoffice/ui": "*",
+    "officecrypto-tool": "^0.0.19",
+    "opentype.js": "^2.0.0",
+    "playwright-core": "^1.61.1",
+    "pngjs": "^7.0.0",
+    "utif2": "^4.1.0"
+  }
 }

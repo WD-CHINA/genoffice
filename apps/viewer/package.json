@@ -13,25 +13,35 @@
     "package": "node scripts/build.mjs && node scripts/package.mjs"
   },
   "dependencies": {
+    "@genoffice/docx-engine": "*",
+    "@genoffice/pptx-engine": "*",
+    "@genoffice/pptx-render": "*",
+    "@genoffice/ui": "*",
+    "@genoffice/viewer-renderers": "*",
+    "@genoffice/viewer-services": "*",
+    "@tiptap/core": "3.31.0",
+    "@tiptap/extensions": "3.31.0",
+    "@tiptap/pm": "3.31.0",
+    "@tiptap/react": "3.31.0",
+    "hash.js": "1.1.7",
+    "jszip": "3.10.1",
+    "konva": "9.3.20",
+    "officecrypto-tool": "0.0.19",
+    "opentype.js": "2.0.0",
+    "pako": "1.0.11",
+    "pdfjs-dist": "6.2.108",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-konva": "19.0.10",
-    "konva": "9.3.20",
-    "pdfjs-dist": "6.2.108",
-    "@tiptap/core": "3.31.0",
-    "@tiptap/react": "3.31.0",
-    "@tiptap/pm": "3.31.0",
-    "@tiptap/extensions": "3.31.0",
-    "officecrypto-tool": "0.0.19"
+    "utif2": "4.1.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "5.0.4",
-    "vite": "7.3.6",
-    "typescript": "5.9.3",
-    "tsx": "4.21.0",
+    "@types/node": "24.10.1",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
-    "@types/node": "24.10.1",
-    "jszip": "3.10.1"
+    "@vitejs/plugin-react": "5.0.4",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.6"
   }
 }

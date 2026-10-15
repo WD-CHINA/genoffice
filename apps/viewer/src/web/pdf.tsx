@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react'
+import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { ToolbarIcon } from './toolbar-icon'
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import worker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
@@ -131,21 +131,29 @@ export function Pdf({ src }: { src: string }) {
   useEffect(() => {
     if (!doc) return
     let cancelled = false
+    const pending = loadingNotes.current
+    const inflight = new Set<number>()
     for (const page of visible.visible) {
-      if (loadingNotes.current.has(page)) continue
-      loadingNotes.current.add(page)
+      if (pending.has(page)) continue
+      pending.add(page)
+      inflight.add(page)
       void loadSavedAnnots(doc, page)
         .then((value) => {
-          if (!cancelled)
-            setNotes((old) => new Map(old).set(page, buildNoteThreads(value.notes, [])))
+          inflight.delete(page)
+          if (cancelled) {
+            pending.delete(page)
+            return
+          }
+          setNotes((old) => new Map(old).set(page, buildNoteThreads(value.notes, [])))
         })
         .catch(() => {
-          loadingNotes.current.delete(page)
+          inflight.delete(page)
+          pending.delete(page)
         })
     }
     return () => {
       cancelled = true
-      for (const page of visible.visible) if (!notes.has(page)) loadingNotes.current.delete(page)
+      for (const page of inflight) pending.delete(page)
     }
   }, [doc, visible.visible])
   function goPage(value: number) {

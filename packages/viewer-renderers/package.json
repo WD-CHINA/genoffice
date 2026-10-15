@@ -7,5 +7,23 @@
   "exports": {
     "./*": "./src/*"
   },
-  "description": "Viewer-owned rendering snapshot; original applications are unchanged."
+  "description": "Viewer-owned rendering snapshot; original applications are unchanged.",
+  "dependencies": {
+    "@genoffice/agent-core": "*",
+    "@genoffice/ai-provider": "*",
+    "@genoffice/docx-engine": "*",
+    "@genoffice/electron-utils": "*",
+    "@genoffice/i18n": "*",
+    "@genoffice/pptx-engine": "*",
+    "@genoffice/pptx-ops": "*",
+    "@genoffice/pptx-render": "*",
+    "@tiptap/core": "3.31.0",
+    "@tiptap/extensions": "3.31.0",
+    "@tiptap/pm": "3.31.0",
+    "konva": "9.3.20",
+    "pdfjs-dist": "6.2.108",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "react-konva": "19.0.10"
+  }
 }

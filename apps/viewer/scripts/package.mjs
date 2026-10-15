@@ -1,10 +1,45 @@
 import { cp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { resolve } from 'node:path'
+import { extname, resolve } from 'node:path'
+import { gzipSync } from 'node:zlib'
 import { app, root } from './paths.mjs'
+
+const GZIP_EXT = new Set([
+  '.js',
+  '.mjs',
+  '.css',
+  '.html',
+  '.json',
+  '.svg',
+  '.wasm',
+  '.ttf',
+  '.otf',
+  '.bcmap',
+  '.pfb',
+])
+
+async function gzipTree(dir) {
+  let saved = 0
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const path = resolve(dir, entry.name)
+    if (entry.isDirectory()) {
+      saved += await gzipTree(path)
+      continue
+    }
+    if (!GZIP_EXT.has(extname(entry.name).toLowerCase())) continue
+    const body = await readFile(path)
+    if (body.length < 1024) continue
+    const gz = gzipSync(body, { level: 6 })
+    if (gz.length >= body.length) continue
+    await writeFile(path + '.gz', gz)
+    saved += body.length - gz.length
+  }
+  return saved
+}
 const output = resolve(app, 'releases/genoffice-viewer')
 await rm(output, { recursive: true, force: true })
 await mkdir(output, { recursive: true })
 await cp(resolve(app, 'dist/web'), output, { recursive: true })
+await cp(resolve(app, 'deploy/nginx.conf'), resolve(output, 'nginx.conf'))
 await cp(resolve(root, 'LICENSE'), resolve(output, 'LICENSE'))
 await cp(
   resolve(root, 'packages/viewer-renderers/src/docs/renderer/fonts/LICENSE-OFL.txt'),
@@ -15,6 +50,8 @@ await writeFile(
   `# GenOffice Web Viewer
 
 静态站点。用 nginx 或其他静态托管把网站根目录指到本目录即可。
+
+\`/assets/\` 里的脚本、样式和字体文件名带内容 hash。在 nginx 中按同目录的 \`nginx.conf\` 开启 gzip，并为 \`/assets/\` 设置一年缓存；\`index.html\` 与 \`preview.html\` 不要长期缓存。woff2 已压缩，配置里不再对它 gzip。
 
 打开、解析和绘制都在浏览器中完成，不需要 Node、PM2 或后端端口。本地文件直接选择；URL 导入由浏览器 fetch，文件服务器需要允许当前页面跨域访问。
 
@@ -41,4 +78,6 @@ for (const name of names) {
     })
 }
 await writeFile(resolve(output, 'THIRD_PARTY_NOTICES.json'), JSON.stringify(notices, null, 2))
+const saved = await gzipTree(output)
+console.log(`Precompressed gzip, saved ${Math.round(saved / 1024)} KiB`)
 console.log(`Standalone release: ${output}`)

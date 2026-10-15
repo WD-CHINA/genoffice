@@ -66,7 +66,9 @@ console.log(link.href)
 npm run package -w @genoffice/viewer
 ```
 
-生成 `apps/viewer/releases/genoffice-viewer/`。把该目录作为静态网站根目录交给 nginx 或其他静态托管。目录内是页面、预览 Worker、打包字体、PDF.js 资源和许可证，没有 Node 进程、PM2 或后端端口。
+生成 `apps/viewer/releases/genoffice-viewer/`。把该目录作为静态网站根目录交给 nginx 或其他静态托管。目录内是页面、预览 Worker、打包字体、PDF.js 资源、预生成的 `.gz` 和 `nginx.conf`，没有 Node 进程、PM2 或后端端口。
+
+`/assets/` 中的 js、css、ttf 文件名带内容 hash。把发布目录里的 `nginx.conf` 合并进站点配置：这些文件缓存一年，`index.html` 和 `preview.html` 不长期缓存，文本、脚本、ttf 和 wasm 走 gzip。woff2 本身已压缩，不重复压缩。
 
 含 HTML/MHT 的 Word altChunk 会在页面上提示无法转换。字体包以外的字体按回退链处理，并在界面标出。
 

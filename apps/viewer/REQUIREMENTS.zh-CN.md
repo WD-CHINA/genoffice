@@ -158,7 +158,9 @@ npm run build -w @genoffice/viewer     # 输出本 app 的 dist
 npm run package -w @genoffice/viewer   # 生成独立发布目录
 ```
 
-部署产物为整个 `apps/viewer/releases/genoffice-viewer/`，作为静态网站根目录。目录内是页面、预览 Worker、字体、PDF.js 资源和许可证，不包含 Node 服务、PM2 或运行时 `package.json`。
+部署产物为整个 `apps/viewer/releases/genoffice-viewer/`，作为静态网站根目录。目录内是页面、预览 Worker、字体、PDF.js 资源、预生成的 `.gz`、`nginx.conf` 和许可证，不包含 Node 服务、PM2 或运行时 `package.json`。
+
+带内容 hash 的 `/assets/` 缓存一年。`index.html` 与 `preview.html` 不长期缓存，这样新发布才会指向新的字体和脚本。nginx 对 js、css、html、json、svg、wasm、ttf 开启 gzip，并优先使用同名 `.gz`；woff2 不再压缩。
 
 开发时 Vite 监听 `0.0.0.0:11001`，可用 `VIEWER_HOST=127.0.0.1` 限制为本机。本地文件上限 1 GiB，不代表该大小的所有格式都已完成性能验收。含 HTML/MHT 的 Word altChunk 在页面上提示无法转换。源码构建仍使用 monorepo 安装环境，静态发布运行不依赖原仓库。
 

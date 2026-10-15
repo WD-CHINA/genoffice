@@ -77,15 +77,10 @@ npm run package -w @genoffice/viewer
 ```sh
 npm run typecheck -w @genoffice/viewer
 npm run test -w @genoffice/viewer
-npm run test:browser -w @genoffice/viewer
-npm run test:reading -w @genoffice/viewer
-npm run test:url -w @genoffice/viewer
-npm run test:ui -w @genoffice/viewer
-npm run test:media -w @genoffice/viewer
 npm run test:standalone -w @genoffice/viewer
 ```
 
-浏览器测试需要本机 Chrome/Chromium，可通过 `VIEWER_CHROME_PATH` 指定。截图与生成的测试文件位于忽略提交的 `test-results`。`test:standalone` 确认发布目录是静态站点，不含 Node 服务或 PM2 配置。
+`test` 覆盖浏览器布局、解密所需的加密兼容和核心源码一致性。`test:standalone` 确认发布目录是静态站点，且本应用不再包含 Node 服务源码或 PM2 配置。
 
 核心内容组件保留原源码，PPT 没有整份转成图片/PDF，Word 没有改用其他文档渲染器。构建检查拒绝其他 app、Electron、AI provider/agent 运行时；原 `zip-gate` 使用的纯脱敏 helper 可继续复用。
 

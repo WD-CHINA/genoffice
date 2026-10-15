@@ -14,10 +14,16 @@ for (const file of ['server', 'ecosystem.config.cjs', 'pm2-start.sh', 'package.j
     () => undefined,
   )
 }
-for (const file of ['ecosystem.config.cjs', 'pm2-start.sh', 'runtime-package.json']) {
+for (const file of [
+  'ecosystem.config.cjs',
+  'pm2-start.sh',
+  'runtime-package.json',
+  'src/server',
+  'src/web/api.ts',
+]) {
   await access(resolve(app, file)).then(
     () => {
-      throw new Error('Viewer still contains server config ' + file)
+      throw new Error('Viewer still contains server path ' + file)
     },
     () => undefined,
   )

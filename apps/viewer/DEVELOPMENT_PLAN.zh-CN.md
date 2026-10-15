@@ -4,7 +4,7 @@
 
 日期：2026-10-13。源码基线：`4863835963c99793c47b72473900c483e9fa0c2a`。
 依据：[移植调研与审查补充](/Applications/work/genoffice/repo/docs/web-viewer-migration.zh-CN.md)。
-状态：**2026-10-13 的初始设计，保留用于追溯。** 现行预览是纯前端：浏览器打开本地文件或允许跨域的链接，PDF、DOCX、PPTX 的解析、排版和绘制都在浏览器内完成。下文里的 Node 服务、`/api` 会话、11000 端口、PM2、`.viewer-data` 和服务端 Chrome altChunk 都已退出预览路径，不要按那些接口部署。最新范围见 [需求文档](REQUIREMENTS.zh-CN.md)，当前实现见 [实现状态](IMPLEMENTATION_STATUS.md)。
+状态：**2026-10-13 的初始设计，保留用于追溯。** 现行预览是纯前端：浏览器打开本地文件或允许跨域的链接，PDF、DOCX、PPTX 的解析、排版和绘制都在浏览器内完成。下文里的 Node 服务、`/api` 会话、11000 端口、PM2、`.viewer-data` 和服务端 Chrome altChunk 都已退出预览路径，对应的 `src/server`、服务测试和 `playwright-core` 依赖也已从本应用删除，不要按那些接口部署。最新范围见 [需求文档](REQUIREMENTS.zh-CN.md)，当前实现见 [实现状态](IMPLEMENTATION_STATUS.md)。
 
 ## 1. 产品范围与完成标准
 
@@ -186,10 +186,11 @@ npm run build -w @genoffice/viewer
 npm run package -w @genoffice/viewer
 npm run test -w @genoffice/viewer
 npm run typecheck -w @genoffice/viewer
-npm run test:browser -w @genoffice/viewer
 ```
 
-不新增或修改根脚本。命令均定义在 Viewer 自己的 package.json；类型检查统一入口、Web/Node 分别打包，构建输出仅写入 apps/viewer。
+上面是当时计划的命令。现行 `package.json` 只保留 `dev`、`build`、`typecheck`、`test`、`test:standalone` 和 `package`。下文的 Node 产物、`npm start` 和 `VIEWER_CHROME_PATH` 没有实现为当前发布方式。
+
+不新增或修改根脚本。命令均定义在 Viewer 自己的 package.json；类型检查统一入口，构建输出仅写入 apps/viewer。
 
 共享包目前导出原始 TS，且原应用明确要求 bundling：Node 产物必须将需要的 workspace 代码编译/打包为 JS，不能让生产 Node 直接解析 `.ts` 或依赖源仓库的 symlink。浏览器构建包含 docx module Worker；服务端 worker、字体、HarfBuzz wasm 和 converter helper scripts 必须按显式资产清单生成，不能从 `apps/slides/out` 或 `apps/docs/out` 读取。
 

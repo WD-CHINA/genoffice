@@ -17,7 +17,7 @@
 | PDF 搜索/导航/缩放缺失 | 原索引/字符矩形映射、高亮/数量/上一处下一处、缩略图、原目录组件与标题 fallback、页码追踪/跳页、原缩放级别/适配、旋转、打开信息/XFA 提示、坏内部目标捕获均已接入。三页样本及原只读表单回归通过。                                              |
 | DOCX 其余阅读缺口      | 页码追踪、缩放适配、标题/书签、原页色/header phantom、修订 all/final/original 和批注正文/定位、原 slimDocx 与授权 HTTP 图片、密码错误重试均已接入。密码重试、按需图片解码、页色和修订最终模式已验证；复杂 phantom/批注线程还需专项样本对照。 |
 
-验证命令：`typecheck`、`build`、`test`、`test:reading`、`test:media`、`test:standalone`。API/源码检查目前 10 项。阅读回归额外生成 PDF 批注回复、带修订/书签/密码的 Word、混合分栏/网格、按需图片与 PPT 私有字体/链接文件；输出位于 Viewer 自有的忽略目录 `test-results/reading`。
+验证命令：`typecheck`、`build`、`test`、`test:standalone`。依赖 Node 服务的阅读、媒体和 API 回归已随 `src/server` 删除，不再作为现行验收。
 
 本轮保留原绘图、动画、PDF.js/TextLayer、DOCX 节/行测量/切页/页眉页脚等核心算法；只在 Viewer 专属副本增加读取、布局调用与阅读交互边界。没有修改现有非 Viewer app/package、根配置或根锁文件。
 
@@ -59,7 +59,7 @@
 
 影响：长时间阅读或放映后再加载音视频、尚未取得的 PDF 字节范围等，可能返回 404。已加载画面继续存在，容易让用户误以为文件损坏。
 
-依据：[TTL 默认值](/Applications/work/genoffice/repo/apps/viewer/src/server/index.ts:14)、[回收逻辑](/Applications/work/genoffice/repo/apps/viewer/src/server/index.ts:174)、[当前 Host 生命周期](/Applications/work/genoffice/repo/apps/viewer/src/web/host.tsx:13)。
+依据：当时的服务端源码已删除。现行页面生命周期见 [Host](/Applications/work/genoffice/repo/apps/viewer/src/web/host.tsx)。
 
 建议：活动文档续期，失效/恢复状态明确展示；关闭仍释放会话。
 
@@ -106,11 +106,11 @@
 - **修订/批注阅读控制**：已有标记及分页批注绘制链路，但没有修订显示模式选择、批注定位/只读线程阅读操作栏。具体展示结果仍需修订/批注语料对照。
 - **打开密码错误后的重试**：当前只有一次 prompt，打开 Promise 失败后只显示错误，需要重新打开文件才能重试。
 
-已接入：原解析 Worker 与 fallback、原自定义节点/内容 CSS/主题、嵌入字体和 numbering 初始化、表格/图片/浮动对象/公式的原组件、基本分页、统一分栏、节信息和页眉页脚解析、脚注尾注/批注/修订的参数链路、phased content、原解密、HTML/MHT altChunk 转换器。
+已接入：原解析 Worker 与 fallback、原自定义节点/内容 CSS/主题、嵌入字体和 numbering 初始化、表格/图片/浮动对象/公式的原组件、基本分页、统一分栏、节信息和页眉页脚解析、脚注尾注/批注/修订的参数链路、phased content、原解密。含 HTML/MHT 的 altChunk 在纯前端明确失败；当时的服务端 Chrome 转换源码已删除。
 
-HTML altChunk 已做浏览器链路验证；MHT 内联图片/相对资源、复杂页眉页脚/脚注/修订、长文档分阶段加载、密码、多节/浮动对象等未形成充分验收。先修缺失调用，再验收复杂排版。
+复杂页眉页脚/脚注/修订、长文档分阶段加载、密码、多节/浮动对象等未形成充分验收。
 
-依据：[当前 DOCX 装配](/Applications/work/genoffice/repo/apps/viewer/src/web/docs.tsx:47)、[密码入口](/Applications/work/genoffice/repo/apps/viewer/src/web/docs.tsx:85)、[当前布局和预览](/Applications/work/genoffice/repo/apps/viewer/src/web/docs.tsx:169)、[原 header phantom](/Applications/work/genoffice/repo/apps/docs/src/renderer/App.tsx:3145)、[原正文页色](/Applications/work/genoffice/repo/apps/docs/src/renderer/App.tsx:7078)、[整包内容接口](/Applications/work/genoffice/repo/apps/viewer/src/server/index.ts:308)。
+依据：[当前 DOCX 装配](/Applications/work/genoffice/repo/apps/viewer/src/web/docs.tsx)、[原 header phantom](/Applications/work/genoffice/repo/apps/docs/src/renderer/App.tsx:3145)、[原正文页色](/Applications/work/genoffice/repo/apps/docs/src/renderer/App.tsx:7078)。
 
 ## PDF：未接入或简化的首期功能
 

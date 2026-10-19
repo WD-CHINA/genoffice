@@ -14,6 +14,8 @@ const ui = readViewerUi(linkParams)
 const initialUrl = linkParams.get('url')?.trim() || ''
 applyViewerUi(ui)
 
+const MAX_BYTES = 1024 * 1024 * 1024
+
 function extensionOf(name: string): Format | null {
   const ext = name.split('.').pop()?.toLowerCase()
   return ext === 'pptx' || ext === 'pdf' || ext === 'docx' ? ext : null
@@ -29,7 +31,12 @@ async function formatOf(name: string, bytes: Uint8Array): Promise<Format> {
     if (types?.includes('presentationml.presentation') || named === 'pptx') return 'pptx'
     if (types?.includes('wordprocessingml.document') || named === 'docx') return 'docx'
   }
-  if (bytes.length >= 8 && bytes[0] === 0xd0 && bytes[1] === 0xcf && (named === 'docx' || named === 'pptx'))
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0xd0 &&
+    bytes[1] === 0xcf &&
+    (named === 'docx' || named === 'pptx')
+  )
     return named
   if (named) return named
   throw new Error('只能打开 .pptx、.pdf 或 .docx 文件')
@@ -69,27 +76,45 @@ function Host() {
     setError('')
     setOpened(null)
     try {
-      const loaded =
-        source.kind === 'file'
-          ? { name: source.file.name, bytes: new Uint8Array(await source.file.arrayBuffer()) }
-          : await (async () => {
-              let response: Response
-              try {
-                response = await fetch(source.url)
-              } catch {
-                throw new Error('无法下载该链接。文件服务器需要允许当前页面跨域访问（CORS）。')
-              }
-              if (!response.ok) throw new Error('下载失败（HTTP ' + response.status + '）')
-              const bytes = new Uint8Array(await response.arrayBuffer())
-              if (!bytes.length) throw new Error('文件是空的')
-              return { name: nameFrom(source.url, response.headers.get('content-disposition')), bytes }
-            })()
-      if (loaded.bytes.length > 1024 * 1024 * 1024) throw new Error('文件超过 1 GiB')
-      const format = await formatOf(loaded.name, loaded.bytes)
+      let name: string
+      let format: Format
+      // The iframe only ever needs a URL, so a local file with a known extension is
+      // handed over as the File itself — reading it first would hold the whole file
+      // in memory twice (the read plus the blob) for no reason.
+      let file: Blob
+      if (source.kind === 'file' && extensionOf(source.file.name)) {
+        name = source.file.name
+        format = extensionOf(source.file.name)!
+        file = source.file
+      } else if (source.kind === 'file') {
+        const bytes = new Uint8Array(await source.file.arrayBuffer())
+        if (!bytes.length) throw new Error('文件是空的')
+        if (bytes.length > MAX_BYTES) throw new Error('文件超过 1 GiB')
+        name = source.file.name
+        format = await formatOf(name, bytes)
+        file = new File([bytes], name, { type: source.file.type })
+      } else {
+        let response: Response
+        try {
+          response = await fetch(source.url)
+        } catch {
+          throw new Error('无法下载该链接。文件服务器需要允许当前页面跨域访问（CORS）。')
+        }
+        if (!response.ok) throw new Error('下载失败（HTTP ' + response.status + '）')
+        // reject an oversized file before pulling it in, when the server says so
+        const declared = Number(response.headers.get('content-length'))
+        if (declared > MAX_BYTES) throw new Error('文件超过 1 GiB')
+        const bytes = new Uint8Array(await response.arrayBuffer())
+        if (!bytes.length) throw new Error('文件是空的')
+        if (bytes.length > MAX_BYTES) throw new Error('文件超过 1 GiB')
+        name = nameFrom(source.url, response.headers.get('content-disposition'))
+        format = await formatOf(name, bytes)
+        file = new Blob([bytes])
+      }
       if (currentUrl.current) URL.revokeObjectURL(currentUrl.current)
-      const src = URL.createObjectURL(new Blob([loaded.bytes]))
+      const src = URL.createObjectURL(file)
       currentUrl.current = src
-      setOpened({ id: src, name: loaded.name, format, src })
+      setOpened({ id: src, name, format, src })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {

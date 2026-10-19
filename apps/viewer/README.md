@@ -86,4 +86,28 @@ npm run test:standalone -w @genoffice/viewer
 
 核心内容组件保留原源码，PPT 没有整份转成图片/PDF，Word 没有改用其他文档渲染器。构建检查拒绝其他 app、Electron、AI provider/agent 运行时；原 `zip-gate` 使用的纯脱敏 helper 可继续复用。
 
+## PPT 加载优化与排查
+
+PPT 沿用原解析、文字排版和 Konva 绘制，优化资源准备与调度：
+
+- 根据原排版过程实际请求的字体加载对应字体和字形回退，不再默认下载全部 23 个度量字体。字体就绪、浏览器字宽回传后才展示页面。
+- 字宽回传只重新排版依赖这些测量值的幻灯片，Worker 只返回变化的页面，主线程合并其余页面。
+- 当前页及相邻页优先准备图片；可见缩略图使用独立解码队列。大图按需取字节，通过 transferable ArrayBuffer 回传，避免结构化克隆复制。
+- 侧栏只挂载可见区域及附近的缩略图画布，隐藏侧栏时不创建缩略图画布。放映组件在进入放映时加载。
+
+在预览 iframe 的开发者工具中查看 `window.__viewerPerformance`。`stages` 包含文件读取、Worker 打开、字体就绪、排版稳定、首个画布和当前页图片就绪的累计耗时；`worker` 包含解析、字体准备、初始排版耗时及字体数量。计时从 PPT 组件启动开始，不包含此前页面脚本下载或远程源文件下载。`firstCanvas` 允许图片继续加载，应同时看 `currentPageImagesReady`。该数据只保存在当前页面内存中。
+
+构建后执行浏览器性能回归（复用仓库的 `playwright-core`，默认使用 macOS Chrome；其他环境可设置 `CHROME_PATH`，或安装 Playwright 对应的 Chromium）：
+
+```sh
+npm run build -w @genoffice/viewer
+npm run test:performance -w @genoffice/viewer
+```
+
+脚本启动临时静态服务器并自动关闭，覆盖中英文样例、40 页独立大图样例、可见缩略图、隐藏侧栏、图片字节完整性、跳页返回及放映。可设置 `VIEWER_PERF_REPORT=/tmp/viewer-performance.json` 保存测量结果；设置 `VIEWER_BASELINE_DIR` 指向优化前的静态构建目录，可额外比较两份中英文样例全部页面的画布是否逐像素一致。
+
+本轮本机冷浏览器上下文验证中，两份样例均由 23 个字体请求降至 3 个；字体响应体合计从约 12.83 MiB 分别降至 1.65 MiB 和 3.08 MiB（未启用 HTTP 压缩）。优化前后样例画布一致，40 页媒体和放映回归通过。本机静态资源读取很快，端到端首屏耗时接近，不能把资源减少比例当成首屏加速比例。
+
+目前仍需读取、解压整份 PPT 并完成全部页面的初始排版；媒体密集文件也仍需建立整份文档的图片描述信息。超大文件的首次解析成本还在，PDF、Word 的加载路径本轮没有调整。
+
 [需求文档](REQUIREMENTS.zh-CN.md) · [开发计划](DEVELOPMENT_PLAN.zh-CN.md) · [交付状态与剩余验收](IMPLEMENTATION_STATUS.md) · [逐项功能审查](FEATURE_AUDIT.zh-CN.md)

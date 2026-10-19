@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { extname, resolve, sep } from 'node:path'
@@ -7,9 +7,9 @@ import { aliases, app, root } from './scripts/paths.mjs'
 
 const host = process.env.VIEWER_HOST || '0.0.0.0'
 
-function pdfjsAssets() {
+function pdfjsAssets(): Plugin {
   const base = resolve(root, 'node_modules/pdfjs-dist')
-  const types = {
+  const types: Record<string, string> = {
     '.bcmap': 'application/octet-stream',
     '.pfb': 'application/octet-stream',
     '.ttf': 'font/ttf',

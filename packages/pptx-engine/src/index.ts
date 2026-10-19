@@ -6,7 +6,13 @@
  */
 import { stripRedactExt, syncRedactExt } from './redaction-xml'
 import JSZip from 'jszip'
-import { PackageArchive, relsPathFor, resolveTarget, type Relationship } from './zip'
+import {
+  PackageArchive,
+  relsPathFor,
+  resolveTarget,
+  type OpenOptions as PackageArchiveOpenOptions,
+  type Relationship,
+} from './zip'
 import { parseClrMap, parseTheme, type Theme } from './theme'
 import {
   parseSlide,
@@ -129,6 +135,7 @@ export {
   type SlideAnimation,
 } from './animation'
 export { PackageArchive, PPTX_ZIP_LIMITS, assertZipWithinLimits } from './zip'
+export type { OpenOptions as PackageArchiveOpenOptions } from './zip'
 export {
   listEmbeddedFonts,
   eotToSfnt,
@@ -651,8 +658,11 @@ function buildDecorations(
   return out
 }
 
-export async function openPptx(bytes: Uint8Array): Promise<OpenedPptx> {
-  const archive = await PackageArchive.open(bytes)
+export async function openPptx(
+  bytes: Uint8Array,
+  options?: PackageArchiveOpenOptions,
+): Promise<OpenedPptx> {
+  const archive = await PackageArchive.open(bytes, options)
   const { size, slidePaths } = archive.readPresentation()
 
   const slides: Slide[] = []

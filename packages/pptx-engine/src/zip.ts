@@ -33,6 +33,12 @@ export const PPTX_ZIP_LIMITS = {
   maxTotalBytes: 1.5 * 1024 * 1024 * 1024,
 } as const
 
+export interface OpenOptions {
+  /** Skip the sha-256 of the original bytes. `deck.originalHash` is then empty; nothing
+   *  reads it, and a reader that never saves has no reason to hash 150 MB. */
+  hash?: boolean
+}
+
 /** Declared sizes from the central directory, checked before any part is inflated. */
 export function assertZipWithinLimits(zip: JSZip): void {
   const files = Object.values(zip.files).filter((f) => !f.dir)
@@ -63,14 +69,20 @@ export function assertZipWithinLimits(zip: JSZip): void {
 
 export class PackageArchive {
   private constructor(
-    private readonly zip: JSZip,
-    /** Original bytes of every entry, keyed by path inside the zip */
+    /**
+     * Original bytes of every entry, keyed by path inside the zip. Mutated in place
+     * by the edit layers (set/delete); the save path rebuilds the package from it.
+     */
     readonly entries: Map<string, Uint8Array>,
     readonly originalHash: string,
   ) {}
 
-  static async open(bytes: Uint8Array): Promise<PackageArchive> {
-    const originalHash = createHash('sha256').update(bytes).digest('hex')
+  static async open(bytes: Uint8Array, options: OpenOptions = {}): Promise<PackageArchive> {
+    // The hash is a save-time anchor nothing reads back (the deck carries it, no
+    // consumer does), so a read-only caller pays nothing for it — over a 150 MB deck
+    // that is one full hashing pass plus its transient copy of the whole buffer.
+    const originalHash =
+      options.hash === false ? '' : createHash('sha256').update(bytes).digest('hex')
     // The declared-size pass below is advisory; this metered gate is the one
     // that holds when a part lies about its size (GH #759, measured at
     // 1.2 GB of RSS from a 1.1 MB deck).
@@ -84,7 +96,11 @@ export class PackageArchive {
       if (file.dir) continue
       entries.set(name, await file.async('uint8array'))
     }
-    return new PackageArchive(zip, entries, originalHash)
+    // JSZip holds the compressed source and is only needed while inflating: every
+    // reader goes through `entries` from here, and a save rebuilds the package from
+    // `entries` too. Letting the archive go keeps the deck's own compressed bytes
+    // from staying resident next to the inflated copy.
+    return new PackageArchive(entries, originalHash)
   }
 
   has(path: string): boolean {

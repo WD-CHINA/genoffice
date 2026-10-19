@@ -54,10 +54,20 @@ async function rasterizeMetafile(url: string): Promise<string | null> {
   return metafileToDataUrl(bytes, mime, { maxSidePx: MAX_METAFILE_RASTER_PX })
 }
 
-export function createImageLoader(apply: ApplyImages, batchSize = 16, delayMs = 100) {
+export function createImageLoader(
+  apply: ApplyImages,
+  batchSize = 16,
+  delayMs = 100,
+  /** Images decoding at once. Browsers fully decode every frame of an animated
+   *  picture as soon as it is painted, so a deck with many large GIFs (a course
+   *  deck of 10 x 18 MB ones peaks at ~1.4 GB of decoded frames) OOM-kills the
+   *  renderer process the moment they all start decoding together. */
+  maxConcurrent = 3,
+) {
   const loaded = new Map<string, HTMLImageElement>()
   const loading = new Set<string>()
   const failed = new Set<string>()
+  const queued: string[] = []
   const buf = new Map<string, HTMLImageElement>()
   let timer: ReturnType<typeof setTimeout> | null = null
   let disposed = false
@@ -73,42 +83,74 @@ export function createImageLoader(apply: ApplyImages, batchSize = 16, delayMs = 
     apply(entries)
   }
 
+  const settled = () => buf.size >= batchSize || (loading.size === 0 && !queued.length)
+
+  const start = (u: string) => {
+    loading.add(u)
+    const img = new Image()
+    const done = (ok: boolean) => {
+      loading.delete(u)
+      if (ok) {
+        loaded.set(u, img)
+        if (!disposed) buf.set(u, img)
+      } else failed.add(u)
+      pump()
+      if (settled()) flush()
+      else if (!timer && buf.size > 0) timer = setTimeout(flush, delayMs)
+    }
+    img.onload = () => done(true)
+    img.onerror = () => done(false)
+    if (METAFILE_RE.test(u)) {
+      void rasterizeMetafile(u)
+        .then((png) => {
+          if (png) img.src = png
+          else done(false)
+        })
+        .catch(() => done(false))
+    } else {
+      img.src = u
+    }
+  }
+
+  /** Fill the decode slots from the queue, skipping anything already handled. */
+  function pump() {
+    while (!disposed && queued.length && loading.size < maxConcurrent) {
+      const u = queued.shift()!
+      if (loaded.has(u) || loading.has(u) || failed.has(u)) continue
+      start(u)
+    }
+  }
+
   return {
-    /** urls still decoding — 0 means every image the deck asked for has settled */
+    /** urls still decoding (in flight or waiting for a slot) */
     pending(): number {
-      return loading.size
+      return loading.size + queued.length
+    },
+    /** an already-decoded image, if one is still held (dropped by `release`) */
+    image(url: string): HTMLImageElement | undefined {
+      return loaded.get(url)
     },
     load(urls: Iterable<string>) {
       for (const u of urls) {
         if (loaded.has(u) || loading.has(u) || failed.has(u)) continue
-        loading.add(u)
-        const img = new Image()
-        const done = (ok: boolean) => {
-          loading.delete(u)
-          if (ok) {
-            loaded.set(u, img)
-            if (!disposed) buf.set(u, img)
-          } else failed.add(u)
-          if (buf.size >= batchSize || loading.size === 0) flush()
-          else if (!timer && buf.size > 0) timer = setTimeout(flush, delayMs)
-        }
-        img.onload = () => done(true)
-        img.onerror = () => done(false)
-        if (METAFILE_RE.test(u)) {
-          void rasterizeMetafile(u)
-            .then((png) => {
-              if (png) img.src = png
-              else done(false)
-            })
-            .catch(() => done(false))
-        } else {
-          img.src = u
-        }
+        queued.push(u)
+      }
+      pump()
+      if (disposed || (!queued.length && !loading.size && buf.size)) flush()
+    },
+    /** Drop decoded images so their bitmaps can be collected; a later `load`
+     *  decodes them again (browsers serve the bytes from cache). Used by the
+     *  viewer to keep full-resolution pictures only for the slide on screen. */
+    release(urls: Iterable<string>) {
+      for (const u of urls) {
+        loaded.delete(u)
+        failed.delete(u)
       }
     },
     // Only guards setState after unmount; in-flight loads keep filling `loaded`
     dispose() {
       disposed = true
+      queued.length = 0
       if (timer) clearTimeout(timer)
     },
   }

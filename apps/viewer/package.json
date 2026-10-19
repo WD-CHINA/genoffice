@@ -9,6 +9,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --import tsx --test tests/*.test.ts",
+    "test:performance": "node scripts/performance-smoke.mjs",
     "test:standalone": "node scripts/standalone-smoke.mjs",
     "package": "node scripts/build.mjs && node scripts/package.mjs"
   },

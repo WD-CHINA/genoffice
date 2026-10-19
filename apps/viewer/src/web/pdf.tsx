@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { ToolbarIcon } from './toolbar-icon'
+import { ViewerBar } from './viewer-bar'
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import worker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
@@ -265,7 +266,7 @@ export function Pdf({ src }: { src: string }) {
         }
       }}
     >
-      <header className="viewer-bar">
+      <ViewerBar>
         <div className="viewer-toolbar-group" role="group" aria-label="PDF 导航面板">
           <button
             aria-pressed={sidebar === 'thumbs'}
@@ -340,7 +341,7 @@ export function Pdf({ src }: { src: string }) {
             文档信息
           </button>
         </div>
-      </header>
+      </ViewerBar>
       <div className="viewer-bar viewer-search-controls" hidden>
         <input
           aria-label="搜索 PDF"

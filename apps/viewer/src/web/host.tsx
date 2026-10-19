@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import JSZip from 'jszip'
 import { ToolbarIcon } from './toolbar-icon'
+import { ViewerBar } from './viewer-bar'
 import { applyViewerUi, readViewerUi, viewerUiParams } from './ui-options'
 import '@genoffice/ui/tokens.css'
 import './viewer.css'
@@ -124,7 +125,7 @@ function Host() {
   }
   return (
     <main className="viewer-host">
-      <header className="viewer-bar viewer-file-bar" hidden={!ui.showHeader}>
+      <ViewerBar className="viewer-file-bar" hidden={!ui.showHeader}>
         <strong className="viewer-brand">
           <span className="viewer-brand-icon">
             <ToolbarIcon name="document" />
@@ -171,7 +172,7 @@ function Host() {
             导入 URL
           </button>
         </form>
-      </header>
+      </ViewerBar>
       {error && (
         <p role="alert" className="viewer-error">
           {error}

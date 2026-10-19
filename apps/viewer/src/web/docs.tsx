@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
 import { ToolbarIcon } from './toolbar-icon'
+import { ViewerBar } from './viewer-bar'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { parseLazyMediaUrl } from '@genoffice/docx-engine/lazy-media'
 import { readPageColor, setAltChunkHtmlConverter } from '@genoffice/docx-engine'
@@ -456,7 +457,7 @@ export function Docs({ src }: { src: string }) {
         }}
       >
         {ready && (
-          <header className="viewer-bar">
+          <ViewerBar>
             <div className="viewer-toolbar-group" role="group" aria-label="Word 页面导航">
               <button disabled={currentPage <= 1} onClick={() => goPage(currentPage - 1)}>
                 <ToolbarIcon name="previous" />
@@ -533,7 +534,7 @@ export function Docs({ src }: { src: string }) {
                 <option value="original">原始版本</option>
               </select>
             </label>
-          </header>
+          </ViewerBar>
         )}
         {error && (
           <p role="alert" className="viewer-error">

@@ -10,6 +10,7 @@ import type { SlidesDataSource } from '@genoffice/viewer-renderers/slides/render
 import '@genoffice/viewer-renderers/slides/renderer/styles.css'
 import { hitLink } from '@genoffice/viewer-renderers/slides/renderer/preview-links'
 import { ToolbarIcon } from './toolbar-icon'
+import { ViewerBar } from './viewer-bar'
 import { createPptxSession, type PptxDeck } from './pptx-session'
 import { readViewerUi } from './ui-options'
 import { createViewerTiming } from './performance'
@@ -469,7 +470,7 @@ export function Slides({ src }: { src: string }) {
   return (
     <LocaleProvider initial="zh">
       <div className="viewer-preview">
-        <header className="viewer-bar">
+        <ViewerBar>
           <div className="viewer-toolbar-group" role="group" aria-label="幻灯片导航">
             <button disabled={!page} onClick={() => navigate(page - 1)}>
               <ToolbarIcon name="previous" />
@@ -529,7 +530,7 @@ export function Slides({ src }: { src: string }) {
             <ToolbarIcon name="play" />
             开始放映
           </button>
-        </header>
+        </ViewerBar>
         {error && (
           <p className="viewer-error" role="alert">
             {error}

@@ -360,6 +360,38 @@ export function Docs({ src }: { src: string }) {
         .filter((row) => row.title && row.idx),
     )
   }, [])
+  const trackPage = useCallback(() => {
+    const scroll = container.current?.querySelector<HTMLElement>('.pv-scroll')
+    if (!scroll) return
+    const viewport = scroll.getBoundingClientRect()
+    const sheets = [...scroll.querySelectorAll<HTMLElement>('.pv-page')]
+    const visibleHeight = (page: HTMLElement) => {
+      const rect = page.getBoundingClientRect()
+      return Math.max(0, Math.min(rect.bottom, viewport.bottom) - Math.max(rect.top, viewport.top))
+    }
+    const nearest = sheets.reduce<HTMLElement | null>(
+      (best, page) => (!best || visibleHeight(page) > visibleHeight(best) ? page : best),
+      null,
+    )
+    if (nearest) setCurrentPage(Number(nearest.dataset.pvPage) + 1)
+  }, [])
+  useEffect(() => {
+    const element = container.current
+    if (!element) return
+    // Rotation and fit changes can move the visible page without a scroll event.
+    let frame = 0
+    const update = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(trackPage)
+    }
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    update()
+    return () => {
+      observer.disconnect()
+      cancelAnimationFrame(frame)
+    }
+  }, [trackPage, zoom, pages, ready])
   const goPage = (value: number) => {
     const next = Math.max(1, Math.min(pages, value))
     container.current
@@ -442,6 +474,10 @@ export function Docs({ src }: { src: string }) {
       a.rel = 'noopener noreferrer'
     }
   }
+  const changeZoom = (direction: number) => {
+    setFit(null)
+    setZoom((value) => Math.max(0.25, Math.min(3, value + direction * 0.1)))
+  }
   return (
     <LocaleProvider initial="zh">
       <div
@@ -476,14 +512,8 @@ export function Docs({ src }: { src: string }) {
         {ready && (
           <ViewerBar floating label="Word 控制栏">
             <PageControl format="Word" current={currentPage} total={pages} onChange={goPage} />
-            <ZoomControl
-              value={zoom}
-              onZoom={(direction) => {
-                setFit(null)
-                setZoom((value) => Math.max(0.25, Math.min(3, value + direction * 0.1)))
-              }}
-            />
-            <ToolbarMore>
+            <ZoomControl value={zoom} onZoom={changeZoom} />
+            <ToolbarMore zoom={{ value: zoom, onZoom: changeZoom }}>
               <FitControls fit={fit} onFit={setFit} />
               <label className="viewer-revision-control viewer-toolbar-end">
                 修订
@@ -583,22 +613,7 @@ export function Docs({ src }: { src: string }) {
               onCopy={(event) => copyDocSelection(event.currentTarget, event)}
               onScrollCapture={(event) => {
                 const scroll = event.target as HTMLElement
-                if (!scroll.classList.contains('pv-scroll')) return
-                const viewport = scroll.getBoundingClientRect()
-                const sheets = [...scroll.querySelectorAll<HTMLElement>('.pv-page')]
-                const visibleHeight = (page: HTMLElement) => {
-                  const r = page.getBoundingClientRect()
-                  return Math.max(
-                    0,
-                    Math.min(r.bottom, viewport.bottom) - Math.max(r.top, viewport.top),
-                  )
-                }
-                const nearest = sheets.reduce<HTMLElement | null>(
-                  (best, page) =>
-                    !best || visibleHeight(page) > visibleHeight(best) ? page : best,
-                  null,
-                )
-                if (nearest) setCurrentPage(Number(nearest.dataset.pvPage) + 1)
+                if (scroll.classList.contains('pv-scroll')) trackPage()
               }}
             >
               <div

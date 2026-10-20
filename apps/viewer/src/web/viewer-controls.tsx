@@ -51,6 +51,7 @@ export function PageControl({
         <span className="viewer-sr-only">页码</span>
         <select
           aria-label={`${format} 页码`}
+          title={`第 ${current} 页，共 ${total} 页`}
           value={current}
           disabled={!total}
           onChange={(event) => onChange(Number(event.target.value))}
@@ -61,6 +62,9 @@ export function PageControl({
             </option>
           ))}
         </select>
+        <span className="viewer-mobile-page-value" aria-hidden="true">
+          {current} / {total}
+        </span>
       </label>
       <span className="viewer-page-count">/ {total}</span>
       <ControlButton
@@ -76,22 +80,38 @@ export function PageControl({
 export function ZoomControl({
   value,
   onZoom,
+  mobileOnly = false,
 }: {
   value: number
   onZoom: (direction: number) => void
+  mobileOnly?: boolean
 }) {
   return (
-    <div className="viewer-toolbar-group viewer-zoom-controls" role="group" aria-label="缩放">
-      <ControlButton icon="minus" label="缩小" onClick={() => onZoom(-1)} />
+    <div
+      className={`viewer-toolbar-group viewer-zoom-controls${mobileOnly ? ' viewer-mobile-zoom' : ''}`}
+      role="group"
+      aria-label="缩放"
+    >
+      <ControlButton icon="minus" label="缩小" onClick={() => onZoom(-1)}>
+        {mobileOnly && '缩小'}
+      </ControlButton>
       <output className="viewer-zoom-value" aria-label="缩放比例">
         {Math.round(value * 100)}%
       </output>
-      <ControlButton icon="plus" label="放大" onClick={() => onZoom(1)} />
+      <ControlButton icon="plus" label="放大" onClick={() => onZoom(1)}>
+        {mobileOnly && '放大'}
+      </ControlButton>
     </div>
   )
 }
 
-export function ToolbarMore({ children }: { children: React.ReactNode }) {
+export function ToolbarMore({
+  children,
+  zoom,
+}: {
+  children: React.ReactNode
+  zoom?: { value: number; onZoom: (direction: number) => void }
+}) {
   const ref = useRef<HTMLDetailsElement>(null)
   useEffect(() => {
     const outside = (event: PointerEvent) => {
@@ -120,9 +140,12 @@ export function ToolbarMore({ children }: { children: React.ReactNode }) {
       <div
         className="viewer-more-panel"
         onClick={(event) => {
-          if ((event.target as Element).closest('button') && ref.current) ref.current.open = false
+          const target = event.target as Element
+          if (target.closest('button') && !target.closest('.viewer-mobile-zoom') && ref.current)
+            ref.current.open = false
         }}
       >
+        {zoom && <ZoomControl {...zoom} mobileOnly />}
         {children}
       </div>
     </details>

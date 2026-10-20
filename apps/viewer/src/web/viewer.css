@@ -673,6 +673,10 @@ html[data-viewer-errors='false'] #root .viewer-warning {
   border-top: 1px solid var(--border);
   padding: 12px 4px 4px;
 }
+.viewer-mobile-page-value,
+.viewer-floating-bar .viewer-mobile-zoom {
+  display: none;
+}
 .viewer-thumbs-toggle {
   position: absolute;
   z-index: 90;
@@ -848,25 +852,123 @@ html[data-viewer-errors='false'] #root .viewer-warning {
   color: var(--text-secondary);
   font-size: 10px;
 }
-@container (max-width: 560px) {
-  .viewer-preview > .viewer-floating-bar .viewer-page-controls {
-    flex-basis: 100%;
-    justify-content: center;
+@container (max-width: 700px) {
+  .viewer-floating-bar .viewer-bar-track {
+    flex-wrap: nowrap;
+    gap: 4px;
+    padding: 6px;
+  }
+  .viewer-floating-bar .viewer-page-controls {
+    flex-basis: auto;
+    min-width: 0;
+    gap: 2px;
     border-inline-end: 0;
-    border-bottom: 1px solid var(--border);
-    padding: 0 0 6px;
+    padding: 0;
   }
-  .viewer-preview > .viewer-floating-bar {
+  .viewer-floating-bar {
     width: max-content;
-    max-width: calc(100% - 24px);
+    max-width: calc(100% - 24px - env(safe-area-inset-left, 0px) - env(safe-area-inset-right, 0px));
+    border-radius: 14px;
+    bottom: calc(12px + env(safe-area-inset-bottom, 0px));
   }
-  .viewer-preview > .viewer-floating-bar button,
-  .viewer-preview > .viewer-floating-bar summary,
-  .viewer-preview > .viewer-floating-bar select {
-    min-height: 40px;
+  .viewer-floating-bar button,
+  .viewer-floating-bar summary,
+  .viewer-floating-bar select {
+    min-height: 44px;
   }
-  .viewer-preview > .viewer-floating-bar button {
-    min-width: 40px;
+  .viewer-floating-bar button,
+  .viewer-floating-bar summary {
+    min-width: 44px;
+    padding: 8px;
+    touch-action: manipulation;
+  }
+  .viewer-floating-bar .viewer-toolbar-icon {
+    width: 20px;
+    height: 20px;
+  }
+  .viewer-floating-bar .viewer-page-picker {
+    position: relative;
+    flex-shrink: 1;
+    min-width: 0;
+  }
+  .viewer-floating-bar .viewer-page-picker select {
+    width: 88px;
+    min-width: 0;
+    padding: 0;
+    color: transparent;
+    appearance: none;
+    -webkit-appearance: none;
+    min-height: 44px;
+    font-size: 16px;
+  }
+  .viewer-floating-bar .viewer-more-panel select {
+    min-height: 44px;
+    font-size: 16px;
+  }
+  .viewer-floating-bar .viewer-page-picker option {
+    color: var(--text);
+    background: var(--surface);
+  }
+  .viewer-mobile-page-value {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding-inline: 4px;
+    pointer-events: none;
+    color: var(--text);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+  .viewer-mobile-page-value::after {
+    content: '';
+    width: 5px;
+    height: 5px;
+    margin-block-start: -3px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg);
+  }
+  .viewer-floating-bar .viewer-page-count,
+  .viewer-floating-bar .viewer-bar-track > .viewer-zoom-controls,
+  .viewer-floating-bar .viewer-toolbar-more > summary > span,
+  .viewer-floating-bar .viewer-primary-action .viewer-control-label,
+  .viewer-show-controls .viewer-show-exit .viewer-control-label {
+    display: none;
+  }
+  .viewer-floating-bar .viewer-toolbar-more {
+    position: static;
+  }
+  .viewer-floating-bar .viewer-more-panel {
+    left: 50%;
+    right: auto;
+    bottom: calc(100% + 10px);
+    transform: translateX(-50%);
+    width: 240px;
+    max-width: calc(100cqw - 24px);
+    max-height: min(340px, 55dvh);
+  }
+  .viewer-floating-bar .viewer-mobile-zoom {
+    display: flex;
+    gap: 4px;
+    padding-block-end: 8px;
+    margin-block-end: 4px;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+  }
+  .viewer-floating-bar .viewer-mobile-zoom button {
+    flex: 1;
+    width: auto;
+    min-width: 44px;
+    justify-content: center;
+    padding-inline: 4px;
+    gap: 4px;
+  }
+  .viewer-floating-bar .viewer-mobile-zoom .viewer-zoom-value {
+    font-size: 12px;
   }
   .viewer-show-status {
     display: none;
@@ -877,7 +979,7 @@ html[data-viewer-errors='false'] #root .viewer-warning {
 }
 @media (max-width: 560px) {
   .viewer-preview {
-    --viewer-panel-bottom: 156px;
+    --viewer-panel-bottom: calc(84px + env(safe-area-inset-bottom, 0px));
   }
   .viewer-file-bar .viewer-bar-track {
     gap: 8px;
@@ -902,17 +1004,25 @@ html[data-viewer-errors='false'] #root .viewer-warning {
     flex: 1;
     width: 0;
   }
-  .viewer-floating-bar {
-    bottom: max(12px, env(safe-area-inset-bottom));
-  }
   .viewer-pdf-scroll,
   .viewer-doc .pv-scroll {
     padding-inline: 12px;
   }
 }
-@container (max-width: 360px) {
-  .viewer-floating-bar .viewer-primary-action .viewer-control-label {
-    display: none;
+@media (pointer: coarse) {
+  .viewer-floating-bar button,
+  .viewer-floating-bar summary,
+  .viewer-floating-bar select {
+    min-height: 44px;
+  }
+  .viewer-floating-bar button,
+  .viewer-floating-bar summary {
+    min-width: 44px;
+    touch-action: manipulation;
+  }
+  .viewer-floating-bar .viewer-bar-track select {
+    min-height: 44px;
+    font-size: 16px;
   }
 }
 html[data-viewer-toolbar='false'] .viewer-preview {

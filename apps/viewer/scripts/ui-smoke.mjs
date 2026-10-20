@@ -108,12 +108,19 @@ async function layout(frame) {
     )
     return {
       width: innerWidth,
+      coarsePointer: matchMedia('(pointer: coarse)').matches,
       scrollWidth: document.documentElement.scrollWidth,
       inBounds:
         bounds.left >= rect.left + 7 &&
         bounds.right <= rect.right - 7 &&
         bounds.bottom <= rect.bottom - 7,
       overlay: Math.abs(body.top - rect.top) < 2,
+      toolbarHeight: bounds.height,
+      touchTargets: controls.map((el) => ({
+        label: el.getAttribute('aria-label'),
+        width: el.getBoundingClientRect().width,
+        height: el.getBoundingClientRect().height,
+      })),
       smallControls: controls
         .filter((el) => el.getBoundingClientRect().height < 32)
         .map((el) => el.getAttribute('aria-label')),
@@ -128,6 +135,18 @@ async function layout(frame) {
   )
   assert.deepEqual(result.smallControls, [], 'Controls became too small')
   assert.equal(result.zoom, '', 'Toolbar uses JS zoom')
+  if (result.width <= 700) {
+  }
+  if (result.width <= 700 || result.coarsePointer) {
+    assert.ok(
+      result.toolbarHeight <= 64,
+      `Mobile toolbar wraps or grows too tall: ${JSON.stringify(result)}`,
+    )
+    assert.ok(
+      result.touchTargets.every((target) => target.width >= 43.5 && target.height >= 43.5),
+      `Mobile touch targets are too small: ${JSON.stringify(result.touchTargets)}`,
+    )
+  }
   const sizes = await frame.locator('.viewer-preview').evaluate(async (root) => {
     const page = root.querySelector('.viewer-slide-stage, .pv-page, .viewer-pdf-page')
     const read = () => {
@@ -196,6 +215,19 @@ try {
         await bar.locator('summary').click()
         const panel = await bar.locator('.viewer-more-panel').boundingBox()
         assert.ok(panel.x >= 0 && panel.x + panel.width <= width, 'More panel outside viewport')
+        if (width <= 560) {
+          const zoom = bar.locator('.viewer-mobile-zoom')
+          await expect(zoom).toBeVisible()
+          const documentPage = frame
+            .locator('.viewer-slide-stage, .pv-page, .viewer-pdf-page')
+            .first()
+          const before = (await documentPage.boundingBox()).width
+          await zoom.getByRole('button', { name: '放大', exact: true }).click()
+          await expect
+            .poll(async () => (await documentPage.boundingBox()).width)
+            .toBeGreaterThan(before + 0.1)
+          await expect(bar.locator('details')).toHaveAttribute('open', '')
+        }
         await bar.getByRole('button', { name: '适合页面', exact: true }).click()
         await expect(bar.locator('details')).not.toHaveAttribute('open')
         await page.screenshot({ path: `${output}/${format}-${theme}-${width}.png` })
@@ -210,12 +242,13 @@ try {
       await expect(frame.getByLabel(`${format} 页码`)).toHaveValue('2')
       await bar.getByRole('button', { name: '上一页', exact: true }).click()
       await expect(frame.getByLabel(`${format} 页码`)).toHaveValue('1')
-      const zoom = await bar.getByLabel('缩放比例').innerText()
-      if (format === 'PPT') await expect(bar.getByLabel('缩放比例')).toBeHidden()
-      else await expect(bar.getByLabel('缩放比例')).toBeVisible()
+      const desktopZoom = bar.locator('.viewer-bar-track > .viewer-zoom-controls')
+      const zoom = await desktopZoom.getByLabel('缩放比例').innerText()
+      if (format === 'PPT') await expect(desktopZoom.getByLabel('缩放比例')).toBeHidden()
+      else await expect(desktopZoom.getByLabel('缩放比例')).toBeVisible()
       await bar.getByRole('button', { name: '放大', exact: true }).click()
-      await expect(bar.getByLabel('缩放比例')).not.toHaveText(zoom)
-      if (format === 'PPT') await expect(bar.getByLabel('缩放比例')).toBeHidden()
+      await expect(desktopZoom.getByLabel('缩放比例')).not.toHaveText(zoom)
+      if (format === 'PPT') await expect(desktopZoom.getByLabel('缩放比例')).toBeHidden()
       if (format === 'PPT') {
         await bar.locator('summary').click()
         await bar.getByRole('button', { name: '适合页面', exact: true }).click()
@@ -300,6 +333,66 @@ try {
     await expect(frame.getByRole('toolbar', { name: `${format} 控制栏` })).toBeVisible()
     await expect(frame.getByRole('button', { name: '幻灯片预览', exact: true })).toHaveCount(0)
     await layout(frame)
+    await context.close()
+  }
+  for (const format of Object.keys(fixtures).filter(
+    (format) => !process.env.VIEWER_UI_FORMAT || process.env.VIEWER_UI_FORMAT === format,
+  )) {
+    const context = await browser.newContext({
+      viewport: { width: 390, height: 844 },
+      isMobile: true,
+      hasTouch: true,
+      deviceScaleFactor: 2,
+    })
+    const page = await context.newPage()
+    page.on('pageerror', (error) => faults.push(`${format} mobile: ${error.message}`))
+    const frame = await load(page, format)
+    assert.equal(await page.evaluate(() => innerWidth), 390, 'Mobile viewport is scaled down')
+    const bar = frame.getByRole('toolbar', { name: `${format} 控制栏` })
+    await layout(frame)
+    await bar.locator('summary').tap()
+    const mobileZoom = bar.locator('.viewer-mobile-zoom')
+    await expect(mobileZoom).toBeVisible()
+    await mobileZoom.getByRole('button', { name: '放大', exact: true }).tap()
+    await expect(bar.locator('details')).toHaveAttribute('open', '')
+    await page.screenshot({ path: `${output}/${format}-touch-menu-390.png` })
+    await bar.getByRole('button', { name: '适合页面', exact: true }).tap()
+    await bar.getByRole('button', { name: '下一页', exact: true }).tap()
+    await expect(frame.getByLabel(`${format} 页码`)).toHaveValue('2')
+    await page.screenshot({ path: `${output}/${format}-touch-390.png` })
+    for (const viewport of [
+      { width: 844, height: 390 },
+      { width: 667, height: 375 },
+      { width: 568, height: 320 },
+      { width: 320, height: 568 },
+    ]) {
+      await page.setViewportSize(viewport)
+      await page.waitForTimeout(200)
+      await layout(frame)
+      await bar.locator('summary').tap()
+      const panel = await bar.locator('.viewer-more-panel').boundingBox()
+      const document = await frame.locator('.viewer-preview').boundingBox()
+      assert.ok(
+        panel.x >= document.x && panel.x + panel.width <= document.x + document.width,
+        'Mobile menu overflows after orientation change',
+      )
+      assert.ok(panel.y >= document.y, 'Mobile menu overflows above the content')
+      await bar.getByRole('button', { name: '适合页面', exact: true }).tap()
+    }
+    if (format === 'PPT') {
+      await bar.getByRole('button', { name: '开始放映', exact: true }).tap()
+      const show = frame.getByRole('toolbar', { name: '放映控制栏' })
+      await expect(show).toBeVisible()
+      const rect = await show.boundingBox()
+      assert.ok(
+        rect.height <= 64 && rect.x >= 0 && rect.x + rect.width <= 320,
+        'Mobile presentation controls overflow or wrap',
+      )
+      await page.screenshot({ path: `${output}/PPT-touch-presentation-320.png` })
+      await show.getByRole('button', { name: '退出放映', exact: true }).tap()
+      await expect(frame.locator('.slideshow')).toHaveCount(0)
+    }
+    console.log(`${format}: touch, single-row controls and portrait/landscape passed`)
     await context.close()
   }
   assert.deepEqual(faults, [], 'Browser errors')

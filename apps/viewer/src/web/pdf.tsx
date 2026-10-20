@@ -292,7 +292,7 @@ export function Pdf({ src }: { src: string }) {
         </div>
         <PageControl format="PDF" current={current} total={doc?.numPages || 0} onChange={goPage} />
         <ZoomControl value={scale} onZoom={zoom} />
-        <ToolbarMore>
+        <ToolbarMore zoom={{ value: scale, onZoom: zoom }}>
           <FitControls fit={fit} onFit={setFit} />
           <ControlButton
             icon="rotate"

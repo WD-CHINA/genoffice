@@ -501,6 +501,10 @@ export function Slides({ src }: { src: string }) {
     void document.documentElement.requestFullscreen?.().catch(() => {})
     setShow(true)
   }
+  const changeZoom = (direction: number) => {
+    setFit(null)
+    setZoom(Math.max(0.25, Math.min(4, width / deck.slides[page].widthPx + direction * 0.1)))
+  }
   return (
     <LocaleProvider initial="zh">
       <div className="viewer-preview viewer-slides">
@@ -511,16 +515,8 @@ export function Slides({ src }: { src: string }) {
             total={deck.slides.length}
             onChange={(number) => navigate(number - 1)}
           />
-          <ZoomControl
-            value={width / deck.slides[page].widthPx}
-            onZoom={(direction) => {
-              setFit(null)
-              setZoom(
-                Math.max(0.25, Math.min(4, width / deck.slides[page].widthPx + direction * 0.1)),
-              )
-            }}
-          />
-          <ToolbarMore>
+          <ZoomControl value={width / deck.slides[page].widthPx} onZoom={changeZoom} />
+          <ToolbarMore zoom={{ value: width / deck.slides[page].widthPx, onZoom: changeZoom }}>
             <FitControls fit={fit} onFit={setFit} />
           </ToolbarMore>
           <ControlButton

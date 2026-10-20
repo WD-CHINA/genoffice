@@ -189,7 +189,7 @@ function Host() {
         <iframe
           key={opened.id}
           title={opened.name}
-          src={`/preview.html?${new URLSearchParams({ src: opened.src, format: opened.format, name: opened.name, ...viewerUiParams(ui) })}`}
+          src={`${import.meta.env.BASE_URL}preview.html?${new URLSearchParams({ src: opened.src, format: opened.format, name: opened.name, ...viewerUiParams(ui) })}`}
           allow="fullscreen"
         />
       ) : (

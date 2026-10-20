@@ -16,12 +16,15 @@ const mime = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html
 const errors = []
 const results = []
 const servers = []
+const publicBase = (process.env.VIEWER_BASE || '/viewer/').replace(/\/$/, '')
 
 async function serve(directory) {
   const base = resolve(directory)
   const server = createServer(async (req, res) => {
     try {
-      const pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname)
+      let pathname = decodeURIComponent(new URL(req.url, 'http://localhost').pathname)
+      if (publicBase !== '/' && (pathname === publicBase || pathname.startsWith(publicBase + '/')))
+        pathname = pathname.slice(publicBase.length) || '/'
       const file = resolve(base, '.' + (pathname === '/' ? '/index.html' : pathname))
       if (!file.startsWith(base + sep)) throw new Error('Invalid path')
       const bytes = await readFile(file)

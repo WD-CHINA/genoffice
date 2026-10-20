@@ -7,11 +7,14 @@ import { expect } from '@playwright/test'
 import { app, root } from './paths.mjs'
 
 const base = resolve(app, 'dist/web')
+const publicBase = (process.env.VIEWER_BASE || '/viewer/').replace(/\/$/, '')
 const output = process.env.VIEWER_UI_SCREENSHOTS || '/tmp/genoffice-viewer-ui'
 await mkdir(output, { recursive: true })
 const server = createServer(async (req, res) => {
   try {
-    const name = decodeURIComponent(new URL(req.url, 'http://localhost').pathname)
+    let name = decodeURIComponent(new URL(req.url, 'http://localhost').pathname)
+    if (publicBase !== '/' && (name === publicBase || name.startsWith(publicBase + '/')))
+      name = name.slice(publicBase.length) || '/'
     const path = resolve(base, '.' + (name === '/' ? '/index.html' : name))
     if (!path.startsWith(base + sep)) throw new Error('Invalid path')
     const bytes = await readFile(path)

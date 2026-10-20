@@ -13,7 +13,7 @@ export async function copyPdfAssets() {
 if (process.argv[1] === new URL(import.meta.url).pathname) {
   await viteBuild({
     configFile: resolve(app, 'vite.config.ts'),
-    base: process.env.VIEWER_BASE || '/',
+    base: process.env.VIEWER_BASE || '/viewer/',
   })
   await copyPdfAssets()
 }

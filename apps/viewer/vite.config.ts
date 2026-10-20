@@ -6,9 +6,10 @@ import { writeFile, mkdir } from 'node:fs/promises'
 import { aliases, app, root } from './scripts/paths.mjs'
 
 const host = process.env.VIEWER_HOST || '0.0.0.0'
+const base = process.env.VIEWER_BASE || '/'
 
 function pdfjsAssets(): Plugin {
-  const base = resolve(root, 'node_modules/pdfjs-dist')
+  const pdfRoot = resolve(root, 'node_modules/pdfjs-dist')
   const types: Record<string, string> = {
     '.bcmap': 'application/octet-stream',
     '.pfb': 'application/octet-stream',
@@ -19,10 +20,10 @@ function pdfjsAssets(): Plugin {
   return {
     name: 'pdfjs-assets',
     configureServer(server) {
-      server.middlewares.use('/pdfjs', (req, res, next) => {
+      server.middlewares.use(`${base.replace(/\/$/, '')}/pdfjs`, (req, res, next) => {
         const url = decodeURIComponent((req.url || '/').split('?')[0]).replace(/^\/+/, '')
-        const file = resolve(base, url)
-        if (file !== base && !file.startsWith(base + sep)) return next()
+        const file = resolve(pdfRoot, url)
+        if (file !== pdfRoot && !file.startsWith(pdfRoot + sep)) return next()
         if (!existsSync(file) || !statSync(file).isFile()) return next()
         res.setHeader('Content-Type', types[extname(file)] || 'application/octet-stream')
         createReadStream(file).pipe(res)
@@ -32,6 +33,7 @@ function pdfjsAssets(): Plugin {
 }
 
 export default defineConfig({
+  base,
   root: resolve(app, 'src/web'),
   plugins: [
     react(),

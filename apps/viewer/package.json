@@ -12,7 +12,7 @@
     "test:performance": "node scripts/performance-smoke.mjs",
     "test:ui": "node scripts/ui-smoke.mjs",
     "test:standalone": "node scripts/standalone-smoke.mjs",
-    "package": "node scripts/build.mjs && node scripts/package.mjs"
+    "package": "cross-env VIEWER_BASE=/viewer/ node scripts/build.mjs && node scripts/package.mjs"
   },
   "dependencies": {
     "@genoffice/docx-engine": "*",

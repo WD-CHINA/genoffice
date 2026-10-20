@@ -146,13 +146,29 @@ export interface FileSearchHit extends RecentEntry {
 }
 
 /**
- * Endpoints the search reranker can judge against. The hosted Jev routes are
- * OpenRouter and TypeSafe's own API; Perplexity, Cloudflare and Liquid AI host
- * their own decision models; Kev and Rizzo Flow are local /v1/systemone
- * servers; `custom` points at any other /v1/systemone-compatible server.
+ * The decision-model routes the app can call. Several vendors publish more
+ * than one size or generation behind the same URL, and the difference is only
+ * the `model` in the body — but they are listed separately rather than folded
+ * into one option with a model picker, because picking the wrong one costs
+ * real money per call and a dropdown that names them is the safer surface.
  */
 export type DecisionEndpoint =
-  'openrouter' | 'direct' | 'perplexity' | 'liquid' | 'cloudflare' | 'kev' | 'rizzo' | 'custom'
+  | 'openrouter'
+  | 'direct'
+  | 'perplexity'
+  | 'perplexity-v12'
+  | 'perplexity-flash'
+  | 'liquid'
+  | 'liquid-ultra'
+  | 'cloudflare'
+  | 'cloudflare-flash'
+  | 'kev'
+  | 'rizzo'
+  | 'custom'
+
+export function isCloudflareEndpoint(endpoint: DecisionEndpoint): boolean {
+  return endpoint === 'cloudflare' || endpoint === 'cloudflare-flash'
+}
 
 /** home search options persisted in app-settings.json under `fileSearch` */
 export interface FileSearchSettings {
@@ -165,9 +181,9 @@ export interface FileSearchSettings {
   customBaseUrl: string
   /** `custom` endpoint only: model id the server expects */
   customModel: string
-  /** `cloudflare` endpoint only: Workers AI account id */
+  /** `cloudflare`/`cloudflare-flash` only: Workers AI account id */
   cloudflareAccountId: string
-  /** `cloudflare` endpoint only: Workers AI model path, e.g. @cf/cloudflare/clef or @cf/cloudflare/clef-omni */
+  /** `cloudflare`/`cloudflare-flash` only: Workers AI model path, e.g. @cf/cloudflare/clef */
   cloudflareModel: string
 }
 

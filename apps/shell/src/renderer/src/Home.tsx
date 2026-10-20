@@ -33,10 +33,14 @@ import type { SettingsTarget } from './SettingsModal'
 import { skillUpdateDue } from './IntegrationsPane'
 import { onFilesChanged } from './file-events'
 
+import type { ProjectApi } from '@genoffice/project-store'
+
 declare global {
   interface Window {
     aiOffice: HomeApi
     aiOfficeIntegrations?: IntegrationsApi
+    /** Optional: a build without the project bridge keeps the panel in memory. */
+    projectApi?: ProjectApi
   }
 }
 
@@ -3557,6 +3561,7 @@ export function Home() {
         <KbAskPanel
           onOpenPath={(path) => void window.aiOffice.openPath(path)}
           onGoToRecents={() => changeView('recent')}
+          onOpenModelSettings={() => setSettingsRequest({ section: 'aiModel' })}
         />
       ) : cloudMode ? (
         <CloudProjectsView />

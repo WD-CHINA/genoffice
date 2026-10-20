@@ -16,6 +16,10 @@ const paths = {
   outline: 'M9 5h12M9 12h12M9 19h12M3 5h.01M3 12h.01M3 19h.01',
   rotate: 'M3 10a9 9 0 1 1 2 8M3 4v6h6',
   info: 'M12 16v-4M12 8h.01M22 12a10 10 0 1 1-20 0 10 10 0 0 1 20 0',
+  more: 'M5 12h.01M12 12h.01M19 12h.01',
+  close: 'm6 6 12 12M6 18 18 6',
+  exit: 'M9 4H4v16h5M13 8l4 4-4 4M8 12h13',
+  screen: 'M3 4h18v13H3zM8 21h8M12 17v4',
 } as const
 
 export function ToolbarIcon({ name }: { name: keyof typeof paths }) {

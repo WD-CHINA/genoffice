@@ -69,6 +69,19 @@ const poll = async (read, check, message) => {
 const paint = (frame) => frame.locator('.viewer-slide-stage canvas').first().evaluate(() =>
   new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))))
 
+// Host controls may change the available document area between builds. Compare
+// content at the same canvas size rather than conflating that with a rendering change.
+async function matchCanvas(target) {
+  await target.page.setViewportSize({ width: 1440, height: 900 })
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await paint(target.frame)
+    const height = await target.frame.locator('.viewer-slide-stage canvas').first().evaluate(canvas => canvas.getBoundingClientRect().height)
+    if (Math.abs(height - 500) < 0.05) return
+    await target.page.setViewportSize({ width: 1440, height: target.page.viewportSize().height + Math.round(500 - height) })
+  }
+  await paint(target.frame)
+}
+
 async function open(browser, url, fixture, embed = false) {
   const context = await browser.newContext({ viewport: { width: 1130, height: 657 } })
   await context.addInitScript(observeWorker)
@@ -159,6 +172,8 @@ try {
     assert.ok(current.record.fontRequests < 23, 'Unused metric fonts must not be downloaded')
     if (baselineUrl) {
       const old = await open(browser, baselineUrl, fixture)
+      await matchCanvas(current)
+      await matchCanvas(old)
       const count = await current.frame.getByLabel('PPT 页码').locator('option').count()
       for (let page = 1; page <= count; page++) {
         for (const target of [current, old]) {
@@ -177,6 +192,7 @@ try {
   }
   const generated = await longDeck(fixtures[0])
   const long = await open(browser, url, generated)
+  await long.frame.getByRole('button', { name: '幻灯片预览', exact: true }).click()
   await poll(() => long.frame.locator('.viewer-thumbs canvas').count(), (count) => count > 0 && count < 15, 'Thumbnails were not virtualized')
   await poll(() => hasPicture(long.frame, 1), Boolean, 'First page picture missing')
   const reads = await long.frame.locator('body').evaluate(() => window.__workerReads)

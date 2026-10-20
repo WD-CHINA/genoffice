@@ -14,11 +14,19 @@ import { ViewerBar } from './viewer-bar'
 import { createPptxSession, type PptxDeck } from './pptx-session'
 import { readViewerUi } from './ui-options'
 import { createViewerTiming } from './performance'
+import {
+  ControlButton,
+  FitControls,
+  PageControl,
+  ToolbarMore,
+  ZoomControl,
+  contentArea,
+} from './viewer-controls'
 
 const showSidebar = readViewerUi(new URLSearchParams(location.search)).showSidebar
 const SlideShowView = lazy(() =>
-  import('@genoffice/viewer-renderers/slides/renderer/components/SlideShowView').then((module) => ({
-    default: module.SlideShowView,
+  import('./viewer-slideshow').then((module) => ({
+    default: module.ViewerSlideShow,
   })),
 )
 
@@ -89,6 +97,8 @@ export function Slides({ src }: { src: string }) {
     [fit, setFit] = useState<'width' | 'page' | null>('page'),
     [retry, setRetry] = useState(0)
   const [visibleThumbs, setVisibleThumbs] = useState(new Set<number>())
+  const [thumbsOpen, setThumbsOpen] = useState(false)
+  const thumbToggle = useRef<HTMLButtonElement>(null)
   const thumbPane = useRef<HTMLElement>(null)
   const thumbnailDemand = useRef(new Set<string>())
   const requestImages = useRef<(keys: Iterable<string>) => void>(() => {})
@@ -112,20 +122,19 @@ export function Slides({ src }: { src: string }) {
     if (!deck || !pane.current) return
     const element = pane.current
     const slide = deck.slides[page]
-    const resize = () =>
+    const resize = () => {
+      const area = contentArea(element)
       setWidth(
         fit
           ? Math.max(
               100,
               fit === 'width'
-                ? element.clientWidth - 48
-                : Math.min(
-                    element.clientWidth - 48,
-                    ((element.clientHeight - 48) * slide.widthPx) / slide.heightPx,
-                  ),
+                ? area.width
+                : Math.min(area.width, (area.height * slide.widthPx) / slide.heightPx),
             )
           : slide.widthPx * zoom,
       )
+    }
     const observer = new ResizeObserver(resize)
     observer.observe(element)
     resize()
@@ -163,7 +172,10 @@ export function Slides({ src }: { src: string }) {
   }, [deck, page, show])
   useEffect(() => {
     const root = thumbPane.current
-    if (!deck || !root || !showSidebar) return
+    if (!deck || !root || !showSidebar || !thumbsOpen) {
+      setVisibleThumbs(new Set())
+      return
+    }
     const observer = new IntersectionObserver(
       (entries) => {
         setVisibleThumbs((old) => {
@@ -180,16 +192,38 @@ export function Slides({ src }: { src: string }) {
     )
     for (const button of root.querySelectorAll('[data-slide-index]')) observer.observe(button)
     return () => observer.disconnect()
-  }, [deck])
+  }, [deck, thumbsOpen])
+  useEffect(() => {
+    if (!thumbsOpen) return
+    const close = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (!thumbPane.current?.contains(target) && !thumbToggle.current?.contains(target))
+        setThumbsOpen(false)
+    }
+    const escape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setThumbsOpen(false)
+      thumbToggle.current?.focus()
+    }
+    const selected = thumbPane.current?.querySelector<HTMLButtonElement>('[aria-current="true"]')
+    selected?.scrollIntoView({ block: 'nearest' })
+    selected?.focus({ preventScroll: true })
+    document.addEventListener('pointerdown', close)
+    document.addEventListener('keydown', escape)
+    return () => {
+      document.removeEventListener('pointerdown', close)
+      document.removeEventListener('keydown', escape)
+    }
+  }, [thumbsOpen])
   useEffect(() => {
     const wanted = new Set<string>()
-    if (showSidebar)
+    if (showSidebar && thumbsOpen)
       for (const index of visibleThumbs)
         for (const key of slideUrls.current[index] || [])
           if (!thumbsStarted.current.has(key)) wanted.add(key)
     thumbnailDemand.current = wanted
     requestImages.current(wanted)
-  }, [deck, visibleThumbs])
+  }, [deck, visibleThumbs, thumbsOpen])
   useEffect(() => {
     if (!deck) return
     timing.current?.onceAfterPaint('firstCanvas')
@@ -469,67 +503,34 @@ export function Slides({ src }: { src: string }) {
   }
   return (
     <LocaleProvider initial="zh">
-      <div className="viewer-preview">
-        <ViewerBar>
-          <div className="viewer-toolbar-group" role="group" aria-label="幻灯片导航">
-            <button disabled={!page} onClick={() => navigate(page - 1)}>
-              <ToolbarIcon name="previous" />
-              上一页
-            </button>
-            <span className="viewer-page-count">
-              {page + 1} / {deck.slides.length}
-            </span>
-            <button disabled={page === deck.slides.length - 1} onClick={() => navigate(page + 1)}>
-              下一页
-              <ToolbarIcon name="next" />
-            </button>
-            <label>
-              跳页
-              <select
-                aria-label="PPT 页码"
-                value={page + 1}
-                onChange={(e) => navigate(Number(e.target.value) - 1)}
-              >
-                {deck.slides.map((_slide: unknown, index: number) => (
-                  <option key={index} value={index + 1}>
-                    第 {index + 1} 页
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
-          <div className="viewer-toolbar-group" role="group" aria-label="幻灯片缩放">
-            <button
-              onClick={() => {
-                setFit(null)
-                setZoom(Math.max(0.25, width / deck.slides[page].widthPx - 0.1))
-              }}
-            >
-              <ToolbarIcon name="minus" />
-              缩小
-            </button>
-            <button
-              onClick={() => {
-                setFit(null)
-                setZoom(Math.min(4, width / deck.slides[page].widthPx + 0.1))
-              }}
-            >
-              <ToolbarIcon name="plus" />
-              放大
-            </button>
-            <button aria-pressed={fit === 'width'} onClick={() => setFit('width')}>
-              <ToolbarIcon name="width" />
-              适合宽度
-            </button>
-            <button aria-pressed={fit === 'page'} onClick={() => setFit('page')}>
-              <ToolbarIcon name="page" />
-              适合页面
-            </button>
-          </div>
-          <button className="viewer-primary-action viewer-toolbar-end" onClick={start}>
-            <ToolbarIcon name="play" />
+      <div className="viewer-preview viewer-slides">
+        <ViewerBar floating label="PPT 控制栏">
+          <PageControl
+            format="PPT"
+            current={page + 1}
+            total={deck.slides.length}
+            onChange={(number) => navigate(number - 1)}
+          />
+          <ZoomControl
+            value={width / deck.slides[page].widthPx}
+            onZoom={(direction) => {
+              setFit(null)
+              setZoom(
+                Math.max(0.25, Math.min(4, width / deck.slides[page].widthPx + direction * 0.1)),
+              )
+            }}
+          />
+          <ToolbarMore>
+            <FitControls fit={fit} onFit={setFit} />
+          </ToolbarMore>
+          <ControlButton
+            icon="play"
+            label="开始放映"
+            className="viewer-primary-action"
+            onClick={start}
+          >
             开始放映
-          </button>
+          </ControlButton>
         </ViewerBar>
         {error && (
           <p className="viewer-error" role="alert">
@@ -539,14 +540,50 @@ export function Slides({ src }: { src: string }) {
         )}
         <div className="viewer-deck">
           {showSidebar && (
-            <aside className="viewer-thumbs" ref={thumbPane}>
+            <button
+              ref={thumbToggle}
+              type="button"
+              className="viewer-thumbs-toggle"
+              aria-label="幻灯片预览"
+              title="幻灯片预览"
+              aria-expanded={thumbsOpen}
+              aria-controls="viewer-slide-previews"
+              onClick={() => setThumbsOpen((value) => !value)}
+            >
+              <ToolbarIcon name="thumbs" />
+              <span>预览</span>
+              <span className="viewer-thumb-total">{deck.slides.length}</span>
+            </button>
+          )}
+          {showSidebar && thumbsOpen && (
+            <aside
+              className="viewer-thumbs"
+              id="viewer-slide-previews"
+              aria-label="幻灯片预览图"
+              ref={thumbPane}
+            >
+              <div className="viewer-thumbs-heading">
+                <span>幻灯片预览</span>
+                <ControlButton
+                  icon="close"
+                  label="关闭预览图"
+                  onClick={() => {
+                    setThumbsOpen(false)
+                    thumbToggle.current?.focus()
+                  }}
+                />
+              </div>
               {deck.slides.map((slide: any, i: number) => (
                 <button
                   key={i}
                   aria-label={`第 ${i + 1} 页`}
                   aria-current={i === page}
                   data-slide-index={i}
-                  onClick={() => navigate(i)}
+                  onClick={() => {
+                    navigate(i)
+                    setThumbsOpen(false)
+                    thumbToggle.current?.focus()
+                  }}
                 >
                   <div style={{ width: 126, height: (126 * slide.heightPx) / slide.widthPx }}>
                     {visibleThumbs.has(i) && (

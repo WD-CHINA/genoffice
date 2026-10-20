@@ -1,11 +1,15 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
-import { ToolbarIcon } from './toolbar-icon'
 import { ViewerBar } from './viewer-bar'
+import { FitControls, PageControl, ToolbarMore, ZoomControl, contentArea } from './viewer-controls'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { parseLazyMediaUrl } from '@genoffice/docx-engine/lazy-media'
 import { readPageColor, setAltChunkHtmlConverter } from '@genoffice/docx-engine'
 import JSZip from 'jszip'
-import { decryptDocx, DocxDecryptError, isEncryptedDocx } from '@genoffice/viewer-services/docs/decrypt'
+import {
+  decryptDocx,
+  DocxDecryptError,
+  isEncryptedDocx,
+} from '@genoffice/viewer-services/docs/decrypt'
 import { parseDocxOffThread } from '@genoffice/viewer-renderers/docs/renderer/parse-off-thread'
 import {
   editorExtensions,
@@ -81,7 +85,7 @@ export function Docs({ src }: { src: string }) {
     [accessible, setAccessible] = useState(''),
     [navigation, setNavigation] = useState<{ title: string; idx: string }[]>([]),
     [revision, setRevision] = useState('all'),
-    [fit, setFit] = useState<'width' | 'page' | null>(null)
+    [fit, setFit] = useState<'width' | 'page' | null>('width')
   const container = useRef<HTMLDivElement>(null)
   const conversionError = useRef<string | null>(null)
   const opening = useRef<{ src: string; promise: Promise<any> } | null>(null)
@@ -116,7 +120,8 @@ export function Docs({ src }: { src: string }) {
                   bytes = new Uint8Array(await decryptDocx(bytes, password))
                   unlocked = true
                 } catch (error) {
-                  if (!(error instanceof DocxDecryptError) || error.reason !== 'wrong-password') throw error
+                  if (!(error instanceof DocxDecryptError) || error.reason !== 'wrong-password')
+                    throw error
                   window.alert('密码不正确，请重试。')
                 }
               }
@@ -145,14 +150,27 @@ export function Docs({ src }: { src: string }) {
                 }
                 const mediaBytes = await file.async('uint8array')
                 const url = URL.createObjectURL(
-                  new Blob([mediaBytes.buffer.slice(mediaBytes.byteOffset, mediaBytes.byteOffset + mediaBytes.byteLength) as ArrayBuffer], {
-                    type: mime[ext] || '',
-                  }),
+                  new Blob(
+                    [
+                      mediaBytes.buffer.slice(
+                        mediaBytes.byteOffset,
+                        mediaBytes.byteOffset + mediaBytes.byteLength,
+                      ) as ArrayBuffer,
+                    ],
+                    {
+                      type: mime[ext] || '',
+                    },
+                  ),
                 )
                 mediaUrls.set(key, url)
                 return url
               }
-              if (!value || typeof value !== 'object' || ArrayBuffer.isView(value) || seen.has(value))
+              if (
+                !value ||
+                typeof value !== 'object' ||
+                ArrayBuffer.isView(value) ||
+                seen.has(value)
+              )
                 return value
               seen.add(value)
               if (value instanceof Map) {
@@ -383,26 +401,25 @@ export function Docs({ src }: { src: string }) {
   useEffect(() => {
     if (!fit || !container.current || !box) return
     const element = container.current
-    const update = () =>
+    const update = () => {
+      const area = contentArea(element.querySelector<HTMLElement>('.pv-scroll') || element)
       setZoom(
         Math.max(
           0.25,
           Math.min(
             3,
             fit === 'width'
-              ? (element.clientWidth - 48) / paperWidth
-              : Math.min(
-                  (element.clientWidth - 48) / paperWidth,
-                  (element.clientHeight - 56) / paperHeight,
-                ),
+              ? area.width / paperWidth
+              : Math.min(area.width / paperWidth, area.height / paperHeight),
           ),
         ),
       )
+    }
     const observer = new ResizeObserver(update)
     observer.observe(element)
     update()
     return () => observer.disconnect()
-  }, [fit, paperWidth, paperHeight])
+  }, [fit, paperWidth, paperHeight, ready])
   const follow = (event: React.MouseEvent) => {
     const a = (event.target as Element).closest('a')
     if (!a) return
@@ -457,57 +474,30 @@ export function Docs({ src }: { src: string }) {
         }}
       >
         {ready && (
-          <ViewerBar>
-            <div className="viewer-toolbar-group" role="group" aria-label="Word 页面导航">
-              <button disabled={currentPage <= 1} onClick={() => goPage(currentPage - 1)}>
-                <ToolbarIcon name="previous" />
-                上一页
-              </button>
-              <label>
-                页码
-                <input
-                  aria-label="Word 页码"
-                  type="number"
-                  min="1"
-                  max={pages}
-                  value={currentPage}
-                  onChange={(e) => goPage(Number(e.target.value))}
-                />
+          <ViewerBar floating label="Word 控制栏">
+            <PageControl format="Word" current={currentPage} total={pages} onChange={goPage} />
+            <ZoomControl
+              value={zoom}
+              onZoom={(direction) => {
+                setFit(null)
+                setZoom((value) => Math.max(0.25, Math.min(3, value + direction * 0.1)))
+              }}
+            />
+            <ToolbarMore>
+              <FitControls fit={fit} onFit={setFit} />
+              <label className="viewer-revision-control viewer-toolbar-end">
+                修订
+                <select
+                  aria-label="修订显示"
+                  value={revision}
+                  onChange={(e) => setRevision(e.target.value)}
+                >
+                  <option value="all">全部标记</option>
+                  <option value="final">最终版本</option>
+                  <option value="original">原始版本</option>
+                </select>
               </label>
-              <span className="viewer-page-count">/ {pages}</span>
-              <button disabled={currentPage >= pages} onClick={() => goPage(currentPage + 1)}>
-                下一页
-                <ToolbarIcon name="next" />
-              </button>
-            </div>
-            <div className="viewer-toolbar-group" role="group" aria-label="Word 缩放">
-              <button
-                onClick={() => {
-                  setFit(null)
-                  setZoom((z) => Math.max(0.25, z - 0.1))
-                }}
-              >
-                <ToolbarIcon name="minus" />
-                缩小
-              </button>
-              <button
-                onClick={() => {
-                  setFit(null)
-                  setZoom((z) => Math.min(3, z + 0.1))
-                }}
-              >
-                <ToolbarIcon name="plus" />
-                放大
-              </button>
-              <button aria-pressed={fit === 'width'} onClick={() => setFit('width')}>
-                <ToolbarIcon name="width" />
-                适合宽度
-              </button>
-              <button aria-pressed={fit === 'page'} onClick={() => setFit('page')}>
-                <ToolbarIcon name="page" />
-                适合页面
-              </button>
-            </div>
+            </ToolbarMore>
             <div className="viewer-search-controls" hidden>
               <input
                 aria-label="搜索 Word"
@@ -522,18 +512,6 @@ export function Docs({ src }: { src: string }) {
               <button onClick={() => stepMatch(-1)}>上一处</button>
               <button onClick={() => stepMatch(1)}>下一处</button>
             </div>
-            <label className="viewer-revision-control viewer-toolbar-end">
-              修订
-              <select
-                aria-label="修订显示"
-                value={revision}
-                onChange={(e) => setRevision(e.target.value)}
-              >
-                <option value="all">全部标记</option>
-                <option value="final">最终版本</option>
-                <option value="original">原始版本</option>
-              </select>
-            </label>
           </ViewerBar>
         )}
         {error && (
@@ -567,7 +545,7 @@ export function Docs({ src }: { src: string }) {
         )}
         {ready && layout && (
           <div className="viewer-reading-body">
-            <aside className="viewer-navigation">
+            <aside className="viewer-navigation" hidden>
               <strong>标题与书签</strong>
               {navigation.map((row, i) => (
                 <button key={i} onClick={() => goBlock(row.idx)}>

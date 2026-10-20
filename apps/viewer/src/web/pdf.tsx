@@ -1,6 +1,14 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import { ToolbarIcon } from './toolbar-icon'
 import { ViewerBar } from './viewer-bar'
+import {
+  ControlButton,
+  FitControls,
+  PageControl,
+  ToolbarMore,
+  ZoomControl,
+  contentArea,
+} from './viewer-controls'
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import worker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
@@ -59,14 +67,14 @@ export function Pdf({ src }: { src: string }) {
     [matches, setMatches] = useState<SearchMatch[]>([]),
     [hit, setHit] = useState(0),
     [current, setCurrent] = useState(1),
-    [sidebar, setSidebar] = useState<'thumbs' | 'outline' | null>('thumbs'),
+    [sidebar, setSidebar] = useState<'thumbs' | 'outline' | null>(null),
     [outline, setOutline] = useState<OutlineNode[]>([]),
     [generated, setGenerated] = useState(false),
     [info, setInfo] = useState<any>(null),
     [showInfo, setShowInfo] = useState(false),
     [notes, setNotes] = useState<Map<number, NoteThreadItem[]>>(new Map()),
     [activeNote, setActiveNote] = useState<string | null>(null),
-    [fit, setFit] = useState<'width' | 'page' | null>(null)
+    [fit, setFit] = useState<'width' | 'page' | null>('page')
   const scroll = useRef<HTMLDivElement>(null),
     thumbScroll = useRef<HTMLDivElement>(null),
     index = useRef<Promise<any> | null>(null),
@@ -192,6 +200,7 @@ export function Pdf({ src }: { src: string }) {
     if (!fit || !scroll.current || !geoms.length) return
     const element = scroll.current
     const update = () => {
+      const area = contentArea(element)
       const geom = geoms[current - 1] || geoms[0],
         odd = (geom.rot + rotation) % 180 !== 0,
         w = odd ? geom.ph : geom.pw,
@@ -201,9 +210,7 @@ export function Pdf({ src }: { src: string }) {
           MIN_SCALE,
           Math.min(
             MAX_SCALE,
-            fit === 'width'
-              ? (element.clientWidth - 48) / w
-              : Math.min((element.clientWidth - 48) / w, (element.clientHeight - 48) / h),
+            fit === 'width' ? area.width / w : Math.min(area.width / w, area.height / h),
           ),
         ),
       )
@@ -266,8 +273,8 @@ export function Pdf({ src }: { src: string }) {
         }
       }}
     >
-      <ViewerBar>
-        <div className="viewer-toolbar-group" role="group" aria-label="PDF 导航面板">
+      <ViewerBar floating label="PDF 控制栏">
+        <div className="viewer-toolbar-group" role="group" aria-label="PDF 导航面板" hidden>
           <button
             aria-pressed={sidebar === 'thumbs'}
             onClick={() => setSidebar(sidebar === 'thumbs' ? null : 'thumbs')}
@@ -283,64 +290,26 @@ export function Pdf({ src }: { src: string }) {
             目录
           </button>
         </div>
-        <div className="viewer-toolbar-group" role="group" aria-label="PDF 页面导航">
-          <button disabled={current === 1} onClick={() => goPage(current - 1)}>
-            <ToolbarIcon name="previous" />
-            上一页
-          </button>
-          <label>
-            页码
-            <select
-              aria-label="PDF 页码"
-              value={current}
-              onChange={(e) => goPage(Number(e.target.value))}
-            >
-              {Array.from({ length: doc?.numPages || 1 }, (_, index) => (
-                <option key={index} value={index + 1}>
-                  第 {index + 1} 页
-                </option>
-              ))}
-            </select>
-          </label>
-          <span className="viewer-page-count">/ {doc?.numPages || 0}</span>
-          <button disabled={current === (doc?.numPages || 0)} onClick={() => goPage(current + 1)}>
-            下一页
-            <ToolbarIcon name="next" />
-          </button>
-        </div>
-        <div className="viewer-toolbar-group" role="group" aria-label="PDF 缩放">
-          <button onClick={() => zoom(-1)}>
-            <ToolbarIcon name="minus" />
-            缩小
-          </button>
-          <span className="viewer-zoom-value">{Math.round(scale * 100)}%</span>
-          <button onClick={() => zoom(1)}>
-            <ToolbarIcon name="plus" />
-            放大
-          </button>
-          <button aria-pressed={fit === 'width'} onClick={() => setFit('width')}>
-            <ToolbarIcon name="width" />
-            适合宽度
-          </button>
-          <button aria-pressed={fit === 'page'} onClick={() => setFit('page')}>
-            <ToolbarIcon name="page" />
-            适合页面
-          </button>
-        </div>
-        <div
-          className="viewer-toolbar-group viewer-toolbar-end"
-          role="group"
-          aria-label="PDF 文档操作"
-        >
-          <button onClick={() => setRotation((r) => (r + 90) % 360)}>
-            <ToolbarIcon name="rotate" />
-            旋转
-          </button>
-          <button aria-pressed={showInfo} onClick={() => setShowInfo((v) => !v)}>
-            <ToolbarIcon name="info" />
+        <PageControl format="PDF" current={current} total={doc?.numPages || 0} onChange={goPage} />
+        <ZoomControl value={scale} onZoom={zoom} />
+        <ToolbarMore>
+          <FitControls fit={fit} onFit={setFit} />
+          <ControlButton
+            icon="rotate"
+            label="旋转"
+            onClick={() => setRotation((value) => (value + 90) % 360)}
+          >
+            旋转页面
+          </ControlButton>
+          <ControlButton
+            icon="info"
+            label="文档信息"
+            aria-pressed={showInfo}
+            onClick={() => setShowInfo((value) => !value)}
+          >
             文档信息
-          </button>
-        </div>
+          </ControlButton>
+        </ToolbarMore>
       </ViewerBar>
       <div className="viewer-bar viewer-search-controls" hidden>
         <input
@@ -360,15 +329,22 @@ export function Pdf({ src }: { src: string }) {
           下一处
         </button>
       </div>
-      {error && <p role="alert">{error}</p>}
+      {error && (
+        <p role="alert" className="viewer-error">
+          {error}
+        </p>
+      )}
       {info?.info?.IsXFAPresent && (
         <p className="viewer-warning" role="status">
           该文档包含 XFA，部分动态表单可能无法完整展示。
         </p>
       )}
       {showInfo && (
-        <div className="viewer-info">
-          <strong>文档信息</strong>
+        <div className="viewer-info" role="region" aria-label="文档信息">
+          <div className="viewer-info-heading">
+            <strong>文档信息</strong>
+            <ControlButton icon="close" label="关闭文档信息" onClick={() => setShowInfo(false)} />
+          </div>
           {Object.entries(info?.info || {})
             .filter(([, value]) => typeof value === 'string' || typeof value === 'number')
             .map(([key, value]) => (
@@ -380,7 +356,7 @@ export function Pdf({ src }: { src: string }) {
       )}
       <div className="viewer-reading-body">
         {sidebar && (
-          <aside ref={thumbScroll} className="viewer-navigation">
+          <aside ref={thumbScroll} className="viewer-navigation" hidden>
             {sidebar === 'outline' ? (
               <OutlinePanel
                 outline={outline}

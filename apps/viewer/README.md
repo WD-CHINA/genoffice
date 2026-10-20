@@ -18,7 +18,11 @@ npm run dev -w @genoffice/viewer
 
 PPT 普通预览中点击音视频封面可打开原生播放器，提供播放/暂停和进度控制；按 Esc 或点击关闭退出，翻页会停止当前媒体。放映中点击媒体可播放/暂停。资源不存在或编码不被浏览器支持时会显示错误。
 
-PPT 普通预览提供元素/文字链接、幻灯片跳转、原生下拉页码选择和缩放/适配，私有字体失败后自动重试并重新测量。PDF 提供缩略图、书签/标题目录、只读批注正文/回复、原生下拉页码选择、页码追踪和文档信息。Word 提供只读复制/链接、标题和书签导航、修订显示模式、页色、缩放和密码重试；混合分栏及跨节布局在原测量算法收敛后生成可见页面，图片和嵌入字体从文档 zip 读取。PDF/Word 搜索控件默认隐藏，搜索与高亮实现保留。
+三格式控制栏直接悬浮覆盖在内容区底部，不预留工具栏占位，也不因显示控制栏而缩小文档适配尺寸。提供原生下拉跳页、上一页/下一页和缩放。适合宽度/页面、PDF 旋转与文档信息、Word 修订显示收进“更多”。工具栏、顶部文件栏和错误状态区由 CSS 换行与限宽，不用 JavaScript 缩小整行；支持明暗主题与窄屏。
+
+PPT 默认隐藏缩放比例数值，保留缩小、放大及适配操作；Word、PDF 继续显示缩放比例。PPT 放映控制栏不显示黑屏按钮。
+
+PPT 左上角“预览”按钮展开悬浮缩略图面板，选页、点击外部或按 Esc 收起，不挤压正文。放映模式提供上一页、下一步、跳页与退出控制，下一步仍先推进原动画；键盘切页和右键菜单继续生效；黑屏按钮、B/句点快捷键及右键黑屏入口已移除。PDF/Word 目录与搜索入口隐藏，原导航、搜索和高亮代码保留。Word 仍提供只读复制/链接、修订显示模式、页色和密码重试；PDF 仍提供只读表单/批注和文档信息。
 
 搜索控件隐藏时，`Ctrl/Cmd+F` 使用浏览器查找；`Ctrl/Cmd+ +/-` 缩放，非输入区域的 PageUp/PageDown 翻页。Word 可见快照与可访问正文保持一份辅助阅读树，键盘链接焦点会映射到可见页面。
 
@@ -33,7 +37,7 @@ PPT 普通预览提供元素/文字链接、幻灯片跳转、原生下拉页码
 | `showImport`    | `1`  | 本地“打开文件”入口                                             |
 | `showUrlImport` | `1`  | URL 输入框和“导入 URL”按钮                                     |
 | `showToolbar`   | `1`  | PPT/PDF/Word 操作栏及 Word 分页预览工具栏                      |
-| `showSidebar`   | `1`  | PPT 缩略图、PDF/Word 导航侧栏                                  |
+| `showSidebar`   | `1`  | PPT 悬浮缩略图入口；设为 `1` 不恢复产品要求隐藏的 PDF/Word 目录 |
 | `showErrors`    | `1`  | 主页面和预览的错误/告警区域，包括字体、媒体错误及 PDF XFA 提示 |
 | `url`           | 无   | 主页面初始化后自动导入该 HTTP/HTTPS 文件直链，无需点击导入按钮 |
 
@@ -79,10 +83,13 @@ npm run package -w @genoffice/viewer
 ```sh
 npm run typecheck -w @genoffice/viewer
 npm run test -w @genoffice/viewer
+npm run test:ui -w @genoffice/viewer
 npm run test:standalone -w @genoffice/viewer
 ```
 
 `test` 覆盖浏览器布局、解密所需的加密兼容和核心源码一致性。`test:standalone` 确认发布目录是静态站点，且本应用不再包含 Node 服务源码或 PM2 配置。
+
+`test:ui` 使用本机 Chrome（其他路径可设置 `CHROME_PATH`），在临时静态服务器中验证三格式悬浮控制、320/375/768/1440 像素、短视口、明暗主题和 `embed` 参数，覆盖缩略图展开选页、放映鼠标/键盘控制及 Word/PDF 次要操作。截图默认写入 `/tmp/genoffice-viewer-ui`，可设置 `VIEWER_UI_SCREENSHOTS` 修改位置。退出时自动关闭浏览器和临时服务器。
 
 核心内容组件保留原源码，PPT 没有整份转成图片/PDF，Word 没有改用其他文档渲染器。构建检查拒绝其他 app、Electron、AI provider/agent 运行时；原 `zip-gate` 使用的纯脱敏 helper 可继续复用。
 

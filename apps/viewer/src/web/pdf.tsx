@@ -290,7 +290,13 @@ export function Pdf({ src }: { src: string }) {
             目录
           </button>
         </div>
-        <PageControl format="PDF" current={current} total={doc?.numPages || 0} onChange={goPage} />
+        <PageControl
+          format="PDF"
+          selectable={false}
+          current={current}
+          total={doc?.numPages || 0}
+          onChange={goPage}
+        />
         <ZoomControl value={scale} onZoom={zoom} />
         <ToolbarMore zoom={{ value: scale, onZoom: zoom }}>
           <FitControls fit={fit} onFit={setFit} />

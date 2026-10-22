@@ -511,6 +511,7 @@ export function Slides({ src }: { src: string }) {
         <ViewerBar floating label="PPT 控制栏">
           <PageControl
             format="PPT"
+            selectable={false}
             current={page + 1}
             total={deck.slides.length}
             onChange={(number) => navigate(number - 1)}

@@ -85,7 +85,7 @@ export function Docs({ src }: { src: string }) {
     [accessible, setAccessible] = useState(''),
     [navigation, setNavigation] = useState<{ title: string; idx: string }[]>([]),
     [revision, setRevision] = useState('all'),
-    [fit, setFit] = useState<'width' | 'page' | null>('width')
+    [fit, setFit] = useState<'width' | 'page' | null>('page')
   const container = useRef<HTMLDivElement>(null)
   const conversionError = useRef<string | null>(null)
   const opening = useRef<{ src: string; promise: Promise<any> } | null>(null)
@@ -511,7 +511,13 @@ export function Docs({ src }: { src: string }) {
       >
         {ready && (
           <ViewerBar floating label="Word 控制栏">
-            <PageControl format="Word" current={currentPage} total={pages} onChange={goPage} />
+            <PageControl
+              format="Word"
+              selectable={false}
+              current={currentPage}
+              total={pages}
+              onChange={goPage}
+            />
             <ZoomControl value={zoom} onZoom={changeZoom} />
             <ToolbarMore zoom={{ value: zoom, onZoom: changeZoom }}>
               <FitControls fit={fit} onFit={setFit} />

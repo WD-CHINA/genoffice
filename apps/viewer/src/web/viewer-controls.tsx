@@ -26,6 +26,7 @@ export function PageControl({
   nextLabel = '下一页',
   onNext,
   previousDisabled,
+  selectable = true,
 }: {
   format: string
   current: number
@@ -34,6 +35,7 @@ export function PageControl({
   nextLabel?: string
   onNext?: () => void
   previousDisabled?: boolean
+  selectable?: boolean
 }) {
   return (
     <div
@@ -47,7 +49,7 @@ export function PageControl({
         disabled={previousDisabled ?? current <= 1}
         onClick={() => onChange(current - 1)}
       />
-      <label className="viewer-page-picker">
+      <label className="viewer-page-picker" hidden={!selectable}>
         <span className="viewer-sr-only">页码</span>
         <select
           aria-label={`${format} 页码`}
@@ -66,7 +68,12 @@ export function PageControl({
           {current} / {total}
         </span>
       </label>
-      <span className="viewer-page-count">/ {total}</span>
+      <span className="viewer-page-count" hidden={!selectable}>
+        / {total}
+      </span>
+      <span className="viewer-page-status" aria-label={`${format} 当前页`} hidden={selectable}>
+        {current} / {total}
+      </span>
       <ControlButton
         icon="next"
         label={nextLabel}

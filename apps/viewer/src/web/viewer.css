@@ -606,6 +606,26 @@ html[data-viewer-errors='false'] #root .viewer-warning {
 .viewer-show-controls button[aria-label='恢复画面'] {
   display: none;
 }
+.viewer-slides .viewer-thumbs-toggle .viewer-thumb-total,
+.viewer-slides > .viewer-floating-bar .viewer-bar-track > .viewer-zoom-controls,
+.viewer-slides > .viewer-floating-bar .viewer-toolbar-more,
+.viewer-page-picker[hidden],
+.viewer-page-count[hidden],
+.viewer-page-status[hidden] {
+  display: none;
+}
+.viewer-preview > .viewer-floating-bar .viewer-page-controls {
+  border-inline-end: 0;
+  padding-inline-end: 0;
+}
+.viewer-page-status {
+  min-width: 56px;
+  padding-inline: 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  white-space: nowrap;
+}
 .viewer-slides > .viewer-floating-bar .viewer-more-panel {
   left: 50%;
   right: auto;

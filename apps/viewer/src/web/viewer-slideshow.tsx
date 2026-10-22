@@ -98,6 +98,7 @@ export function ViewerSlideShow(props: Props) {
         </span>
         <PageControl
           format="放映"
+          selectable={false}
           current={position + 1}
           total={order.length}
           previousDisabled={!ended && position === 0}

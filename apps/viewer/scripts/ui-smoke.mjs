@@ -100,6 +100,34 @@ async function load(page, format, query = '') {
   }
   return frame
 }
+async function minimalControls(frame, bar, format) {
+  await expect(bar.getByLabel(`${format} 页码`)).toBeHidden()
+  await expect(bar.getByLabel(`${format} 当前页`)).toBeVisible()
+  const current = await bar.getByLabel(`${format} 页码`).inputValue()
+  const total = await bar.getByLabel(`${format} 页码`).locator('option').count()
+  await expect(bar.getByLabel(`${format} 当前页`)).toHaveText(`${current} / ${total}`)
+  const width = await bar.evaluate(() => innerWidth)
+  if (format !== 'PPT' && width > 700)
+    await expect(bar.locator('.viewer-zoom-controls').first()).toBeVisible()
+  else await expect(bar.locator('.viewer-zoom-controls').first()).toBeHidden()
+  if (format === 'PPT') await expect(bar.locator('details')).toBeHidden()
+  else await expect(bar.locator('summary')).toBeVisible()
+  if (format === 'PPT') await expect(frame.locator('.viewer-thumb-total')).toBeHidden()
+  const border = await bar
+    .getByLabel(`${format} 当前页`)
+    .evaluate((element) => getComputedStyle(element).borderWidth)
+  assert.equal(border, '0px', `Static ${format} page status has a border`)
+}
+// Hidden controls remain mounted; invoke their callbacks to check preserved behavior.
+async function hiddenAction(bar, label) {
+  await bar.locator(`button[aria-label="${label}"]`).evaluate((button) => button.click())
+}
+async function toolbarAction(bar, label, format) {
+  if (format === 'PPT') return hiddenAction(bar, label)
+  await bar.locator('summary').click()
+  await bar.getByRole('button', { name: label, exact: true }).click()
+  await expect(bar.locator('details')).not.toHaveAttribute('open')
+}
 async function layout(frame) {
   const result = await frame.locator('.viewer-preview').evaluate((root) => {
     const rect = root.getBoundingClientRect()
@@ -215,24 +243,8 @@ try {
         await page.setViewportSize({ width, height: 820 })
         await page.waitForTimeout(180)
         await layout(frame)
-        await bar.locator('summary').click()
-        const panel = await bar.locator('.viewer-more-panel').boundingBox()
-        assert.ok(panel.x >= 0 && panel.x + panel.width <= width, 'More panel outside viewport')
-        if (width <= 560) {
-          const zoom = bar.locator('.viewer-mobile-zoom')
-          await expect(zoom).toBeVisible()
-          const documentPage = frame
-            .locator('.viewer-slide-stage, .pv-page, .viewer-pdf-page')
-            .first()
-          const before = (await documentPage.boundingBox()).width
-          await zoom.getByRole('button', { name: '放大', exact: true }).click()
-          await expect
-            .poll(async () => (await documentPage.boundingBox()).width)
-            .toBeGreaterThan(before + 0.1)
-          await expect(bar.locator('details')).toHaveAttribute('open', '')
-        }
-        await bar.getByRole('button', { name: '适合页面', exact: true }).click()
-        await expect(bar.locator('details')).not.toHaveAttribute('open')
+        await minimalControls(frame, bar, format)
+        await toolbarAction(bar, '适合页面', format)
         await page.screenshot({ path: `${output}/${format}-${theme}-${width}.png` })
       }
       await page.setViewportSize({ width: 375, height: 520 })
@@ -240,21 +252,27 @@ try {
       await layout(frame)
       await page.setViewportSize({ width: 1440, height: 820 })
       await page.waitForTimeout(180)
-      await frame.getByLabel(`${format} 页码`).selectOption('2')
+      const current = Number(await bar.getByLabel(`${format} 页码`).inputValue())
+      for (let index = current; index > 1; index--)
+        await bar.getByRole('button', { name: '上一页', exact: true }).click()
+      await bar.getByRole('button', { name: '下一页', exact: true }).click()
       await page.waitForTimeout(100)
       await expect(frame.getByLabel(`${format} 页码`)).toHaveValue('2')
       await bar.getByRole('button', { name: '上一页', exact: true }).click()
       await expect(frame.getByLabel(`${format} 页码`)).toHaveValue('1')
       const desktopZoom = bar.locator('.viewer-bar-track > .viewer-zoom-controls')
-      const zoom = await desktopZoom.getByLabel('缩放比例').innerText()
-      if (format === 'PPT') await expect(desktopZoom.getByLabel('缩放比例')).toBeHidden()
-      else await expect(desktopZoom.getByLabel('缩放比例')).toBeVisible()
-      await bar.getByRole('button', { name: '放大', exact: true }).click()
-      await expect(desktopZoom.getByLabel('缩放比例')).not.toHaveText(zoom)
-      if (format === 'PPT') await expect(desktopZoom.getByLabel('缩放比例')).toBeHidden()
+      const zoom = await desktopZoom.getByLabel('缩放比例').textContent()
       if (format === 'PPT') {
-        await bar.locator('summary').click()
-        await bar.getByRole('button', { name: '适合页面', exact: true }).click()
+        await expect(desktopZoom.getByLabel('缩放比例')).toBeHidden()
+        await desktopZoom.locator('button[aria-label="放大"]').evaluate((button) => button.click())
+      } else {
+        await expect(desktopZoom.getByLabel('缩放比例')).toBeVisible()
+        await desktopZoom.getByRole('button', { name: '放大', exact: true }).click()
+      }
+      await expect(desktopZoom.getByLabel('缩放比例')).not.toHaveText(zoom)
+      await minimalControls(frame, bar, format)
+      if (format === 'PPT') {
+        await hiddenAction(bar, '适合页面')
         const toggle = frame.getByRole('button', { name: '幻灯片预览', exact: true })
         await toggle.click()
         await expect(frame.locator('.viewer-thumbs canvas').first()).toBeVisible()
@@ -280,13 +298,17 @@ try {
         await bar.getByRole('button', { name: '开始放映', exact: true }).click()
         const show = frame.getByRole('toolbar', { name: '放映控制栏' })
         await expect(show).toBeVisible()
+        await expect(show.getByLabel('放映 页码')).toBeHidden()
+        await expect(show.getByLabel('放映 当前页')).toHaveText('2 / 5')
         await expect(frame.locator('.slideshow canvas').first()).toBeVisible()
         await show.getByRole('button', { name: '下一步', exact: true }).click()
         await expect(show.getByLabel('放映 页码')).toHaveValue('3')
+        await expect(show.getByLabel('放映 当前页')).toHaveText('3 / 5')
         await page.keyboard.press('ArrowRight')
         await expect(show.getByLabel('放映 页码')).toHaveValue('4')
-        await show.getByLabel('放映 页码').selectOption('1')
+        await page.keyboard.press('Home')
         await expect(show.getByLabel('放映 页码')).toHaveValue('1')
+        await expect(show.getByLabel('放映 当前页')).toHaveText('1 / 5')
         await expect(show.getByRole('button', { name: '黑屏', exact: true })).toHaveCount(0)
         for (const key of ['b', 'B', '.']) {
           await page.keyboard.press(key)
@@ -307,16 +329,14 @@ try {
         await expect(frame.getByLabel('PPT 页码')).toHaveValue('1')
         await bar.getByRole('button', { name: '开始放映', exact: true }).click()
         await expect(show).toBeVisible()
-        await show.getByLabel('放映 页码').focus()
+        await show.getByRole('button', { name: '退出放映', exact: true }).focus()
         await page.keyboard.press('Escape')
         await expect(frame.locator('.slideshow')).toHaveCount(0)
       } else if (format === 'PDF') {
-        await bar.locator('summary').click()
-        await bar.getByRole('button', { name: '文档信息', exact: true }).click()
+        await toolbarAction(bar, '文档信息', format)
         await expect(frame.getByRole('region', { name: '文档信息' })).toBeVisible()
         await frame.getByRole('button', { name: '关闭文档信息' }).click()
-        await bar.locator('summary').click()
-        await bar.getByRole('button', { name: '旋转', exact: true }).click()
+        await toolbarAction(bar, '旋转', format)
         await expect(bar).toBeVisible()
       } else {
         await bar.locator('summary').click()
@@ -353,15 +373,26 @@ try {
     assert.equal(await page.evaluate(() => innerWidth), 390, 'Mobile viewport is scaled down')
     const bar = frame.getByRole('toolbar', { name: `${format} 控制栏` })
     await layout(frame)
-    await bar.locator('summary').tap()
-    const mobileZoom = bar.locator('.viewer-mobile-zoom')
-    await expect(mobileZoom).toBeVisible()
-    await mobileZoom.getByRole('button', { name: '放大', exact: true }).tap()
-    await expect(bar.locator('details')).toHaveAttribute('open', '')
-    await page.screenshot({ path: `${output}/${format}-touch-menu-390.png` })
-    await bar.getByRole('button', { name: '适合页面', exact: true }).tap()
+    await minimalControls(frame, bar, format)
+    if (format !== 'PPT') {
+      await bar.locator('summary').tap()
+      const mobileZoom = bar.locator('.viewer-mobile-zoom')
+      await expect(mobileZoom).toBeVisible()
+      const before = await mobileZoom.getByLabel('缩放比例').textContent()
+      await mobileZoom.getByRole('button', { name: '放大', exact: true }).tap()
+      await expect(mobileZoom.getByLabel('缩放比例')).not.toHaveText(before)
+      await expect(bar.locator('details')).toHaveAttribute('open', '')
+      const panel = await bar.locator('.viewer-more-panel').boundingBox()
+      assert.ok(
+        panel.x >= 0 && panel.x + panel.width <= 390 && panel.y >= 0,
+        'Mobile menu overflows viewport',
+      )
+      await page.screenshot({ path: `${output}/${format}-touch-menu-390.png` })
+      await bar.getByRole('button', { name: '适合页面', exact: true }).tap()
+    }
     await bar.getByRole('button', { name: '下一页', exact: true }).tap()
     await expect(frame.getByLabel(`${format} 页码`)).toHaveValue('2')
+    await minimalControls(frame, bar, format)
     await page.screenshot({ path: `${output}/${format}-touch-390.png` })
     for (const viewport of [
       { width: 844, height: 390 },
@@ -372,20 +403,14 @@ try {
       await page.setViewportSize(viewport)
       await page.waitForTimeout(200)
       await layout(frame)
-      await bar.locator('summary').tap()
-      const panel = await bar.locator('.viewer-more-panel').boundingBox()
-      const document = await frame.locator('.viewer-preview').boundingBox()
-      assert.ok(
-        panel.x >= document.x && panel.x + panel.width <= document.x + document.width,
-        'Mobile menu overflows after orientation change',
-      )
-      assert.ok(panel.y >= document.y, 'Mobile menu overflows above the content')
-      await bar.getByRole('button', { name: '适合页面', exact: true }).tap()
+      await minimalControls(frame, bar, format)
     }
     if (format === 'PPT') {
       await bar.getByRole('button', { name: '开始放映', exact: true }).tap()
       const show = frame.getByRole('toolbar', { name: '放映控制栏' })
       await expect(show).toBeVisible()
+      await expect(show.getByLabel('放映 页码')).toBeHidden()
+      await expect(show.getByLabel('放映 当前页')).toHaveText('2 / 5')
       const rect = await show.boundingBox()
       assert.ok(
         rect.height <= 64 && rect.x >= 0 && rect.x + rect.width <= 320,

@@ -1,5 +1,8 @@
 import { readSectionSettings, readSections } from '@genoffice/docx-engine'
-// Original read-only page-preview calculations from App.tsx, frozen at 48638359.
+// Read-only page-preview calculations excerpted from App.tsx and re-synced with the
+// 2026-10-22 upstream snapshot (v0.12.29): the note helpers, noteRenderInfoOf,
+// pageFootnotesOf, blockMetaOf and the column-mode predicates match App.tsx verbatim;
+// only the assembly around them (no editor state, parsed-doc inputs) is viewer-specific.
 import { type Block, type NoteInfo, type SectionSettings } from '@genoffice/docx-engine'
 import { type NoteKind } from './note-format'
 import { imageParaPaginationMeta, paraPaginationMeta, tableWidowOff } from './editor/para-flags'

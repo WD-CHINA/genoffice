@@ -345,6 +345,8 @@ const anchorAttrs = {
   pPrChange: { default: null as string | null },
   /** JSON {author,date?,id?} when the paragraph mark is a tracked deletion (w:pPr/w:rPr/w:del) */
   paraMarkDel: { default: null as string | null },
+  /** JSON {author,date?,id?} when the paragraph mark is a tracked insertion (w:pPr/w:rPr/w:ins) */
+  paraMarkIns: { default: null as string | null },
   /** top-level insertion/deletion revision ({kind,author,date?}) */
   blockRevision: { default: null as Record<string, string> | null },
   /** JSON marks snapshot for an empty block's caret (Word's pilcrow
@@ -4339,7 +4341,9 @@ export const ImageCopyExtension = Extension.create({
           return false
         }
       }
-      const write = (window as unknown as { viewerCopyImage?: (url: string, meta: string) => Promise<boolean> }).viewerCopyImage?.(dataUrl, imageMetaJson(node.attrs))
+      const write = (
+        window as unknown as { viewerCopyImage?: (url: string, meta: string) => Promise<boolean> }
+      ).viewerCopyImage?.(dataUrl, imageMetaJson(node.attrs))
       // no bridge: keep the default HTML-only copy instead of an empty clipboard
       if (!write) return false
       event.preventDefault()

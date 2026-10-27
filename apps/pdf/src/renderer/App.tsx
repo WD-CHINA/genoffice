@@ -125,13 +125,17 @@ import {
 import type { PdfViewState, ZoomAnchor } from './view-state'
 import { LinkLayer } from './LinkLayer'
 import { OutlinePanel } from './OutlinePanel'
+import { CommentsPanel, type CommentEntry } from './CommentsPanel'
 import type { OutlineNode } from './OutlinePanel'
 import { buildHeadingOutline, remapOutlinePages } from './heading-outline'
 import { filterPageParity, printPdf, type PageParity } from './print'
 import type { PrintDuplex, PrinterInfo } from '../shared/ipc'
 import { PasswordDialog } from './PasswordDialog'
 import { PropertiesDialog } from './PropertiesDialog'
+import { LinkDialog, type LinkDraft } from './LinkDialog'
 import { CertSignDialog } from './CertSignDialog'
+import { BatesDialog } from './BatesDialog'
+import { buildBatesInserts, type BatesConfig } from './bates'
 import { SignaturesDialog, overallSignatureStatus } from './SignaturesDialog'
 import { SignatureDialog, fileToCanvas } from './SignatureDialog'
 import type { SignatureData } from './SignatureDialog'
@@ -283,6 +287,7 @@ import {
   IconSign,
   IconCertSign,
   IconSignatures,
+  IconBates,
   IconPreviousField,
   IconNextField,
   IconCompleteForm,
@@ -304,6 +309,7 @@ import {
   IconConvertPdf,
   IconInsertImage,
   IconEditImage,
+  IconLink,
   IconNight,
   IconSpread,
   IconSinglePage,
@@ -327,6 +333,7 @@ import {
   IconFitWidth,
   IconFitPage,
   IconOutline,
+  IconComments,
   IconDrawColor,
   RbCaret,
   IconSearch,
@@ -414,7 +421,7 @@ export default function App() {
   const [scale, setScale] = useState(1)
   const [currentPage, setCurrentPage] = useState(1)
   const [pageInput, setPageInput] = useState('1')
-  const [sidebar, setSidebar] = useState<'thumbs' | 'outline' | null>('thumbs')
+  const [sidebar, setSidebar] = useState<'thumbs' | 'outline' | 'comments' | null>('thumbs')
   const [sidebarW, setSidebarW] = useState(loadSidebarW)
   /** raster width for thumbnails — only updated when a drag ends (re-rastering every frame would jank) */
   const [thumbRasterW, setThumbRasterW] = useState(() => loadSidebarW() - SIDEBAR_CHROME)
@@ -843,6 +850,7 @@ export default function App() {
   /** Certificate (digital) signatures found in the file on disk, verified by the main process */
   const [digitalSignatures, setDigitalSignatures] = useState<PdfSignatureInfo[]>([])
   const [certSignDlg, setCertSignDlg] = useState(false)
+  const [batesDlg, setBatesDlg] = useState(false)
   const [signaturesDlg, setSignaturesDlg] = useState(false)
   /** Confirmed signature awaiting placement; when non-null the page enters click-to-place mode */
   const [pendingSign, setPendingSign] = useState<SignatureData | null>(null)
@@ -963,6 +971,8 @@ export default function App() {
   const savedOnceRef = useRef(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [searchMatchCase, setSearchMatchCase] = useState(false)
+  const [searchWholeWord, setSearchWholeWord] = useState(false)
   const [searchMatches, setSearchMatches] = useState<SearchMatch[]>([])
   const [searchCur, setSearchCur] = useState(0)
   const [printing, setPrinting] = useState(false)
@@ -2410,7 +2420,12 @@ export default function App() {
     const timer = setTimeout(() => {
       void getSearchIndex()?.then((idx) => {
         if (cancelled) return
-        setSearchMatches(searchInIndex(idx, searchQuery.trim()))
+        setSearchMatches(
+          searchInIndex(idx, searchQuery.trim(), {
+            matchCase: searchMatchCase,
+            wholeWord: searchWholeWord,
+          }),
+        )
         setSearchCur(0)
       })
     }, 200)
@@ -2418,7 +2433,7 @@ export default function App() {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [searchOpen, searchQuery, getSearchIndex])
+  }, [searchOpen, searchQuery, searchMatchCase, searchWholeWord, getSearchIndex])
 
   /** Pages with unsaved deletion are excluded from match navigation */
   const activeMatches = useMemo(
@@ -4638,7 +4653,16 @@ export default function App() {
 
   // ── Drawing annotations ──
 
+  /** Drawn link box waiting for its target (URL or page) in the dialog */
+  const [linkDraft, setLinkDraft] = useState<LinkDraft | null>(null)
+
   const commitDrawing = (origIdx: number, input: DrawingInput) => {
+    // A link needs its target before it can join the edit ops (validate requires
+    // exactly one of url/destPage); the drawn box waits in the dialog
+    if (input.kind === 'link') {
+      setLinkDraft({ pageIndex: origIdx, rect: input.rect })
+      return
+    }
     applyEditOps([{ op: 'addDrawing', drawing: { ...input, pageIndex: origIdx } }])
   }
 
@@ -4865,6 +4889,34 @@ export default function App() {
       return
     }
     prepareStaticFormFill('text', image)
+  }
+
+  const applyBates = (config: BatesConfig): void => {
+    const fontOf = (size: number) => `${size}px ${getComputedStyle(document.body).fontFamily}`
+    // Visible order, not the original file order: a reordered page takes the
+    // number of the position it now occupies, deleted pages get none, and
+    // inserted blank pages are numbered with everyone else. The page index is
+    // mapped back so the insert lands on the page the reader sees there.
+    const inserts = buildBatesInserts(
+      visList.map((origIdx) => {
+        const geom = pageGeom(origIdx)
+        return { width: geom.pw, height: geom.ph, rotate: geom.rot, x0: geom.x0, y0: geom.y0 }
+      }),
+      config,
+      (text, size) => measureTextWidth(text, fontOf(size)),
+    ).map((input) => ({ ...input, pageIndex: visList[input.pageIndex] ?? input.pageIndex }))
+    if (inserts.length === 0) {
+      setBatesDlg(false)
+      return
+    }
+    const plan = applyEditOps(inserts.map((input) => ({ op: 'addTextInsert' as const, input })))
+    setBatesDlg(false)
+    if (plan.failures.length > 0) {
+      // say what went wrong instead of "applied N pages" over an empty plan
+      showNotice(plan.failures[0]!.error)
+      return
+    }
+    showNotice(t('batesApplied', { count: inserts.length }))
   }
 
   const placeTextInsert = (origIdx: number, vx: number, vy: number) => {
@@ -5836,6 +5888,44 @@ export default function App() {
     if (!doc) return threadsFromSaved(origIdx, [])
     return threadsFromSaved(origIdx, (await loadSavedAnnots(doc, origIdx)).notes)
   }
+
+  // ── All-document comments panel (Acrobat's Comments list) ──
+
+  /** Thread roots for every page, rebuilt when the panel is open and any note state moves */
+  const [commentEntries, setCommentEntries] = useState<CommentEntry[] | null>(null)
+  const [commentsLoading, setCommentsLoading] = useState(false)
+
+  useEffect(() => {
+    if (sidebar !== 'comments' || status !== 'ready' || !doc) {
+      setCommentEntries(null)
+      setCommentsLoading(false)
+      return
+    }
+    let cancelled = false
+    setCommentsLoading(true)
+    void (async () => {
+      // noteThreadsFor reads the visible-page cache and fetches the rest through
+      // pdf.js; one getAnnotations per uncached page, once per panel open
+      const out: CommentEntry[] = []
+      for (let origIdx = 0; origIdx < doc.numPages; origIdx++) {
+        for (const root of await noteThreadsFor(origIdx)) {
+          if (cancelled) return
+          const pageNo = visList.indexOf(origIdx) + 1
+          if (pageNo > 0) out.push({ origIdx, pageNo, root })
+        }
+      }
+      if (!cancelled) {
+        setCommentEntries(out)
+        setCommentsLoading(false)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // drawings/annotDeletes/noteEdits/savedNotes move the thread set; visList
+    // renumbers display pages on reorder; doc swaps documents
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sidebar, status, doc, drawings, annotDeletes, noteEdits, savedNotes, visList])
 
   /** Root pins DrawLayer renders for saved threads (pending roots render from drawings) */
   const savedNotePins = (origIdx: number): SavedNotePin[] =>
@@ -7265,6 +7355,15 @@ export default function App() {
           </span>
           <span>{t('outline')}</span>
         </button>
+        <button
+          className={`rb-big${sidebar === 'comments' ? ' active' : ''}`}
+          onClick={() => setSidebar((v) => (v === 'comments' ? null : 'comments'))}
+        >
+          <span className="rb-big-icon">
+            <IconComments />
+          </span>
+          <span>{t('commentsPanel')}</span>
+        </button>
         {searchBtn}
         <button
           className={`rb-big${spread === 2 ? ' active' : ''}`}
@@ -7708,6 +7807,25 @@ export default function App() {
                     </span>
                     <span>{t('editImage')}</span>
                   </button>
+                  <button
+                    className={`rb-big${drawTool === 'link' ? ' active' : ''}`}
+                    disabled={readOnly}
+                    data-tip={t('editLinkHint')}
+                    onClick={() => {
+                      setEditTextMode(false)
+                      setTextDraft(null)
+                      setPendingTextInsert(null)
+                      setPendingSign(null)
+                      setImagePick(null)
+                      setEditImageMode(false)
+                      setDrawTool((tool) => (tool === 'link' ? null : 'link'))
+                    }}
+                  >
+                    <span className="rb-big-icon">
+                      <IconLink />
+                    </span>
+                    <span>{t('editLink')}</span>
+                  </button>
                 </div>
               </div>
               <div className="ribbon-sep" />
@@ -8089,6 +8207,17 @@ export default function App() {
                   </button>
                   <button
                     className="rb-big"
+                    disabled={readOnly || sizes.length === 0}
+                    data-tip={t('batesHint')}
+                    onClick={() => setBatesDlg(true)}
+                  >
+                    <span className="rb-big-icon">
+                      <IconBates />
+                    </span>
+                    <span>{t('bates')}</span>
+                  </button>
+                  <button
+                    className="rb-big"
                     disabled={curOrigIdx < 0 || readOnly}
                     onClick={openReplaceDlg}
                   >
@@ -8279,6 +8408,44 @@ export default function App() {
                 />
               </div>
             )}
+            {sidebar === 'comments' && (
+              <div className="pdf-thumbs pdf-outline-pane" style={{ width: sidebarW }}>
+                <div className="pdf-outline-header">
+                  <span>{t('commentsPanel')}</span>
+                  <button
+                    type="button"
+                    className="rb-icon"
+                    aria-label={t('aiCollapsePanel')}
+                    data-tip={t('aiCollapsePanel')}
+                    onClick={() => setSidebar(null)}
+                  >
+                    <svg
+                      width="16"
+                      height="16"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="m14 6-6 6 6 6" />
+                    </svg>
+                  </button>
+                </div>
+                <CommentsPanel
+                  t={t}
+                  entries={commentEntries ?? []}
+                  loading={commentsLoading || commentEntries === null}
+                  onOpen={(e) => {
+                    scrollToPage(visList.indexOf(e.origIdx) + 1)
+                    setNoteDraft(null)
+                    setActiveNote({ origIdx: e.origIdx, rootKey: e.root.key })
+                  }}
+                />
+              </div>
+            )}
             {sidebar === 'thumbs' && (
               <div
                 ref={thumbsRef}
@@ -8424,7 +8591,9 @@ export default function App() {
                 })}
               </div>
             )}
-            {(sidebar === 'thumbs' || (sidebar === 'outline' && !!outline)) && (
+            {(sidebar === 'thumbs' ||
+              (sidebar === 'outline' && !!outline) ||
+              sidebar === 'comments') && (
               <div className="pdf-side-resizer" onPointerDown={startSidebarResize} />
             )}
             <div
@@ -9738,6 +9907,24 @@ export default function App() {
                     else if (e.key === 'Escape') closeSearch()
                   }}
                 />
+                <button
+                  className={`rb-icon pdf-search-opt${searchMatchCase ? ' is-active' : ''}`}
+                  data-tip={t('searchMatchCase')}
+                  aria-label={t('searchMatchCase')}
+                  aria-pressed={searchMatchCase}
+                  onClick={() => setSearchMatchCase((v) => !v)}
+                >
+                  Aa
+                </button>
+                <button
+                  className={`rb-icon pdf-search-opt${searchWholeWord ? ' is-active' : ''}`}
+                  data-tip={t('searchWholeWord')}
+                  aria-label={t('searchWholeWord')}
+                  aria-pressed={searchWholeWord}
+                  onClick={() => setSearchWholeWord((v) => !v)}
+                >
+                  W
+                </button>
                 <span className="pdf-search-count">
                   {searchQuery.trim()
                     ? activeMatches.length > 0
@@ -10173,6 +10360,31 @@ export default function App() {
             {stampDlg && (
               <StampDialog t={t} onCancel={() => setStampDlg(false)} onApply={applyStamps} />
             )}
+            {linkDraft && (
+              <LinkDialog
+                t={t}
+                pageCount={pageCount}
+                onCancel={() => setLinkDraft(null)}
+                onApply={(target) => {
+                  const draft = linkDraft
+                  setLinkDraft(null)
+                  if (!draft) return
+                  applyEditOps([
+                    {
+                      op: 'addDrawing',
+                      drawing: {
+                        kind: 'link',
+                        pageIndex: draft.pageIndex,
+                        rect: draft.rect,
+                        ...('destPage' in target
+                          ? { destPage: (visList[target.destPage - 1] ?? target.destPage - 1) + 1 }
+                          : target),
+                      },
+                    },
+                  ])
+                }}
+              />
+            )}
             {imageDialog?.kind === 'crop' && (
               <CropDialog
                 t={t}
@@ -10209,6 +10421,14 @@ export default function App() {
                   setPropsDlg(false)
                   applyEditOps([{ op: 'setMetadata', metadata: meta }])
                 }}
+              />
+            )}
+            {batesDlg && (
+              <BatesDialog
+                t={t}
+                pageCount={sizes.length}
+                onApply={applyBates}
+                onClose={() => setBatesDlg(false)}
               />
             )}
             {certSignDlg && (

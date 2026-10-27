@@ -1,6 +1,21 @@
 import type { zh } from './zh'
 
 export const pt = {
+  // ── Withholding cells from the model ──
+  redactMenuLabel: 'Ocultar a seleção da IA',
+  redactDialogDesc:
+    'O conteúdo selecionado continua no documento e no arquivo; o modelo vê apenas o marcador. Dê-lhe um nome para que saiba o que representa.',
+  redactDialogScope:
+    'Isso se aplica apenas à IA deste aplicativo. A CLI, as ferramentas MCP e a exportação sem interface leem o arquivo diretamente e ainda veem essas palavras.',
+  redactDialogPlaceholder: 'Nome do marcador, ex.: telefone do cliente',
+  redactCancel: 'Cancelar',
+  redactInsert: 'Ocultar',
+  redactEnable: 'Clique com o botão direito numa seleção para ocultá-la do modelo.',
+  redactNeedsSavedRow:
+    'Esta linha ainda não está no ficheiro. Guarde primeiro e depois oculte a célula.',
+  redactRecoveredFromNames:
+    'Outra aplicação reescreveu este ficheiro e descartou o registo do que está oculto. As células ocultas foram recuperadas a partir dos nomes na pasta de trabalho; guardar restaura o registo completo.',
+
   appMergeWorkbooks: 'Mesclar pastas de trabalho',
   appMergeWorkbooksTip: 'Adicionar planilhas de outros arquivos do Excel a esta pasta de trabalho',
   appMergeWorkbooksPicking: 'Escolha os arquivos para mesclar…',
@@ -106,9 +121,10 @@ export const pt = {
   appChartNoRepoint: 'Este gráfico não permite redefinir os intervalos de dados.',
   appKeepOneSeries: 'Mantenha pelo menos uma série.',
   appNoCategoriesToSwitch: 'Não há categorias para alternar.',
-  appComboNoSelectData:
-    'Alterar a fonte de dados de um gráfico de combinação ainda não é suportado.',
+  appSelectDataUnsupported: 'Não há suporte para alterar a origem de dados deste tipo de gráfico.',
   appSeriesName: 'Nome da série',
+  appSeriesType: 'Tipo de série',
+  appSecondaryAxis: 'Eixo secundário',
   appValuesRange: 'Intervalo de valores',
   appCategoriesRange: 'Intervalo de categorias',
   appKeepUnchanged: 'Manter inalterado',
@@ -192,6 +208,13 @@ export const pt = {
   appInvalidGroupField: 'Campo de agrupamento inválido.',
   appInvalidPageField: 'Campo de filtro de relatório inválido.',
   appPivotPageItemMissing: 'O item de filtro "{item}" não pertence ao campo "{label}".',
+  appInvalidPivotBaseField:
+    'O campo base de "Mostrar valores como" deve estar em linhas ou colunas.',
+  appPivotBaseFieldMissing:
+    'O modo "Mostrar valores como" de um campo de valores precisa de um campo base.',
+  appPivotBaseFieldNotAxis:
+    'O campo base "{label}" deve estar nas linhas ou colunas da tabela dinâmica.',
+  appPivotBaseItemMissing: 'O item base "{item}" não pertence ao campo "{label}".',
   appInvalidLabelFilterField: 'O campo do filtro de rótulo é inválido.',
   appInvalidValueFieldIndex: 'O índice do campo de valores {index} é inválido.',
   appInvalidValueField: 'Campo de valores inválido.',
@@ -342,8 +365,6 @@ export const pt = {
     'Esta planilha contém uma Tabela Dinâmica — mover intervalos ainda não é suportado.',
   appMergeOverTable:
     'A seleção sobrepõe uma tabela do Excel — mesclar células dentro de uma tabela ainda não é suportado.',
-  appTableFilterNoEdit:
-    'O filtro desta planilha pertence a uma tabela do Excel — a edição ainda não pode ser salva.',
   appAutofillStreaming:
     'O preenchimento automático em uma área ainda em streaming não é permitido por enquanto.',
   appDvNeedsIndexed:
@@ -759,7 +780,6 @@ export const pt = {
   appLinkPlaceholder: 'https://example.com ou Sheet1!A1',
   appRemoveLink: 'Remover Link',
   appNotAvailableYet: 'Ainda não disponível',
-  appComingSoon: 'Em breve',
   appGroupChartLayouts: 'Layouts de gráfico',
   appAddChartElement: 'Adicionar Elemento de Gráfico',
   appAddChartElementTitle: 'Títulos, rótulos de dados, legenda',
@@ -1228,6 +1248,7 @@ export const pt = {
   appGroupForecast: 'Previsão',
   appWhatIfAnalysis: 'Teste de Hipóteses',
   appGoalSeek: 'Atingir meta',
+  appDataTable: 'Tabela de dados',
   appWhatIfTitle: 'Resolver uma entrada para um valor-alvo',
   appGoalSeekNeedsFormula: 'A célula deve conter uma fórmula.',
   appGoalSeekByCellNotNumber: 'A célula a alterar deve conter um número ou estar vazia.',
@@ -1310,6 +1331,22 @@ export const pt = {
   appOpenFileFirst: 'Abra um arquivo primeiro',
   appNoPassword: 'Sem senha',
   appProtectWorkbook: 'Proteger Pasta de Trabalho',
+  appChangePassword: 'Alterar Senha',
+  appWorkbookPasswordChanged: 'A senha da pasta de trabalho foi atualizada.',
+  appEncryptedOpenTitle: 'Abrir pasta de trabalho protegida por senha',
+  appEncryptedOpenCopy: 'Digite a senha para desbloquear esta pasta de trabalho.',
+  appEncryptedPasswordLabel: 'Senha',
+  appEncryptedOpen: 'Abrir',
+  appChangePasswordTitle: 'Alterar a senha da pasta de trabalho',
+  appChangePasswordCopy: 'Escolha uma nova senha e confirme-a abaixo.',
+  appNewPasswordLabel: 'Nova senha',
+  appConfirmPasswordLabel: 'Confirmar nova senha',
+  appPasswordsMismatch: 'As senhas não coincidem.',
+  appPasswordUpdateFailed: 'Não foi possível atualizar a senha da pasta de trabalho.',
+  appPasswordUpdating: 'Atualizando…',
+  appUpdatePassword: 'Atualizar senha',
+  appWorkbookNotPasswordProtected:
+    'Esta pasta de trabalho não está protegida por uma senha de abertura.',
   appAllowEditRanges: 'Permitir Edição de Intervalos',
   appGroupClipboard: 'Área de Transferência',
   appPaste: 'Colar',
@@ -1499,6 +1536,10 @@ export const pt = {
   appNotePicturesNone: 'Nenhuma anotação desta pasta de trabalho exibe uma imagem.',
   appNotePictureUnavailable: 'Não é possível exibir esta imagem.',
   appNotePicturesToggle: 'Imagens das anotações',
+  appNoteInsertPicture: 'Inserir imagem',
+  appNotePictureInserted: 'Imagem adicionada à nota em {cell}. Salve para gravá-la no ficheiro.',
+  appNotePictureRemoved: 'Imagem removida da nota em {cell}.',
+  appNotePictureRemove: 'Remover imagem',
   appCommentsPaneTitle: 'Comentários',
   appThreadReply: 'Responder',
   appThreadReplyPlaceholder: 'Responder…',

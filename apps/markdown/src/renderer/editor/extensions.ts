@@ -13,6 +13,7 @@ import { BlockKeymap } from './blockKeymap'
 import { AiHighlight } from './aiHighlight'
 import { AiQueueAnchors } from './aiQueueAnchors'
 import { InactiveSelection } from './inactiveSelection'
+import { Highlight } from './highlight'
 import { SearchHighlight } from './searchHighlight'
 import { buildMathExtensions } from './math'
 import { Redaction } from './Redaction'
@@ -35,12 +36,13 @@ import {
   renderTable,
 } from './markdownStyleRenderers'
 import { boundOrderedList, boundTable, boundTaskList } from './boundedTokenizers'
-import { WikiLink, WikiLinkResolve } from './wikilink'
+import { WikiLink, WikiLinkResolve, WikiAliasDisplay } from './wikilink'
 import type { WikiLinkOptions } from './wikilink'
 import type { SlashController, SlashItem } from './slashCommand'
 import { WikiSuggest } from './wikiSuggest'
 import type { WikiSuggestController } from './wikiSuggest'
 import { WikiEmbed } from './wikiEmbed'
+import { FootnoteDefinition, FootnoteNav, FootnoteReference } from './footnote'
 import { t } from '../i18n/locale'
 
 export interface BuildExtensionsOptions {
@@ -134,6 +136,8 @@ export function buildExtensions(options: BuildExtensionsOptions): AnyExtension[]
     StyledTaskItem.configure({ nested: true }),
     // KaTeX-rendered $...$ / $$...$$ formulas (issue #100)
     ...buildMathExtensions(),
+    // ==highlight== (Obsidian's text highlight)
+    Highlight,
     // text the reader withholds from the model: the words stay in the document
     // and in the file, and only the model-facing view replaces them
     Redaction,
@@ -142,7 +146,13 @@ export function buildExtensions(options: BuildExtensionsOptions): AnyExtension[]
     ImageAwareLink.configure({ openOnClick: false }),
     WikiLink,
     WikiEmbed,
+    // GFM footnotes: `[^1]` references and `[^1]: text` definitions (see footnote.ts)
+    FootnoteDefinition,
+    FootnoteReference,
+    FootnoteNav,
     WikiLinkResolve.configure(options.wikiLink ?? {}),
+    // an aliased link reads as its alias: the syntax is hidden in the view only
+    WikiAliasDisplay,
     WikiSuggest.configure({ controller: options.wikiSuggestController }),
     BlockDragHandle,
     BlockKeymap,

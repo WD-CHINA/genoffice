@@ -1,6 +1,21 @@
 import type { zh } from './zh'
 
 export const ko = {
+  // ── Withholding cells from the model ──
+  redactMenuLabel: '선택한 부분을 AI에서 숨기기',
+  redactDialogDesc:
+    '선택한 내용은 그대로 두고 AI에게는 아래 자리표시자만 보냅니다. 이름을 붙이면 AI가 무엇을 뜻하는지 알 수 있습니다.',
+  redactDialogScope:
+    '이 앱의 AI에만 적용됩니다. CLI, MCP 도구, 창 없는 내보내기는 파일을 직접 읽으므로 이 단어들은 여전히 보입니다.',
+  redactDialogPlaceholder: '자리표시자 이름, 예: 고객 전화',
+  redactCancel: '취소',
+  redactInsert: '숨기기',
+  redactEnable: '선택한 부분을 오른쪽 클릭해 AI에서 숨깁니다.',
+  redactNeedsSavedRow:
+    '이 행은 아직 파일에 저장되지 않았습니다. 먼저 저장한 다음 셀을 숨겨 주세요.',
+  redactRecoveredFromNames:
+    '다른 앱이 이 파일을 다시 저장하며 숨겨진 내용을 기록한 부품이 사라졌습니다. 숨겨진 셀은 통합 문서의 이름에서 복구되었습니다. 저장하면 전체 기록이 다시 기록됩니다.',
+
   appMergeWorkbooks: '통합 문서 병합',
   appMergeWorkbooksTip: '다른 Excel 파일의 시트를 현재 통합 문서에 추가합니다',
   appMergeWorkbooksPicking: '병합할 파일 선택…',
@@ -101,8 +116,10 @@ export const ko = {
   appChartNoRepoint: '이 차트는 데이터 범위 다시 지정을 지원하지 않습니다.',
   appKeepOneSeries: '계열을 하나 이상 남겨 두십시오.',
   appNoCategoriesToSwitch: '전환할 항목이 없습니다.',
-  appComboNoSelectData: '혼합 차트는 아직 데이터 원본 변경을 지원하지 않습니다.',
+  appSelectDataUnsupported: '이 차트 종류는 데이터 원본 변경을 지원하지 않습니다.',
   appSeriesName: '계열 이름',
+  appSeriesType: '계열 유형',
+  appSecondaryAxis: '보조 축',
   appValuesRange: '값 범위',
   appCategoriesRange: '항목 범위',
   appKeepUnchanged: '변경 안 함',
@@ -184,6 +201,10 @@ export const ko = {
   appInvalidGroupField: '그룹 필드가 잘못되었습니다.',
   appInvalidPageField: '보고서 필터 필드가 잘못되었습니다.',
   appPivotPageItemMissing: '보고서 필터 항목 "{item}"은(는) 필드 "{label}"의 구성원이 아닙니다.',
+  appInvalidPivotBaseField: '"값 표시 방법"의 기준 필드는 행 또는 열에 있어야 합니다.',
+  appPivotBaseFieldMissing: '값 필드의 "값 표시 방법"에는 기준 필드가 필요합니다.',
+  appPivotBaseFieldNotAxis: '기준 필드 "{label}"은(는) 피벗 테이블의 행 또는 열에 있어야 합니다.',
+  appPivotBaseItemMissing: '기준 항목 "{item}"은(는) 필드 "{label}"의 구성원이 아닙니다.',
   appInvalidLabelFilterField: '레이블 필터 필드가 잘못되었습니다.',
   appInvalidValueFieldIndex: '값 필드 인덱스 {index}이(가) 잘못되었습니다.',
   appInvalidValueField: '값 필드가 잘못되었습니다.',
@@ -322,8 +343,6 @@ export const ko = {
   appDialogCancel: '취소',
   appPivotSheetNoMove: '이 시트에는 피벗 테이블이 있어 아직 범위 이동을 지원하지 않습니다.',
   appMergeOverTable: '선택 영역이 Excel 표와 겹칩니다 — 표 안의 셀 병합은 아직 지원되지 않습니다.',
-  appTableFilterNoEdit:
-    '이 시트의 필터는 Excel 표에 속해 있어 편집 후에도 당분간 저장할 수 없습니다.',
   appAutofillStreaming: '아직 스트리밍 로드 중인 영역으로는 자동 채우기를 할 수 없습니다.',
   appDvNeedsIndexed:
     '데이터 유효성 검사를 편집하려면 먼저 이 시트의 인덱싱이 완료되어야 합니다 — 잠시 후 다시 시도하십시오.',
@@ -737,7 +756,6 @@ export const ko = {
   appRemoveLink: '링크 제거',
   // Ribbon common
   appNotAvailableYet: '아직 사용할 수 없음',
-  appComingSoon: '곧 제공 예정',
   // Chart Design tab
   appGroupChartLayouts: '차트 레이아웃',
   appAddChartElement: '차트 요소 추가',
@@ -1210,6 +1228,7 @@ export const ko = {
   appGroupForecast: '예측',
   appWhatIfAnalysis: '가상 분석',
   appGoalSeek: '목표값 찾기',
+  appDataTable: '데이터 테이블',
   appWhatIfTitle: '목표값에 맞는 입력 찾기',
   appGoalSeekNeedsFormula: '수식 셀에는 수식이 있어야 합니다.',
   appGoalSeekByCellNotNumber: '값을 바꿀 셀은 숫자이거나 비어 있어야 합니다.',
@@ -1293,6 +1312,21 @@ export const ko = {
   appOpenFileFirst: '먼저 파일을 여십시오',
   appNoPassword: '암호 없음',
   appProtectWorkbook: '통합 문서 보호',
+  appChangePassword: '암호 변경',
+  appWorkbookPasswordChanged: '통합 문서 암호를 업데이트했습니다.',
+  appEncryptedOpenTitle: '암호로 보호된 통합 문서 열기',
+  appEncryptedOpenCopy: '이 통합 문서를 잠금 해제할 암호를 입력하세요.',
+  appEncryptedPasswordLabel: '암호',
+  appEncryptedOpen: '열기',
+  appChangePasswordTitle: '통합 문서 암호 변경',
+  appChangePasswordCopy: '새 암호를 입력하고 아래에서 확인하세요.',
+  appNewPasswordLabel: '새 암호',
+  appConfirmPasswordLabel: '새 암호 확인',
+  appPasswordsMismatch: '암호가 일치하지 않습니다.',
+  appPasswordUpdateFailed: '통합 문서 암호를 업데이트할 수 없습니다.',
+  appPasswordUpdating: '업데이트 중…',
+  appUpdatePassword: '암호 업데이트',
+  appWorkbookNotPasswordProtected: '이 통합 문서에는 열기 암호가 설정되어 있지 않습니다.',
   appAllowEditRanges: '범위 편집 허용',
   // Home tab
   appGroupClipboard: '클립보드',
@@ -1479,6 +1513,10 @@ export const ko = {
   appNotePicturesNone: '이 통합 문서의 노트 중 이미지가 표시된 노트가 없습니다.',
   appNotePictureUnavailable: '이 이미지를 표시할 수 없습니다.',
   appNotePicturesToggle: '노트 이미지',
+  appNoteInsertPicture: '이미지 삽입',
+  appNotePictureInserted: '{cell} 메모에 이미지를 추가했습니다. 저장하면 파일에 기록됩니다.',
+  appNotePictureRemoved: '{cell} 메모에서 이미지를 제거했습니다.',
+  appNotePictureRemove: '이미지 제거',
   appCommentsPaneTitle: '메모',
   appThreadReply: '회신',
   appThreadReplyPlaceholder: '회신…',

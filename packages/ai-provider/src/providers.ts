@@ -146,8 +146,10 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
   {
     id: 'kimi',
     label: 'Kimi',
-    models: ['kimi-k3'],
-    defaultModel: 'kimi-k3',
+    // K3.1 Pro opens the K3.1 series: 3T-class parameters, native vision, 1M
+    // context (2026-10). K3 stays listed while the vendor still sells it.
+    models: ['kimi-k3.1-pro', 'kimi-k3'],
+    defaultModel: 'kimi-k3.1-pro',
     keyPlaceholder: 'sk-...',
   },
   {
@@ -281,6 +283,7 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
       'openai/gpt-6-sol',
       'openai/gpt-6-luna',
       'openai/gpt-5.6-sol',
+      'moonshotai/kimi-k3.1-pro',
       'moonshotai/kimi-k3',
       'minimax/minimax-m3.1-flash:free',
       'minimax/minimax-m3',
@@ -366,6 +369,27 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     ],
     defaultModel: 'deepseek-ai/deepseek-v4-pro',
     keyPlaceholder: 'apikey-...',
+  },
+  {
+    id: 'runcrate',
+    label: 'Runcrate',
+    // Lab-namespaced ids exactly as GET api.runcrate.ai/v1/models lists them
+    // (2026-10-25, public endpoint, no key needed); the rest of the catalog
+    // works as-is when typed in. Chat, streaming and tool calls are
+    // live-verified; image support follows each id's catalog input_modalities,
+    // and the text-only ids (GLM-5.3, Qwen3.8 Flash, gpt-oss 120B) are covered
+    // by modelLacksVision().
+    models: [
+      'deepseek-ai/DeepSeek-V4.1-Flash',
+      'deepseek-ai/DeepSeek-V4.1-Flash-1017',
+      'zai-org/GLM-5.3',
+      'zai-org/GLM-5.3-Flash',
+      'moonshotai/Kimi-K2.6',
+      'Qwen/Qwen3.8-Flash',
+      'openai/gpt-oss-120b',
+    ],
+    defaultModel: 'deepseek-ai/DeepSeek-V4.1-Flash',
+    keyPlaceholder: 'rc_live_...',
   },
   {
     id: 'opencode-zen',

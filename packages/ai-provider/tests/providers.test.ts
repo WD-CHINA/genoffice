@@ -91,6 +91,15 @@ describe('provider model catalog', () => {
     }
   })
 
+  it('seeds Runcrate with lab-namespaced model ids', () => {
+    const runcrate = AI_PROVIDERS.find((provider) => provider.id === 'runcrate')!
+    expect(runcrate.models).toContain(runcrate.defaultModel)
+    expect(runcrate.needsBaseUrl).toBeUndefined()
+    for (const model of runcrate.models) {
+      expect(model).toMatch(/^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/)
+    }
+  })
+
   it('seeds Cheaper Inference with bare model ids (no vendor prefix)', () => {
     const ci = AI_PROVIDERS.find((provider) => provider.id === 'cheaperinference')!
     expect(ci.models).toContain(ci.defaultModel)
@@ -98,6 +107,13 @@ describe('provider model catalog', () => {
     for (const model of ci.models) {
       expect(model).not.toContain('/')
     }
+  })
+
+  it('seeds Kimi with the K3.1 flagship ahead of the still-sold K3', () => {
+    const kimi = AI_PROVIDERS.find((provider) => provider.id === 'kimi')!
+    expect(kimi.models).toEqual(['kimi-k3.1-pro', 'kimi-k3'])
+    expect(kimi.defaultModel).toBe('kimi-k3.1-pro')
+    expect(kimi.needsBaseUrl).toBeUndefined()
   })
 })
 

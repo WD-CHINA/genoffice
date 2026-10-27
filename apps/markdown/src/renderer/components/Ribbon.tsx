@@ -30,6 +30,7 @@ import {
   IconEyeOff,
   IconSourceCode,
   IconBacklinks,
+  IconTag,
   IconGraph,
   IconSpellcheck,
   IconTable,
@@ -60,6 +61,8 @@ interface Props {
   onToggleOutline: () => void
   hasOutline: boolean
   backlinksOpen: boolean
+  tagsOpen: boolean
+  onToggleTags: () => void
   onToggleBacklinks: () => void
   onOpenGraph: () => void
   spellcheck: boolean
@@ -274,6 +277,8 @@ export function Ribbon({
   onToggleOutline,
   hasOutline,
   backlinksOpen,
+  tagsOpen,
+  onToggleTags,
   onToggleBacklinks,
   onOpenGraph,
   spellcheck,
@@ -315,6 +320,7 @@ export function Ribbon({
         bold: e.isActive('bold'),
         italic: e.isActive('italic'),
         strike: e.isActive('strike'),
+        highlight: e.isActive('highlight'),
         code: e.isActive('code'),
         link: e.isActive('link'),
         bullet: e.isActive('bulletList'),
@@ -534,6 +540,14 @@ export function Ribbon({
                 <s>ab</s>
               </IconBtn>
               <IconBtn
+                title={t('highlight')}
+                active={state?.highlight}
+                disabled={off}
+                onClick={() => toggleStyle(editor, 'highlight')}
+              >
+                <mark>ab</mark>
+              </IconBtn>
+              <IconBtn
                 title={t('inlineCode')}
                 active={state?.code}
                 disabled={off}
@@ -682,6 +696,16 @@ export function Ribbon({
                 onClick={onToggleBacklinks}
               >
                 <IconBacklinks size={ICON} />
+              </IconBtn>
+            )}
+            {!sourceMode && (
+              <IconBtn
+                title={t('tags')}
+                active={tagsOpen}
+                disabled={disabled}
+                onClick={onToggleTags}
+              >
+                <IconTag size={ICON} />
               </IconBtn>
             )}
             {!sourceMode && (

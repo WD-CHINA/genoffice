@@ -1,6 +1,20 @@
 import type { zh } from './zh'
 
 export const it = {
+  // ── Withholding cells from the model ──
+  redactMenuLabel: 'Nascondi la selezione all’IA',
+  redactDialogDesc:
+    'Il contenuto selezionato resta nel documento e nel file; il modello vede solo il segnaposto. Dai un nome perché sappia cosa rappresenta.',
+  redactDialogScope:
+    'Nascondere vale solo per l’IA di questa app. La CLI, gli strumenti MCP e l’esportazione senza interfaccia leggono direttamente il file e vedono comunque queste parole.',
+  redactDialogPlaceholder: 'Nome del segnaposto, es. telefono del cliente',
+  redactCancel: 'Annulla',
+  redactInsert: 'Nascondi',
+  redactEnable: 'Clic destro su una selezione per nasconderla al modello.',
+  redactNeedsSavedRow: 'Questa riga non è ancora nel file. Salva prima, poi nascondi la cella.',
+  redactRecoveredFromNames:
+    "Un'altra app ha riscritto questo file e ha perso il registro di ciò che è nascosto. Le celle nascoste sono state recuperate dai nomi del foglio di lavoro; salvando il file viene ripristinato il registro completo.",
+
   appMergeWorkbooks: 'Unisci cartelle di lavoro',
   appMergeWorkbooksTip: 'Aggiungi i fogli di altri file Excel a questa cartella di lavoro',
   appMergeWorkbooksPicking: 'Scegli i file da unire…',
@@ -105,9 +119,11 @@ export const it = {
   appChartNoRepoint: 'Questo grafico non supporta la ridefinizione degli intervalli di dati.',
   appKeepOneSeries: 'Mantieni almeno una serie.',
   appNoCategoriesToSwitch: 'Nessuna categoria da scambiare.',
-  appComboNoSelectData:
-    "La modifica dell'origine dati di un grafico combinato non è ancora supportata.",
+  appSelectDataUnsupported:
+    "La modifica dell'origine dati di questo tipo di grafico non è supportata.",
   appSeriesName: 'Nome serie',
+  appSeriesType: 'Tipo di serie',
+  appSecondaryAxis: 'Asse secondario',
   appValuesRange: 'Intervallo valori',
   appCategoriesRange: 'Intervallo categorie',
   appKeepUnchanged: 'Mantieni invariato',
@@ -192,6 +208,13 @@ export const it = {
   appInvalidGroupField: 'Campo di raggruppamento non valido.',
   appInvalidPageField: 'Campo del filtro rapporto non valido.',
   appPivotPageItemMissing: 'L\'elemento del filtro "{item}" non appartiene al campo "{label}".',
+  appInvalidPivotBaseField:
+    'Il campo base di "Mostra valori come" deve trovarsi in righe o colonne.',
+  appPivotBaseFieldMissing:
+    'La modalità "Mostra valori come" di un campo valore richiede un campo base.',
+  appPivotBaseFieldNotAxis:
+    'Il campo base "{label}" deve trovarsi nelle righe o nelle colonne della tabella pivot.',
+  appPivotBaseItemMissing: 'L\'elemento base "{item}" non appartiene al campo "{label}".',
   appInvalidLabelFilterField: 'Il campo del filtro etichette non è valido.',
   appInvalidValueFieldIndex: "L'indice del campo valori {index} non è valido.",
   appInvalidValueField: 'Campo valori non valido.',
@@ -344,8 +367,6 @@ export const it = {
     'Questo foglio contiene una tabella pivot — lo spostamento di intervalli non è ancora supportato.',
   appMergeOverTable:
     'La selezione si sovrappone a una tabella di Excel — l’unione di celle in una tabella non è ancora supportata.',
-  appTableFilterNoEdit:
-    'Il filtro di questo foglio appartiene a una tabella di Excel — la modifica non può ancora essere salvata.',
   appAutofillStreaming:
     "Il riempimento automatico in un'area ancora in streaming non è ancora consentito.",
   appDvNeedsIndexed:
@@ -758,7 +779,6 @@ export const it = {
   appLinkPlaceholder: 'https://example.com o Sheet1!A1',
   appRemoveLink: 'Rimuovi collegamento',
   appNotAvailableYet: 'Non ancora disponibile',
-  appComingSoon: 'Prossimamente',
   appGroupChartLayouts: 'Layout grafici',
   appAddChartElement: 'Aggiungi elemento grafico',
   appAddChartElementTitle: 'Titoli, etichette dati, legenda',
@@ -1228,6 +1248,7 @@ export const it = {
   appGroupForecast: 'Previsione',
   appWhatIfAnalysis: 'Analisi di simulazione',
   appGoalSeek: 'Ricerca obiettivo',
+  appDataTable: 'Tabella dati',
   appWhatIfTitle: 'Trova un input per un valore obiettivo',
   appGoalSeekNeedsFormula: 'La cella deve contenere una formula.',
   appGoalSeekByCellNotNumber: 'La cella da cambiare deve contenere un numero o essere vuota.',
@@ -1310,6 +1331,22 @@ export const it = {
   appOpenFileFirst: 'Apri prima un file',
   appNoPassword: 'Nessuna password',
   appProtectWorkbook: 'Proteggi cartella di lavoro',
+  appChangePassword: 'Cambia password',
+  appWorkbookPasswordChanged: 'La password della cartella di lavoro è stata aggiornata.',
+  appEncryptedOpenTitle: 'Apri cartella di lavoro protetta da password',
+  appEncryptedOpenCopy: 'Inserisci la password per sbloccare questa cartella di lavoro.',
+  appEncryptedPasswordLabel: 'Password',
+  appEncryptedOpen: 'Apri',
+  appChangePasswordTitle: 'Cambia la password della cartella di lavoro',
+  appChangePasswordCopy: 'Scegli una nuova password e confermala qui sotto.',
+  appNewPasswordLabel: 'Nuova password',
+  appConfirmPasswordLabel: 'Conferma nuova password',
+  appPasswordsMismatch: 'Le password non corrispondono.',
+  appPasswordUpdateFailed: 'Impossibile aggiornare la password della cartella di lavoro.',
+  appPasswordUpdating: 'Aggiornamento…',
+  appUpdatePassword: 'Aggiorna password',
+  appWorkbookNotPasswordProtected:
+    'Questa cartella di lavoro non è protetta da una password di apertura.',
   appAllowEditRanges: 'Consenti modifica intervalli',
   appGroupClipboard: 'Appunti',
   appPaste: 'Incolla',
@@ -1499,6 +1536,10 @@ export const it = {
   appNotePicturesNone: "Nessuna nota di questa cartella di lavoro contiene un'immagine.",
   appNotePictureUnavailable: 'Non è possibile mostrare questa immagine.',
   appNotePicturesToggle: 'Immagini delle note',
+  appNoteInsertPicture: 'Inserisci immagine',
+  appNotePictureInserted: 'Immagine aggiunta alla nota in {cell}. Salva per scriverla nel file.',
+  appNotePictureRemoved: 'Immagine rimossa dalla nota in {cell}.',
+  appNotePictureRemove: 'Rimuovi immagine',
   appCommentsPaneTitle: 'Commenti',
   appThreadReply: 'Rispondi',
   appThreadReplyPlaceholder: 'Rispondi…',

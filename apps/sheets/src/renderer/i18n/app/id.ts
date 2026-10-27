@@ -1,6 +1,20 @@
 import type { zh } from './zh'
 
 export const id = {
+  // ── Withholding cells from the model ──
+  redactMenuLabel: 'Sembunyikan pilihan dari AI',
+  redactDialogDesc:
+    'Konten yang dipilih tetap ada di dokumen dan berkas; model hanya melihat placeholder di bawah. Beri nama agar model tahu apa yang diwakili.',
+  redactDialogScope:
+    'Penyembunyian ini hanya berlaku untuk AI di aplikasi ini. CLI, alat MCP, dan ekspor tanpa antarmuka membaca berkas secara langsung, sehingga kata-kata ini tetap terlihat olehnya.',
+  redactDialogPlaceholder: 'Nama placeholder, mis. telepon pelanggan',
+  redactCancel: 'Batal',
+  redactInsert: 'Sembunyikan',
+  redactEnable: 'Klik kanan pada teks yang dipilih untuk menyembunyikannya dari model.',
+  redactNeedsSavedRow: 'Baris ini belum ada di berkas. Simpan dulu, lalu sembunyikan selnya.',
+  redactRecoveredFromNames:
+    'Aplikasi lain menulis ulang berkas ini dan membuang catatan apa yang disembunyikan. Sel yang disembunyikan dipulihkan dari nama-nama di dalam buku kerja; menyimpan akan memulihkan catatan lengkapnya.',
+
   appMergeWorkbooks: 'Gabungkan Buku Kerja',
   appMergeWorkbooksTip: 'Tambahkan sheet dari file Excel lain ke buku kerja ini',
   appMergeWorkbooksPicking: 'Pilih file yang akan digabungkan…',
@@ -103,8 +117,10 @@ export const id = {
   appChartNoRepoint: 'Bagan ini tidak mendukung penetapan ulang rentang datanya.',
   appKeepOneSeries: 'Pertahankan setidaknya satu seri.',
   appNoCategoriesToSwitch: 'Tidak ada kategori untuk ditukar.',
-  appComboNoSelectData: 'Mengubah sumber data bagan kombinasi belum didukung.',
+  appSelectDataUnsupported: 'Mengubah sumber data jenis bagan ini belum didukung.',
   appSeriesName: 'Nama Seri',
+  appSeriesType: 'Jenis seri',
+  appSecondaryAxis: 'Sumbu sekunder',
   appValuesRange: 'Rentang Nilai',
   appCategoriesRange: 'Rentang Kategori',
   appKeepUnchanged: 'Biarkan tidak berubah',
@@ -185,6 +201,12 @@ export const id = {
   appInvalidGroupField: 'Bidang pengelompokan tidak valid.',
   appInvalidPageField: 'Bidang filter laporan tidak valid.',
   appPivotPageItemMissing: 'Item filter laporan "{item}" bukan anggota bidang "{label}".',
+  appInvalidPivotBaseField:
+    'Bidang dasar "Tampilkan nilai sebagai" harus berada di baris atau kolom.',
+  appPivotBaseFieldMissing:
+    'Mode "Tampilkan nilai sebagai" pada bidang nilai memerlukan bidang dasar.',
+  appPivotBaseFieldNotAxis: 'Bidang dasar "{label}" harus berada di baris atau kolom tabel pivot.',
+  appPivotBaseItemMissing: 'Item dasar "{item}" bukan anggota bidang "{label}".',
   appInvalidLabelFilterField: 'Bidang filter label tidak valid.',
   appInvalidValueFieldIndex: 'Indeks bidang nilai {index} tidak valid.',
   appInvalidValueField: 'Bidang nilai tidak valid.',
@@ -319,7 +341,6 @@ export const id = {
   appPivotSheetNoMove: 'Lembar ini berisi PivotTable — memindahkan rentang belum didukung.',
   appMergeOverTable:
     'Pilihan tumpang tindih dengan tabel Excel — menggabungkan sel di dalam tabel belum didukung.',
-  appTableFilterNoEdit: 'Filter lembar ini milik tabel Excel — pengeditannya belum dapat disimpan.',
   appAutofillStreaming: 'IsiOtomatis ke area yang masih dimuat secara streaming belum diizinkan.',
   appDvNeedsIndexed:
     'Mengedit validasi data memerlukan lembar ini terindeks penuh dahulu — coba lagi sebentar lagi.',
@@ -720,7 +741,6 @@ export const id = {
   appLinkPlaceholder: 'mis. https://example.com atau Sheet1!A1',
   appRemoveLink: 'Hapus Tautan',
   appNotAvailableYet: 'Belum tersedia',
-  appComingSoon: 'Segera hadir',
   appGroupChartLayouts: 'Tata letak bagan',
   appAddChartElement: 'Tambahkan Elemen Bagan',
   appAddChartElementTitle: 'Judul, label data, legenda',
@@ -1189,6 +1209,7 @@ export const id = {
   appGroupForecast: 'Prakiraan',
   appWhatIfAnalysis: 'Analisis Bagaimana-Jika',
   appGoalSeek: 'Pencarian Tujuan',
+  appDataTable: 'Tabel Data',
   appWhatIfTitle: 'Cari input untuk nilai target',
   appGoalSeekNeedsFormula: 'Sel target harus berisi rumus.',
   appGoalSeekByCellNotNumber: 'Sel yang diubah harus berisi angka atau kosong.',
@@ -1271,6 +1292,21 @@ export const id = {
   appOpenFileFirst: 'Buka file dahulu',
   appNoPassword: 'Tanpa kata sandi',
   appProtectWorkbook: 'Proteksi Buku Kerja',
+  appChangePassword: 'Ubah Kata Sandi',
+  appWorkbookPasswordChanged: 'Kata sandi buku kerja diperbarui.',
+  appEncryptedOpenTitle: 'Buka buku kerja yang dilindungi kata sandi',
+  appEncryptedOpenCopy: 'Masukkan kata sandi untuk membuka kunci buku kerja ini.',
+  appEncryptedPasswordLabel: 'Kata sandi',
+  appEncryptedOpen: 'Buka',
+  appChangePasswordTitle: 'Ubah kata sandi buku kerja',
+  appChangePasswordCopy: 'Pilih kata sandi baru dan konfirmasi di bawah.',
+  appNewPasswordLabel: 'Kata sandi baru',
+  appConfirmPasswordLabel: 'Konfirmasi kata sandi baru',
+  appPasswordsMismatch: 'Kata sandi tidak cocok.',
+  appPasswordUpdateFailed: 'Tidak dapat memperbarui kata sandi buku kerja.',
+  appPasswordUpdating: 'Memperbarui…',
+  appUpdatePassword: 'Perbarui Kata Sandi',
+  appWorkbookNotPasswordProtected: 'Buku kerja ini tidak dilindungi kata sandi pembuka.',
   appAllowEditRanges: 'Izinkan Edit Rentang',
   appGroupClipboard: 'Papan Klip',
   appPaste: 'Tempel',
@@ -1459,6 +1495,11 @@ export const id = {
   appNotePicturesNone: 'Tidak ada catatan di buku kerja ini yang menampilkan gambar.',
   appNotePictureUnavailable: 'Gambar ini tidak dapat ditampilkan.',
   appNotePicturesToggle: 'Gambar catatan',
+  appNoteInsertPicture: 'Sisipkan gambar',
+  appNotePictureInserted:
+    'Gambar ditambahkan ke catatan di {cell}. Simpan untuk menulisnya ke file.',
+  appNotePictureRemoved: 'Gambar dihapus dari catatan di {cell}.',
+  appNotePictureRemove: 'Hapus gambar',
   appCommentsPaneTitle: 'Komentar',
   appThreadReply: 'Balas',
   appThreadReplyPlaceholder: 'Balas…',

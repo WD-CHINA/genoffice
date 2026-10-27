@@ -1,6 +1,21 @@
 import type { zh } from './zh'
 
 export const ms = {
+  // ── Withholding cells from the model ──
+  redactMenuLabel: 'Sembunyikan pilihan daripada AI',
+  redactDialogDesc:
+    'Kandungan yang dipilih kekal dalam dokumen dan fail; model hanya melihat placeholder di bawah. Beri nama supaya model tahu apa yang diwakili.',
+  redactDialogScope:
+    'Penyembunyian ini hanya untuk AI dalam aplikasi ini. CLI, alat MCP dan eksport tanpa antara muka membaca fail secara terus, jadi perkataan ini masih kelihatan kepada mereka.',
+  redactDialogPlaceholder: 'Nama placeholder, cth. telefon pelanggan',
+  redactCancel: 'Batal',
+  redactInsert: 'Sembunyikan',
+  redactEnable: 'Klik kanan pada teks yang dipilih untuk menyembunyikannya daripada model.',
+  redactNeedsSavedRow:
+    'Baris ini belum lagi dalam fail. Simpan dahulu, kemudian sembunyikan selnya.',
+  redactRecoveredFromNames:
+    'Aplikasi lain menulis semula fail ini dan membuang rekod apa yang disembunyikan. Sel yang disembunyikan itu dipulihkan daripada nama yang ada dalam buku kerja; menyimpan akan memulihkan rekod penuh.',
+
   appMergeWorkbooks: 'Gabung Buku Kerja',
   appMergeWorkbooksTip: 'Tambah helaian daripada fail Excel lain ke buku kerja ini',
   appMergeWorkbooksPicking: 'Pilih fail untuk digabungkan…',
@@ -103,8 +118,10 @@ export const ms = {
   appChartNoRepoint: 'Carta ini tidak menyokong penetapan semula julat datanya.',
   appKeepOneSeries: 'Kekalkan sekurang-kurangnya satu siri.',
   appNoCategoriesToSwitch: 'Tiada kategori untuk ditukar.',
-  appComboNoSelectData: 'Menukar sumber data carta kombo belum disokong.',
+  appSelectDataUnsupported: 'Menukar sumber data jenis carta ini tidak disokong.',
   appSeriesName: 'Nama Siri',
+  appSeriesType: 'Jenis siri',
+  appSecondaryAxis: 'Paksi sekunder',
   appValuesRange: 'Julat Nilai',
   appCategoriesRange: 'Julat Kategori',
   appKeepUnchanged: 'Kekalkan tanpa perubahan',
@@ -185,6 +202,12 @@ export const ms = {
   appInvalidGroupField: 'Medan pengumpulan tidak sah.',
   appInvalidPageField: 'Medan penapis laporan tidak sah.',
   appPivotPageItemMissing: 'Item penapis laporan "{item}" bukan ahli medan "{label}".',
+  appInvalidPivotBaseField:
+    'Medan asas "Tunjuk nilai sebagai" mesti berada dalam baris atau lajur.',
+  appPivotBaseFieldMissing: 'Mod "Tunjuk nilai sebagai" bagi medan nilai memerlukan medan asas.',
+  appPivotBaseFieldNotAxis:
+    'Medan asas "{label}" mesti berada dalam baris atau lajur jadual pangsi.',
+  appPivotBaseItemMissing: 'Item asas "{item}" bukan ahli medan "{label}".',
   appInvalidLabelFilterField: 'Medan penapis label tidak sah.',
   appInvalidValueFieldIndex: 'Indeks medan nilai {index} tidak sah.',
   appInvalidValueField: 'Medan nilai tidak sah.',
@@ -321,8 +344,6 @@ export const ms = {
   appPivotSheetNoMove: 'Helaian ini mengandungi Jadual Pangsi — pengalihan julat belum disokong.',
   appMergeOverTable:
     'Pilihan bertindih dengan jadual Excel — mencantumkan sel di dalam jadual belum disokong.',
-  appTableFilterNoEdit:
-    'Penapis helaian ini milik jadual Excel — pengeditannya belum boleh disimpan.',
   appAutofillStreaming: 'AutoIsi ke kawasan yang masih distrim belum dibenarkan.',
   appDvNeedsIndexed:
     'Mengedit pengesahihan data memerlukan helaian ini diindeks sepenuhnya dahulu — cuba lagi sebentar.',
@@ -720,7 +741,6 @@ export const ms = {
   appLinkPlaceholder: 'https://example.com atau Sheet1!A1',
   appRemoveLink: 'Alih Keluar Pautan',
   appNotAvailableYet: 'Belum tersedia',
-  appComingSoon: 'Akan datang',
   appGroupChartLayouts: 'Bentangan carta',
   appAddChartElement: 'Tambah Elemen Carta',
   appAddChartElementTitle: 'Tajuk, label data, petunjuk',
@@ -1189,6 +1209,7 @@ export const ms = {
   appGroupForecast: 'Ramalan',
   appWhatIfAnalysis: 'Analisis Bagaimana-Jika',
   appGoalSeek: 'Cari Matlamat',
+  appDataTable: 'Jadual Data',
   appWhatIfTitle: 'Cari input untuk nilai sasaran',
   appGoalSeekNeedsFormula: 'Sel mesti mengandungi formula.',
   appGoalSeekByCellNotNumber: 'Sel yang diubah mesti mengandungi nombor atau kosong.',
@@ -1271,6 +1292,21 @@ export const ms = {
   appOpenFileFirst: 'Buka fail dahulu',
   appNoPassword: 'Tiada kata laluan',
   appProtectWorkbook: 'Lindungi Buku Kerja',
+  appChangePassword: 'Tukar Kata Laluan',
+  appWorkbookPasswordChanged: 'Kata laluan buku kerja telah dikemas kini.',
+  appEncryptedOpenTitle: 'Buka buku kerja yang dilindungi kata laluan',
+  appEncryptedOpenCopy: 'Masukkan kata laluan untuk membuka kunci buku kerja ini.',
+  appEncryptedPasswordLabel: 'Kata laluan',
+  appEncryptedOpen: 'Buka',
+  appChangePasswordTitle: 'Tukar kata laluan buku kerja',
+  appChangePasswordCopy: 'Pilih kata laluan baharu dan sahkan di bawah.',
+  appNewPasswordLabel: 'Kata laluan baharu',
+  appConfirmPasswordLabel: 'Sahkan kata laluan baharu',
+  appPasswordsMismatch: 'Kata laluan tidak sepadan.',
+  appPasswordUpdateFailed: 'Tidak dapat mengemas kini kata laluan buku kerja.',
+  appPasswordUpdating: 'Mengemas kini…',
+  appUpdatePassword: 'Kemas Kini Kata Laluan',
+  appWorkbookNotPasswordProtected: 'Buku kerja ini tidak dilindungi oleh kata laluan pembukaan.',
   appAllowEditRanges: 'Benarkan Edit Julat',
   appGroupClipboard: 'Papan Klip',
   appPaste: 'Tampal',
@@ -1459,6 +1495,10 @@ export const ms = {
   appNotePicturesNone: 'Tiada nota dalam buku kerja ini memaparkan gambar.',
   appNotePictureUnavailable: 'Gambar ini tidak dapat dipaparkan.',
   appNotePicturesToggle: 'Gambar nota',
+  appNoteInsertPicture: 'Sisipkan gambar',
+  appNotePictureInserted: 'Gambar ditambah ke nota dalam {cell}. Simpan untuk menulisnya ke fail.',
+  appNotePictureRemoved: 'Gambar dibuang daripada nota dalam {cell}.',
+  appNotePictureRemove: 'Buang gambar',
   appCommentsPaneTitle: 'Komen',
   appThreadReply: 'Balas',
   appThreadReplyPlaceholder: 'Balas…',

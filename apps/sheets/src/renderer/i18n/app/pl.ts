@@ -1,6 +1,21 @@
 import type { zh } from './zh'
 
 export const pl = {
+  // ── Withholding cells from the model ──
+  redactMenuLabel: 'Ukryj zaznaczenie przed AI',
+  redactDialogDesc:
+    'Zaznaczona zawartość zostaje w dokumencie i w pliku; model widzi tylko symbol. Nadaj mu nazwę, by wiedział, co oznacza.',
+  redactDialogScope:
+    'Ukrywanie dotyczy tylko AI w tej aplikacji. CLI, narzędzia MCP i eksport bez okienka czytują plik bezpośrednio i nadal widzą te słowa.',
+  redactDialogPlaceholder: 'Nazwa symbolu, np. telefon klienta',
+  redactCancel: 'Anuluj',
+  redactInsert: 'Ukryj',
+  redactEnable: 'Kliknij prawym na zaznaczeniu, aby ukryć je przed modelem.',
+  redactNeedsSavedRow:
+    'Ten wiersz nie jest jeszcze w pliku. Zapisz najpierw, a potem ukryj komórkę.',
+  redactRecoveredFromNames:
+    'Inna aplikacja zapisała ten plik od nowa i usunęła rejestr tego, co jest ukryte. Ukryte komórki odtworzono z nazw w skoroszycie; zapisanie przywraca pełny rejestr.',
+
   appMergeWorkbooks: 'Scal skoroszyty',
   appMergeWorkbooksTip: 'Dodaj arkusze z innych plików Excel do tego skoroszytu',
   appMergeWorkbooksPicking: 'Wybierz pliki do scalenia…',
@@ -102,8 +117,10 @@ export const pl = {
   appChartNoRepoint: 'Ten wykres nie obsługuje zmiany zakresów danych.',
   appKeepOneSeries: 'Zachowaj co najmniej jedną serię.',
   appNoCategoriesToSwitch: 'Brak kategorii do przełączenia.',
-  appComboNoSelectData: 'Zmiana źródła danych wykresu kombi nie jest jeszcze obsługiwana.',
+  appSelectDataUnsupported: 'Zmiana źródła danych tego typu wykresu nie jest obsługiwana.',
   appSeriesName: 'Nazwa serii',
+  appSeriesType: 'Typ serii',
+  appSecondaryAxis: 'Oś pomocnicza',
   appValuesRange: 'Zakres wartości',
   appCategoriesRange: 'Zakres kategorii',
   appKeepUnchanged: 'Pozostaw bez zmian',
@@ -188,6 +205,12 @@ export const pl = {
   appInvalidGroupField: 'Nieprawidłowe pole grupowania.',
   appInvalidPageField: 'Nieprawidłowe pole filtru raportu.',
   appPivotPageItemMissing: 'Element filtru „{item}” nie należy do pola „{label}”.',
+  appInvalidPivotBaseField:
+    'Pole podstawowe trybu „Pokaż wartości jako” musi znajdować się w wierszach lub kolumnach.',
+  appPivotBaseFieldMissing: 'Tryb „Pokaż wartości jako” pola wartości wymaga pola podstawowego.',
+  appPivotBaseFieldNotAxis:
+    'Pole podstawowe „{label}” musi znajdować się w wierszach lub kolumnach tabeli przestawnej.',
+  appPivotBaseItemMissing: 'Element podstawowy „{item}” nie należy do pola „{label}”.',
   appInvalidLabelFilterField: 'Pole filtru etykiet jest nieprawidłowe.',
   appInvalidValueFieldIndex: 'Indeks pola wartości {index} jest nieprawidłowy.',
   appInvalidValueField: 'Nieprawidłowe pole wartości.',
@@ -336,8 +359,6 @@ export const pl = {
     'Ten arkusz zawiera tabelę przestawną — przenoszenie zakresów nie jest jeszcze obsługiwane.',
   appMergeOverTable:
     'Zaznaczenie nachodzi na tabelę programu Excel — scalanie komórek w tabeli nie jest jeszcze obsługiwane.',
-  appTableFilterNoEdit:
-    'Filtr tego arkusza należy do tabeli programu Excel — edycji nie można jeszcze zapisać.',
   appAutofillStreaming:
     'Autouzupełnianie do obszaru, który wciąż jest ładowany strumieniowo, nie jest jeszcze dozwolone.',
   appDvNeedsIndexed:
@@ -746,7 +767,6 @@ export const pl = {
   appLinkPlaceholder: 'https://example.com lub Sheet1!A1',
   appRemoveLink: 'Usuń link',
   appNotAvailableYet: 'Jeszcze niedostępne',
-  appComingSoon: 'Wkrótce',
   appGroupChartLayouts: 'Układy wykresu',
   appAddChartElement: 'Dodaj element wykresu',
   appAddChartElementTitle: 'Tytuły, etykiety danych, legenda',
@@ -1215,6 +1235,7 @@ export const pl = {
   appGroupForecast: 'Prognoza',
   appWhatIfAnalysis: 'Analiza warunkowa',
   appGoalSeek: 'Szukaj wyniku',
+  appDataTable: 'Tabela danych',
   appWhatIfTitle: 'Znajdź wejście dla wartości docelowej',
   appGoalSeekNeedsFormula: 'Komórka musi zawierać formułę.',
   appGoalSeekByCellNotNumber: 'Zmieniana komórka musi zawierać liczbę lub być pusta.',
@@ -1297,6 +1318,21 @@ export const pl = {
   appOpenFileFirst: 'Najpierw otwórz plik',
   appNoPassword: 'Bez hasła',
   appProtectWorkbook: 'Chroń skoroszyt',
+  appChangePassword: 'Zmień hasło',
+  appWorkbookPasswordChanged: 'Hasło skoroszytu zostało zaktualizowane.',
+  appEncryptedOpenTitle: 'Otwórz skoroszyt chroniony hasłem',
+  appEncryptedOpenCopy: 'Wprowadź hasło, aby odblokować ten skoroszyt.',
+  appEncryptedPasswordLabel: 'Hasło',
+  appEncryptedOpen: 'Otwórz',
+  appChangePasswordTitle: 'Zmień hasło skoroszytu',
+  appChangePasswordCopy: 'Wybierz nowe hasło i potwierdź je poniżej.',
+  appNewPasswordLabel: 'Nowe hasło',
+  appConfirmPasswordLabel: 'Potwierdź nowe hasło',
+  appPasswordsMismatch: 'Hasła nie są zgodne.',
+  appPasswordUpdateFailed: 'Nie udało się zaktualizować hasła skoroszytu.',
+  appPasswordUpdating: 'Aktualizowanie…',
+  appUpdatePassword: 'Aktualizuj hasło',
+  appWorkbookNotPasswordProtected: 'Ten skoroszyt nie jest chroniony hasłem otwarcia.',
   appAllowEditRanges: 'Zezwalaj na edytowanie zakresów',
   appGroupClipboard: 'Schowek',
   appPaste: 'Wklej',
@@ -1485,6 +1521,10 @@ export const pl = {
   appNotePicturesNone: 'Żadna notatka w tym skoroszycie nie zawiera obrazu.',
   appNotePictureUnavailable: 'Tego obrazu nie można wyświetlić.',
   appNotePicturesToggle: 'Obrazy notatek',
+  appNoteInsertPicture: 'Wstaw obraz',
+  appNotePictureInserted: 'Dodano obraz do notatki w {cell}. Zapisz, aby zapisać go w pliku.',
+  appNotePictureRemoved: 'Usunięto obraz z notatki w {cell}.',
+  appNotePictureRemove: 'Usuń obraz',
   appCommentsPaneTitle: 'Komentarze',
   appThreadReply: 'Odpowiedz',
   appThreadReplyPlaceholder: 'Odpowiedz…',

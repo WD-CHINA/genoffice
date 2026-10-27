@@ -1,9 +1,11 @@
 # Viewer-owned renderers
 
-Original drawing and pagination sources from GenOffice commit
-`4863835963c99793c47b72473900c483e9fa0c2a`, owned exclusively by `apps/viewer`.
+Original drawing and pagination sources extracted from GenOffice commit
+`4863835963c99793c47b72473900c483e9fa0c2a` and refreshed against
+`8c170596b6c2a5fc92a858dfd6f064c7762d835e`, owned exclusively by `apps/viewer`.
 Existing desktop applications continue importing their original files.
-`sources.json` and `docs-sources.json` record the extraction inputs.
+`sources.json` and `docs-sources.json` record the extraction inputs and the
+commit the copies were last synced from.
 
 Core SlideThumb/NodeBody/ChartBody/animation, PdfPage/LinkLayer and pure Word
 pagination algorithms are retained byte-for-byte. PaginationPreview has Viewer-only

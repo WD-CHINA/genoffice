@@ -6,7 +6,7 @@
 
 只修改 `apps/viewer/`，允许新增 `packages/viewer-*`。现有 app/package 的源码、配置、API 和根锁文件保持原样。原 Electron 应用继续引用原文件，没有 wrapper 重定向。
 
-Viewer 自有包从提交 `4863835963c99793c47b72473900c483e9fa0c2a` 保存源码快照；已有纯引擎只读复用。计划中的“修改原 app 以共享抽取实现”已废弃。
+Viewer 自有包从提交 `4863835963c99793c47b72473900c483e9fa0c2a` 保存源码快照，并已同步上游 `8c170596b6c2a5fc92a858dfd6f064c7762d835e`（`sources.json` / `docs-sources.json` / `viewer-services/sources.json` 记录该提交）；已有纯引擎只读复用。计划中的“修改原 app 以共享抽取实现”已废弃。
 
 ## 已实现
 
@@ -20,6 +20,8 @@ Viewer 自有包从提交 `4863835963c99793c47b72473900c483e9fa0c2a` 保存源�
 - 链接参数控制文件栏、本地导入、URL 导入、三格式操作栏、导航侧栏和错误显示；`embed=1` 一键隐藏，显式开关覆盖默认值。主页面 `url` 可自动导入文件直链。
 
 ## 本轮验证
+
+2026-10-27 同步上游 `8c170596`（含 v0.12.29 之后的 72 个提交）：快照更新 107 个源文件；新增土耳其语 `tr` 字典（docs/slides 共 7 个）与大纲折叠模块（`outline-view`、`headings`、`nav-outline`、`find`）。Viewer 侧适配按原样保留：`pdf/renderer/search.ts` 继续使用本地 `ui/find-text`，`extensions.ts` 继续去掉编辑/AI 扩展并改用 `viewerCopyImage` 桥。Word 分页带入上游 #2114 的纵向合并表格行修复，PPT 图表绘制随共享包更新。校验：`typecheck` 0 错误，`test` 13/13（含源码一致性），`build` 通过。分页与图表类复杂文档仍需逐页对照。
 
 2026-10-20 界面更新：三格式控制栏移至内容区内悬浮显示；Word/PDF 目录入口隐藏但代码保留；PPT 缩略图默认收起，通过左侧按钮展开悬浮面板；放映增加与原键盘接口同步的控制栏。工具栏及文件/错误状态区使用 CSS 响应布局，移除工具栏整行 JavaScript zoom。UI 回归覆盖明暗主题、320/375/768/1440 宽度、短视口、嵌入参数、翻页缩放、缩略图展开和焦点返回、PDF 信息/旋转、Word 修订及放映下一步/键盘/跳页/退出。仅修改 `apps/viewer`，核心包保持原样。
 

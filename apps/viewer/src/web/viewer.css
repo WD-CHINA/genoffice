@@ -319,6 +319,7 @@ html[data-viewer-errors='false'] #root .viewer-warning {
   display: grid;
   place-items: center;
   padding: 24px;
+  font-size: 12px;
   text-align: center;
 }
 /* Inside the Word preview the status shares a column flex container with the

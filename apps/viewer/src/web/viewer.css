@@ -321,6 +321,13 @@ html[data-viewer-errors='false'] #root .viewer-warning {
   padding: 24px;
   text-align: center;
 }
+/* Inside the Word preview the status shares a column flex container with the
+   toolbar: take the space left below it instead of 100% of the whole panel. */
+.viewer-doc > .viewer-doc-status {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
 .viewer-empty {
   margin: auto;
   padding: 32px;

@@ -555,7 +555,11 @@ export function Docs({ src }: { src: string }) {
             {error}
           </p>
         )}
-        {!ready && !error && <p>正在解析和分页…</p>}
+        {!ready && !error && (
+          <p className="viewer-status viewer-doc-status" role="status">
+            正在解析和分页…
+          </p>
+        )}
         {parsed && (
           <style data-doc-css>
             {docStyleCss(parsed) +

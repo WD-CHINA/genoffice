@@ -147,3 +147,27 @@ The session advertises the deck's embedded fonts (`ppt/fonts/*.fntdata`) and ser
 The server builds each slide with heuristic metrics and returns the run widths the browser should measure (`measurements`). The Viewer measures them on a canvas and posts them back; the server accepts the widths, invalidates its cached render trees and returns the remaining measurements. The same loop runs for the first slide, lazily loaded slides and the pre-slideshow preload.
 
 Remaining MVP limits: stored PPTX media parts support Range, deflated parts still return whole; the first paint uses heuristic metrics until the browser widths arrive. In token mode the server signs content/part URLs (`?exp=&sig=`), so `<img>`, `<video>` and PDF.js can fetch them without an Authorization header; `GET /v1/files/:id/content-url` returns the signed PDF URL. The Viewer opens the first slide only and loads other slides on demand (page navigation, visible thumbnails); starting a slideshow preloads the remaining slides first.
+
+## MySQL persistence
+
+The parse server can keep file metadata and session records in MySQL while
+leaving large content bytes and chunk files on local disk (or object storage
+later). Enable it with environment variables:
+
+```bash
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=
+MYSQL_DATABASE=genoffice_parse
+```
+
+The server creates these tables on startup when `MYSQL_DATABASE` is set:
+
+- `parse_files` — content-addressed file metadata
+- `parse_sessions` — session records (`model`/`fonts` JSON)
+- `parse_chunk_manifests` — reserved for chunk manifests
+
+`GET /v1/health` reports `storage: "mysql"` and `mysql: true` when connected.
+The Viewer never connects to MySQL directly; it keeps using the parse-server
+HTTP API.

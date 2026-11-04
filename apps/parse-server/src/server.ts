@@ -27,6 +27,7 @@ import {
   type ServerMetrics,
 } from './telemetry'
 import { ContentStore, UploadTooLargeError, type StoredFile } from './storage'
+import { MysqlDatabase, type MysqlConfig } from './mysql'
 
 export interface ParseServerOptions {
   /** Directory for the content-addressed store, metadata and temp uploads. */
@@ -59,6 +60,8 @@ export interface ParseServerOptions {
   maxStoreBytes?: number
   /** How often to sweep unreferenced content/temp files. */
   gcIntervalMs?: number
+  /** MySQL persistence for file metadata and sessions; unset = filesystem only. */
+  mysql?: MysqlConfig
 }
 
 export interface ParseServer {
@@ -68,6 +71,7 @@ export interface ParseServer {
   /** Run the content GC immediately (tests/ops). */
   gc(): Promise<void>
   close(): Promise<void>
+  db?: MysqlDatabase
 }
 
 type SessionHandle = PptxSession | DocxSession
@@ -97,6 +101,7 @@ interface Context {
   maxStoreBytes: number
   gcIntervalMs: number
   chunkRoot: string
+  db?: MysqlDatabase
 }
 
 const CONTENT_TYPES: Record<DocFormat, string> = {
@@ -723,6 +728,8 @@ async function route(
       parseTimeouts: ctx.metrics.parseTimeouts,
       tooManySessions: ctx.metrics.tooManySessions,
       storageBytes: await ctx.store.totalBytes(),
+      storage: ctx.db ? 'mysql' : 'filesystem',
+      ...(ctx.db ? { mysql: await ctx.db.ping() } : {}),
       memory: { rss: memory.rss, heapUsed: memory.heapUsed },
     })
     return
@@ -850,10 +857,11 @@ async function route(
 }
 
 export async function createParseServer(options: ParseServerOptions): Promise<ParseServer> {
-  const store = new ContentStore(options.dataDir)
+  const db = options.mysql ? new MysqlDatabase(options.mysql) : undefined
+  const store = new ContentStore(options.dataDir, db)
   await store.init()
   const sessionTtlMs = options.sessionTtlMs ?? 15 * 60_000
-  const sessionStore = new SessionStore(options.dataDir)
+  const sessionStore = new SessionStore(options.dataDir, db)
   await sessionStore.init(sessionTtlMs)
   const ctx: Context = {
     store,
@@ -875,6 +883,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     maxStoreBytes: options.maxStoreBytes ?? 20 * 1024 ** 3,
     gcIntervalMs: options.gcIntervalMs ?? 10 * 60_000,
     chunkRoot: join(options.dataDir, 'chunks'),
+    ...(db ? { db } : {}),
   }
   for (const record of sessionStore.values()) ctx.sessions.set(record.id, { record })
   const server: Server = createServer((req, res) => {
@@ -936,6 +945,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
       server.close((error) => (error ? reject(error) : resolve()))
     })
     await ctx.sessionStore.flush()
+    await db?.close()
   }
   return {
     url: `http://127.0.0.1:${address.port}`,
@@ -943,5 +953,6 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     store,
     gc: () => runGc(ctx),
     close,
+    ...(db ? { db } : {}),
   }
 }

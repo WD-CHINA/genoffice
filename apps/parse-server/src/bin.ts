@@ -1,5 +1,6 @@
 import { resolve } from 'node:path'
 import { createParseServer } from './server'
+import { mysqlConfigFromEnv } from './mysql'
 
 const port = Number(process.env.PARSE_SERVER_PORT ?? 8787)
 const host = process.env.PARSE_SERVER_HOST ?? '127.0.0.1'
@@ -27,6 +28,7 @@ const server = await createParseServer({
   contentTtlMs: Number(process.env.PARSE_SERVER_CONTENT_TTL_MS) || undefined,
   maxStoreBytes: Number(process.env.PARSE_SERVER_MAX_STORE_BYTES) || undefined,
   gcIntervalMs: Number(process.env.PARSE_SERVER_GC_INTERVAL_MS) || undefined,
+  mysql: mysqlConfigFromEnv() ?? undefined,
 })
 
 console.log(`[parse-server] listening on ${server.url} (data: ${dataDir})`)

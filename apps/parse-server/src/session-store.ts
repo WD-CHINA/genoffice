@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { DocModel } from '@genoffice/parse-contract'
 import type { PptxFontSummary } from './pptx'
+import type { MysqlDatabase } from './mysql'
 
 /** Everything needed to reopen a PPTX session after a process restart. */
 export interface SessionRecord {
@@ -26,11 +27,37 @@ export class SessionStore {
   private readonly records = new Map<string, SessionRecord>()
   private writeChain: Promise<void> = Promise.resolve()
 
-  constructor(dataDir: string) {
+  constructor(
+    dataDir: string,
+    private readonly db?: MysqlDatabase,
+  ) {
     this.path = join(dataDir, 'sessions.json')
   }
 
   async init(ttlMs: number): Promise<void> {
+    if (this.db) {
+      const cutoff = Date.now() - ttlMs
+      const [rows] = await this.db.pool.query(
+        `SELECT id, file_id, width, parser_version, base_url, model, fonts, created_at, last_used
+         FROM parse_sessions WHERE last_used >= ?`,
+        [cutoff],
+      )
+      for (const row of rows as any[]) {
+        const record: SessionRecord = {
+          id: String(row.id),
+          fileId: String(row.file_id),
+          width: Number(row.width),
+          parserVersion: String(row.parser_version),
+          baseUrl: String(row.base_url),
+          model: typeof row.model === 'string' ? JSON.parse(row.model) : row.model,
+          fonts: typeof row.fonts === 'string' ? JSON.parse(row.fonts) : row.fonts,
+          createdAt: Number(row.created_at),
+          lastUsed: Number(row.last_used),
+        }
+        if (isRecord(record)) this.records.set(record.id, record)
+      }
+      return
+    }
     await mkdir(dirname(this.path), { recursive: true })
     try {
       const parsed = JSON.parse(await readFile(this.path, 'utf8')) as unknown
@@ -55,11 +82,37 @@ export class SessionStore {
 
   async set(record: SessionRecord): Promise<void> {
     this.records.set(record.id, record)
+    if (this.db) {
+      await this.db.pool.query(
+        `INSERT INTO parse_sessions
+           (id, file_id, width, parser_version, base_url, model, fonts, created_at, last_used)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           file_id=VALUES(file_id), width=VALUES(width), parser_version=VALUES(parser_version),
+           base_url=VALUES(base_url), model=VALUES(model), fonts=VALUES(fonts), last_used=VALUES(last_used)`,
+        [
+          record.id,
+          record.fileId,
+          record.width,
+          record.parserVersion,
+          record.baseUrl,
+          JSON.stringify(record.model),
+          JSON.stringify(record.fonts),
+          record.createdAt,
+          record.lastUsed,
+        ],
+      )
+      return
+    }
     await this.persist()
   }
 
   async remove(id: string): Promise<void> {
     if (!this.records.delete(id)) return
+    if (this.db) {
+      await this.db.pool.query('DELETE FROM parse_sessions WHERE id = ?', [id])
+      return
+    }
     await this.persist()
   }
 

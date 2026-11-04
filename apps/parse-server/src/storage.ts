@@ -15,6 +15,7 @@ import { dirname, join } from 'node:path'
 import { Transform, type Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { DocFormat } from '@genoffice/parse-contract'
+import type { MysqlDatabase } from './mysql'
 
 export class UploadTooLargeError extends Error {
   readonly code = 'upload_too_large'
@@ -46,7 +47,10 @@ interface TempUpload {
  * holds a whole document in memory, which is the point of the service.
  */
 export class ContentStore {
-  constructor(readonly root: string) {}
+  constructor(
+    readonly root: string,
+    private readonly db?: MysqlDatabase,
+  ) {}
 
   private get filesDir(): string {
     return join(this.root, 'files')
@@ -61,6 +65,7 @@ export class ContentStore {
   }
 
   async init(): Promise<void> {
+    await this.db?.init()
     await mkdir(this.filesDir, { recursive: true })
     await mkdir(this.metaDir, { recursive: true })
     await mkdir(this.tmpDir, { recursive: true })
@@ -109,6 +114,12 @@ export class ContentStore {
       createdAt: new Date().toISOString(),
     }
     await writeFile(this.metaPath(upload.sha256), JSON.stringify(meta))
+    await this.db?.pool.query(
+      `INSERT INTO parse_files (file_id, sha256, size, format, created_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE sha256=VALUES(sha256), size=VALUES(size), format=VALUES(format)`,
+      [meta.fileId, meta.sha256, meta.size, meta.format, meta.createdAt],
+    )
     return meta
   }
 
@@ -117,6 +128,21 @@ export class ContentStore {
   }
 
   async stat(fileId: string): Promise<StoredFile | null> {
+    if (this.db) {
+      const [rows] = await this.db.pool.query(
+        'SELECT file_id, sha256, size, format, created_at FROM parse_files WHERE file_id = ? LIMIT 1',
+        [fileId],
+      )
+      const row = (rows as any[])[0]
+      if (!row) return null
+      return {
+        fileId: String(row.file_id),
+        sha256: String(row.sha256),
+        size: Number(row.size),
+        format: String(row.format) as DocFormat,
+        createdAt: String(row.created_at),
+      }
+    }
     try {
       const raw = await readFile(this.metaPath(fileId), 'utf8')
       const meta = JSON.parse(raw) as StoredFile
@@ -149,12 +175,25 @@ export class ContentStore {
   }
 
   async remove(fileId: string): Promise<void> {
+    await this.db?.pool.query('DELETE FROM parse_files WHERE file_id = ?', [fileId])
     await unlink(this.contentPath(fileId)).catch(() => undefined)
     await unlink(this.metaPath(fileId)).catch(() => undefined)
   }
 
   /** All committed files, newest metadata read from disk. */
   async list(): Promise<StoredFile[]> {
+    if (this.db) {
+      const [rows] = await this.db.pool.query(
+        'SELECT file_id, sha256, size, format, created_at FROM parse_files ORDER BY created_at DESC',
+      )
+      return (rows as any[]).map((row) => ({
+        fileId: String(row.file_id),
+        sha256: String(row.sha256),
+        size: Number(row.size),
+        format: String(row.format) as DocFormat,
+        createdAt: String(row.created_at),
+      }))
+    }
     let names: string[]
     try {
       names = await readdir(this.metaDir)

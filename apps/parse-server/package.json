@@ -18,17 +18,18 @@
   },
   "dependencies": {
     "@genoffice/parse-contract": "*",
-    "@genoffice/zip-gate": "*",
-    "@genoffice/zip-reader": "*",
     "@genoffice/pptx-engine": "*",
     "@genoffice/pptx-render": "*",
+    "@genoffice/zip-gate": "*",
+    "@genoffice/zip-reader": "*",
+    "mysql2": "^3.24.6",
     "tsx": "^4.21.0"
   },
   "devDependencies": {
+    "@genoffice/docx-engine": "*",
     "@types/node": "^24.10.1",
     "jszip": "^3.10.1",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.12",
-    "@genoffice/docx-engine": "*"
+    "vitest": "^4.1.12"
   }
 }

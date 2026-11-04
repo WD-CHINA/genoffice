@@ -1,11 +1,7 @@
-import { readFile, stat } from 'node:fs/promises'
-import { Readable } from 'node:stream'
-import JSZip from 'jszip'
-import { createDocxBlockParser } from '@genoffice/docx-engine'
+import { Worker } from 'node:worker_threads'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
-import { ParseLimitError } from './pptx-slim'
-import { streamDocxBlocks } from './docx-stream'
+import type { PptxFontSummary } from './pptx-core'
 
 export interface DocxOpenInput {
   id: string
@@ -14,61 +10,81 @@ export interface DocxOpenInput {
   parserVersion: string
   baseUrl: string
   limits: ServerLimits
+  parseTimeoutMs: number
+  unitTimeoutMs: number
+  workerMemoryMb: number
+  onDead?: () => void
 }
 
-const CHUNK_BLOCKS = 200
+interface Pending {
+  resolve: (value: unknown) => void
+  reject: (error: Error) => void
+  timer: NodeJS.Timeout
+}
 
-/**
- * Main-thread DOCX session. Gate A.3 keeps the first version simple: blocks are
- * parsed into in-memory chunks; worker isolation and chunk persistence follow.
- */
+export class DocxTimeoutError extends Error {
+  readonly code = 'parse_timeout'
+  constructor(
+    readonly operation: string,
+    readonly timeoutMs: number,
+  ) {
+    super(`docx ${operation} timed out after ${timeoutMs}ms`)
+    this.name = 'DocxTimeoutError'
+  }
+}
+
+/** Main-thread handle for a DOCX session whose parse/chunks live in a worker. */
 export class DocxSession {
-  readonly model: DocModel
-  readonly fonts: never[] = []
-  private readonly chunks: any[][]
+  model!: DocModel
+  fonts: PptxFontSummary[] = []
+  private readonly worker: Worker
+  private readonly pending = new Map<number, Pending>()
+  private readonly onDead?: () => void
+  private readonly unitTimeoutMs: number
+  private nextId = 0
+  private dead = false
   private lastUsed = Date.now()
 
   private constructor(
+    worker: Worker,
     readonly id: string,
     readonly fileId: string,
-    model: DocModel,
-    chunks: any[][],
+    options: { onDead?: () => void; unitTimeoutMs: number },
   ) {
-    this.model = model
-    this.chunks = chunks
+    this.worker = worker
+    this.onDead = options.onDead
+    this.unitTimeoutMs = options.unitTimeoutMs
+    worker.on('message', this.handleMessage)
+    worker.on('error', (error) => this.fail(error))
+    worker.on('exit', (code) => {
+      if (this.dead) return
+      this.fail(new Error(`docx worker exited with code ${code}`))
+    })
   }
 
   static async open(input: DocxOpenInput): Promise<DocxSession> {
-    const info = await stat(input.path)
-    if (info.size > input.limits.maxParseBytes) {
-      throw new ParseLimitError(input.limits.maxParseBytes)
+    const { onDead, parseTimeoutMs, unitTimeoutMs, workerMemoryMb, ...workerInput } = input
+    const worker = new Worker(new URL('./docx-worker.ts', import.meta.url), {
+      execArgv: ['--import', 'tsx'],
+      resourceLimits: { maxOldGenerationSizeMb: workerMemoryMb },
+    })
+    const session = new DocxSession(worker, input.id, input.fileId, {
+      onDead,
+      unitTimeoutMs,
+    })
+    try {
+      const opened = await session.call<{ model: DocModel; fonts: PptxFontSummary[] }>(
+        'open',
+        workerInput,
+        parseTimeoutMs,
+      )
+      session.model = opened.model
+      session.fonts = opened.fonts
+      return session
+    } catch (error) {
+      session.close()
+      throw error
     }
-    const bytes = await readFile(input.path)
-    const zip = await JSZip.loadAsync(bytes)
-    const documentFile = zip.file('word/document.xml')
-    if (!documentFile) throw new Error('not a docx: missing word/document.xml')
-    const documentXml = await documentFile.async('string')
-    const parser = await createDocxBlockParser(bytes)
-    const slices = []
-    for await (const slice of streamDocxBlocks(Readable.from([documentXml]))) slices.push(slice)
-    const blocks = []
-    for (let index = 0; index < slices.length; index++) {
-      blocks.push(await parser.parseBlock(slices[index].xml, index))
-    }
-    const chunks: any[][] = []
-    for (let offset = 0; offset < blocks.length; offset += CHUNK_BLOCKS) {
-      chunks.push(blocks.slice(offset, offset + CHUNK_BLOCKS))
-    }
-    const model: DocModel = {
-      format: 'docx',
-      parserVersion: input.parserVersion,
-      unitKind: 'block-chunk',
-      unitCount: chunks.length,
-      stagesDone: ['index', 'model'],
-      stagesPending: [],
-      warnings: [],
-    }
-    return new DocxSession(input.id, input.fileId, model, chunks)
   }
 
   touch(): void {
@@ -80,7 +96,7 @@ export class DocxSession {
   }
 
   units(cursor?: string, limit = 100): { items: UnitSummary[]; next?: string } {
-    const total = this.chunks.length
+    const total = this.model.unitCount ?? 0
     const start = cursor ? Number.parseInt(cursor, 10) : 0
     if (!Number.isInteger(start) || start < 0 || start > total) {
       throw new Error('docx: invalid unit cursor')
@@ -94,18 +110,8 @@ export class DocxSession {
   }
 
   async unit(id: string): Promise<unknown> {
-    const index = Number.parseInt(id, 10)
-    if (!Number.isInteger(index) || index < 0 || index >= this.chunks.length) {
-      throw new Error('docx: unknown block chunk')
-    }
     this.touch()
-    return {
-      id: String(index),
-      kind: 'block-chunk',
-      index,
-      blocks: this.chunks[index],
-      playback: [],
-    }
+    return this.call('unit', { id }, this.unitTimeoutMs)
   }
 
   async fontBytes(_id: string): Promise<Uint8Array | null> {
@@ -117,6 +123,70 @@ export class DocxSession {
   }
 
   close(): void {
-    // Chunks are plain JSON; nothing to release yet.
+    if (this.dead) return
+    this.dead = true
+    try {
+      this.worker.postMessage({ id: -1, method: 'close' })
+    } catch {
+      /* worker already gone */
+    }
+    void this.worker.terminate()
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer)
+      pending.reject(new Error('docx session closed'))
+    }
+    this.pending.clear()
+  }
+
+  private call<T>(method: string, params: unknown, timeoutMs: number): Promise<T> {
+    if (this.dead) return Promise.reject(new Error('docx session is closed'))
+    const id = this.nextId++
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id)
+        reject(new DocxTimeoutError(method, timeoutMs))
+        this.close()
+      }, timeoutMs)
+      this.pending.set(id, { resolve: resolve as (value: unknown) => void, reject, timer })
+      try {
+        this.worker.postMessage({ id, method, params })
+      } catch (error) {
+        clearTimeout(timer)
+        this.pending.delete(id)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
+    })
+  }
+
+  private readonly handleMessage = (message: {
+    id: number
+    ok: boolean
+    result?: unknown
+    error?: { message?: string; code?: string }
+  }): void => {
+    const pending = this.pending.get(message.id)
+    if (!pending) return
+    this.pending.delete(message.id)
+    clearTimeout(pending.timer)
+    if (message.ok) {
+      pending.resolve(message.result)
+    } else {
+      const error = new Error(message.error?.message ?? 'docx worker failed') as Error & {
+        code?: string
+      }
+      if (message.error?.code) error.code = message.error.code
+      pending.reject(error)
+    }
+  }
+
+  private fail(error: Error): void {
+    if (this.dead) return
+    this.dead = true
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer)
+      pending.reject(error)
+    }
+    this.pending.clear()
+    this.onDead?.()
   }
 }

@@ -114,7 +114,7 @@ first version:
   full package/document XML in this version, so it is not the 1 GB path yet
 - `pnpm --filter @genoffice/parse-server stress:docx -- --url ... --blocks 100000`
   generates a synthetic DOCX and reports open time / memory
-- DOCX parse currently runs on the main thread; worker isolation is a follow-up
+- DOCX parse runs in a per-session worker with parse/unit timeouts and a worker memory limit; a worker OOM returns 422 without taking down the server
 
 ### Media streaming and storage lifecycle
 

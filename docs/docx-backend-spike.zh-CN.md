@@ -474,6 +474,29 @@ session 行为：
 - 必须做 worker 隔离 + 流式 metadata + chunk 持久化，才能谈 1GB
 - compressed 文件大小不能作为解析内存的安全指标（XML 压缩率很高）
 
+### 2.17 Gate A.8：DOCX worker 隔离
+
+新增 `apps/parse-server/src/docx-worker.ts`，`DocxSession` 改为 worker 代理：
+
+- 解析、chunk 构建都在 worker
+- 主线程只保留 model/unit 请求代理
+- 复用 PPTX 的 parseTimeoutMs / unitTimeoutMs / workerMemoryMb
+- worker 崩溃或超时会通过 onDead 清理 session
+
+实测：
+
+| blocks  | openMs | 结果                       | 主进程 RSS          |
+| ------- | ------ | -------------------------- | ------------------- |
+| 100,000 | 1,804  | 201，unit0 正常            | ~498MB（含 worker） |
+| 300,000 | 3,917  | 422，worker 被内存限制终止 | ~154MB，server 存活 |
+
+关键结论：
+
+- 100k blocks 可以正常解析
+- 300k blocks 在 512MB worker 限制下失败，但 **server 不挂**
+- 这正是 worker 隔离要保证的行为
+- 100MB XML 仍需要流式 metadata + 更大预算/分段解析
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -495,7 +518,8 @@ session 行为：
 - **Gate A.4 第一版通过**：Viewer 可远程打开 DOCX
 - **Gate A.5 已通过**：远程 DOCX 支持 chunk 懒加载、按页虚拟化、表格行级分页、普通 block 真实高度测量
 - **Gate A.6 已通过**：chunk/session 请求支持 abort、卸载清理、错误重试
-- **Gate A.7 已做压力基线**：300k blocks / ~60MB XML 可打开，但 heap 1.09GB；100MB 级需要 worker + 流式 metadata
+- **Gate A.7 已做压力基线**：300k blocks / ~60MB XML 主线程可打开但 heap 1.09GB
+- **Gate A.8 已通过 worker 隔离**：100k blocks 正常；300k 被 512MB 限制终止但 server 存活
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

@@ -271,6 +271,13 @@ async function ensureSession(
         parserVersion: entry.record.parserVersion,
         baseUrl,
         limits: ctx.limits,
+        parseTimeoutMs: ctx.parseTimeoutMs,
+        unitTimeoutMs: ctx.unitTimeoutMs,
+        workerMemoryMb: ctx.workerMemoryMb,
+        onDead: () => {
+          ctx.sessions.delete(entry.record.id)
+          void ctx.sessionStore.remove(entry.record.id)
+        },
       })
       entry.record.baseUrl = baseUrl
       touchEntry(entry, ctx)
@@ -340,6 +347,13 @@ async function handleCreateSession(
             parserVersion: ctx.parserVersion,
             baseUrl,
             limits: ctx.limits,
+            parseTimeoutMs: ctx.parseTimeoutMs,
+            unitTimeoutMs: ctx.unitTimeoutMs,
+            workerMemoryMb: ctx.workerMemoryMb,
+            onDead: () => {
+              ctx.sessions.delete(sessionId)
+              void ctx.sessionStore.remove(sessionId)
+            },
           })
         : await PptxSession.open({
             id: sessionId,

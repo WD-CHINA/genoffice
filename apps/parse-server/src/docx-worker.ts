@@ -1,7 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import JSZip from 'jszip'
 import { parentPort } from 'node:worker_threads'
-import { createDocxBlockParser } from '@genoffice/docx-engine'
+import { createDocxBlockParser, readDocxEmbeddedFonts } from '@genoffice/docx-engine'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
 import { ParseLimitError } from './pptx-slim'
@@ -31,6 +31,8 @@ let model: DocModel | null = null
 let chunks: any[][] = []
 let chunkCount = 0
 let chunkHashes: string[] = []
+let fonts: Array<{ id: string; family: string; bold: boolean; italic: boolean; data: Uint8Array }> =
+  []
 let persisted = false
 let chunksDir = ''
 let lastUsed = Date.now()
@@ -65,8 +67,29 @@ async function rewriteImages(
   }
 }
 
-async function open(input: OpenInput): Promise<{ model: DocModel; fonts: never[] }> {
+async function open(input: OpenInput): Promise<{
+  model: DocModel
+  fonts: Array<{ id: string; family: string; bold: boolean; italic: boolean; also: string[] }>
+}> {
   chunksDir = input.chunksDir
+  const info = await stat(input.path)
+  if (info.size > input.limits.maxParseBytes) throw new ParseLimitError(input.limits.maxParseBytes)
+  const bytes = await readFile(input.path)
+  const embedded = await readDocxEmbeddedFonts(bytes)
+  fonts = embedded.map((font, index) => ({
+    id: `font-${index}`,
+    family: font.family,
+    bold: font.bold,
+    italic: font.italic,
+    data: font.data,
+  }))
+  const fontSummaries = fonts.map(({ id, family, bold, italic }) => ({
+    id,
+    family,
+    bold,
+    italic,
+    also: [],
+  }))
   const manifest = await readChunkManifest(input.chunksDir)
   if (
     manifest &&
@@ -86,11 +109,8 @@ async function open(input: OpenInput): Promise<{ model: DocModel; fonts: never[]
       stagesPending: [],
       warnings: [],
     }
-    return { model, fonts: [] }
+    return { model, fonts: fontSummaries }
   }
-  const info = await stat(input.path)
-  if (info.size > input.limits.maxParseBytes) throw new ParseLimitError(input.limits.maxParseBytes)
-  const bytes = await readFile(input.path)
   const metadata = await scanDocxMetadata(await openDocxDocumentStream(input.path, input.limits))
   const parser = await createDocxBlockParser(bytes, metadata)
   const slices = []
@@ -134,7 +154,7 @@ async function open(input: OpenInput): Promise<{ model: DocModel; fonts: never[]
     stagesPending: [],
     warnings: [],
   }
-  return { model, fonts: [] }
+  return { model, fonts: fontSummaries }
 }
 
 function units(cursor?: string, limit = 100): { items: UnitSummary[]; next?: string } {
@@ -191,9 +211,11 @@ parentPort?.on('message', (message: Message) => {
           })
           break
         }
-        case 'font':
-          respond(null)
+        case 'font': {
+          const font = fonts.find((item) => item.id === message.params?.id)
+          respond(font ? font.data : null)
           break
+        }
         case 'widths':
           respond([])
           break
@@ -201,6 +223,7 @@ parentPort?.on('message', (message: Message) => {
           chunks = []
           model = null
           chunkCount = 0
+          fonts = []
           respond(undefined)
           break
         default:

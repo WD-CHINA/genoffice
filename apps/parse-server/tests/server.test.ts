@@ -89,6 +89,32 @@ describe('parse-server', () => {
     ).toBe(204)
   })
 
+  it('serves DOCX embedded fonts', async () => {
+    const { server } = await start()
+    const bytes = await readFile(
+      join(process.cwd(), '..', 'viewer', 'src', 'web', 'public', 'docx-spike-font.docx'),
+    )
+    const uploaded = await upload(server.url, bytes)
+    const file = (await uploaded.json()) as { fileId: string }
+    const opened = await fetch(`${server.url}/v1/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileId: file.fileId }),
+    })
+    const session = (await opened.json()) as {
+      sessionId: string
+      fonts: Array<{ id: string; family: string }>
+    }
+    expect(session.fonts[0]?.family).toBe('Carlito')
+    const font = await fetch(
+      `${server.url}/v1/sessions/${session.sessionId}/fonts/${session.fonts[0].id}`,
+    )
+    expect(font.status).toBe(200)
+    expect(font.headers.get('content-type')).toBe('font/ttf')
+    expect((await font.arrayBuffer()).byteLength).toBeGreaterThan(1000)
+    await fetch(`${server.url}/v1/sessions/${session.sessionId}`, { method: 'DELETE' })
+  })
+
   it('restores a DOCX session after restart', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'parse-server-docx-restart-'))
     const first = await createParseServer({ dataDir: dir })

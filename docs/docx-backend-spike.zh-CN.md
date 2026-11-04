@@ -611,6 +611,30 @@ GC：
 - 字体接口尚未实现，`DocxSession.fonts` 仍为空
 - 没有缩略图/预加载策略
 
+### 2.23 Gate A.13：DOCX 字体接口
+
+新增：
+
+- `docx-engine` 导出 `readDocxEmbeddedFonts(bytes)`
+- worker 解析 embedded fonts，生成 `{id, family, bold, italic}` summaries
+- `POST /v1/sessions` 响应包含 `fonts`
+- `GET /v1/sessions/:id/fonts/:fontId` 返回 TTF bytes
+- Viewer `DocsRemote` 用 `FontFace` 加载并 `document.fonts.add`
+
+实测：
+
+- fixture `docx-spike-font.docx`（嵌入 Carlito Regular）
+- session 返回 `fonts: [{ id: 'font-0', family: 'Carlito', ... }]`
+- 字体接口 `200 font/ttf`，631,712 bytes
+- 浏览器 `document.fonts.check('12px Carlito') === true`，FontFace status `loaded`
+
+限制：
+
+- 只支持 embedded fonts；系统字体仍走 fallback
+- 没有字体子集化/按需加载策略，会话创建时一次性加载所有字体
+- 字体缓存只有浏览器侧，没有 CDN/共享缓存
+- 表格内图片/浮动对象仍不在 lazy 范围
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -637,7 +661,8 @@ GC：
 - **Gate A.9 已通过流式 metadata**：300k/500k blocks（~60MB/100MB XML）可解析，RSS ~284/324MB
 - **Gate A.10 已通过 chunk 持久化**：500k blocks 写 2500 个 chunk，重启从磁盘恢复，不重新解析
 - **Gate A.11 已通过 chunk 压缩/hash**：`.json.gz` + manifest chunkHashes，读取校验
-- **Gate A.12 已通过图片懒加载**：正文图片改写为 parts URL，浏览器按需加载；字体仍未实现
+- **Gate A.12 已通过图片懒加载**：正文图片改写为 parts URL，浏览器按需加载
+- **Gate A.13 已通过字体接口**：embedded fonts 经 `/fonts/:id` 返回，Viewer FontFace 加载成功
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

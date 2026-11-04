@@ -6,6 +6,7 @@ export {
   isSfnt,
   parseFontTable,
   readEmbeddedFonts,
+  readDocxEmbeddedFonts,
   sfntLineMetrics,
 } from './font-table'
 export { decodeEntities } from './parse-xml-text'

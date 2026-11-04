@@ -52,6 +52,34 @@ function PageEditor({ blocks }: { blocks: any[] }) {
   return <EditorContent editor={editor} />
 }
 
+async function loadFonts(
+  server: string,
+  sessionId: string,
+  fonts: Array<{ id: string; family: string; bold: boolean; italic: boolean }>,
+  auth: Record<string, string>,
+): Promise<void> {
+  await Promise.all(
+    fonts.map(async (font) => {
+      try {
+        const response = await fetch(
+          `${server}/v1/sessions/${sessionId}/fonts/${encodeURIComponent(font.id)}`,
+          { headers: auth },
+        )
+        if (!response.ok) return
+        const bytes = await response.arrayBuffer()
+        const face = new FontFace(font.family, bytes, {
+          weight: font.bold ? 'bold' : 'normal',
+          style: font.italic ? 'italic' : 'normal',
+        })
+        await face.load()
+        document.fonts.add(face)
+      } catch {
+        /* a missing font should not block the document */
+      }
+    }),
+  )
+}
+
 export function DocsRemote({ server, fileId, token, name }: Props) {
   const [blocks, setBlocks] = useState<any[]>([])
   const [tableRows, setTableRows] = useState<Map<number, TableRowLayout[]>>(new Map())
@@ -140,8 +168,12 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
         signal: controller.signal,
       })
       if (!created.ok) throw new Error(`创建 DOCX 会话失败（HTTP ${created.status}）`)
-      const opened = (await created.json()) as { sessionId: string }
+      const opened = (await created.json()) as {
+        sessionId: string
+        fonts?: Array<{ id: string; family: string; bold: boolean; italic: boolean }>
+      }
       session.current = opened.sessionId
+      if (opened.fonts?.length) await loadFonts(server, opened.sessionId, opened.fonts, auth)
       await loadChunk(opened.sessionId, undefined, controller.signal)
     } catch (error) {
       if ((error as Error)?.name !== 'AbortError') {

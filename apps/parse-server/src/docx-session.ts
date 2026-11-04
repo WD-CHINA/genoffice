@@ -116,8 +116,9 @@ export class DocxSession {
     return this.call('unit', { id }, this.unitTimeoutMs)
   }
 
-  async fontBytes(_id: string): Promise<Uint8Array | null> {
-    return null
+  async fontBytes(id: string): Promise<Uint8Array | null> {
+    const bytes = await this.call<Uint8Array | null>('font', { id }, this.unitTimeoutMs)
+    return bytes ?? null
   }
 
   async acceptWidths(_widths: Record<string, number>): Promise<unknown[]> {

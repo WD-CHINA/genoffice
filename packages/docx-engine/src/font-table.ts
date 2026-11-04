@@ -147,3 +147,12 @@ export async function readEmbeddedFonts(
   }
   return out
 }
+
+/** Read de-obfuscated embedded faces from a docx package. */
+export async function readDocxEmbeddedFonts(bytes: Uint8Array): Promise<EmbeddedFont[]> {
+  const { loadDocxZip } = await import('./zip-load')
+  const zip = await loadDocxZip(bytes)
+  const file = zip.file(FONT_TABLE_PART_PATH)
+  if (!file) return []
+  return readEmbeddedFonts(zip, parseFontTable(await file.async('string')))
+}

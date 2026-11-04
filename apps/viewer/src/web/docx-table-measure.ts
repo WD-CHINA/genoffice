@@ -7,11 +7,10 @@ import {
 import type { TablePage, TablePageRow, TableRowLayout } from './docx-table-pagination'
 
 /** Measure top-level table rows (nested tables are excluded by table.rows). */
-export function measureTableRows(doc: any, block: any): Promise<TableRowLayout[]> {
+export function measureTableRows(doc: any, block: any, width = 760): Promise<TableRowLayout[]> {
   return new Promise((resolve) => {
     const host = document.createElement('div')
-    host.style.cssText =
-      'position:fixed;left:-10000px;top:0;width:760px;visibility:hidden;pointer-events:none'
+    host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;visibility:hidden;pointer-events:none`
     document.body.appendChild(host)
     const editor = new Editor({
       element: host,

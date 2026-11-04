@@ -1083,12 +1083,12 @@ html[data-viewer-toolbar='false'] .viewer-preview {
 }
 
 .viewer-doc-remote .doc-page {
-  width: 760px;
-  min-height: 900px;
-  padding: 48px 56px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  box-shadow: var(--shadow-modal-strong);
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 .viewer-doc-remote-name {

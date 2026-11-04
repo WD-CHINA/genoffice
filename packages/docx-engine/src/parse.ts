@@ -8567,6 +8567,8 @@ export interface DocxDocumentMetadata {
   commentRangeStarts?: Set<string>
   /** Absolute offset of the first explicit page break. */
   firstPageBreakAt?: number
+  /** Build a display URL for a media part when the package is a slim archive. */
+  mediaUrl?: (partPath: string) => string
 }
 
 export interface DocxBlockParser {
@@ -8602,7 +8604,18 @@ export async function createDocxBlockParser(
   const scan = documentXml ? scanBody(documentXml) : { elements: [] }
   const mediaByRid = documentXml
     ? await tableBlipMedia(scan.elements, documentXml, zip, rels, docPath)
-    : new Map()
+    : new Map<string, string>()
+  if (!documentXml && metadata?.mediaUrl) {
+    for (const [rId, rel] of rels) {
+      if (!rel.type.endsWith('/image')) continue
+      if (rel.targetMode === 'External' || /^https?:\/\//i.test(rel.target)) {
+        mediaByRid.set(rId, rel.target)
+        continue
+      }
+      const partPath = resolveRelationshipTargetPath(docPath, rel.target)
+      if (partPath) mediaByRid.set(rId, metadata.mediaUrl(partPath))
+    }
+  }
   const externalTxbxByRid = documentXml
     ? await externalTxbxParts(documentXml, zip, rels, docPath)
     : new Map()

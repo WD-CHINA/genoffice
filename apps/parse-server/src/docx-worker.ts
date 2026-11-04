@@ -2,7 +2,11 @@ import { readFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import JSZip from 'jszip'
 import { parentPort } from 'node:worker_threads'
-import { createDocxBlockParser, readDocxEmbeddedFonts } from '@genoffice/docx-engine'
+import {
+  createDocxBlockParser,
+  readDocxEmbeddedFonts,
+  sectionSettingsFromXml,
+} from '@genoffice/docx-engine'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
 import { streamDocxBlocks } from './docx-stream'
@@ -100,6 +104,9 @@ async function open(input: OpenInput): Promise<{
     italic,
     also: [],
   }))
+  const sectionXml =
+    documentXml.match(/<w:sectPr[^>]*\/>|<w:sectPr[\s\S]*?<\/w:sectPr>/g)?.at(-1) ?? ''
+  const settings = sectionSettingsFromXml(sectionXml, {})
   const manifest = await readChunkManifest(input.chunksDir)
   if (
     manifest &&
@@ -115,6 +122,14 @@ async function open(input: OpenInput): Promise<{
       parserVersion: input.parserVersion,
       unitKind: 'block-chunk',
       unitCount: chunkCount,
+      page: {
+        pageWidth: settings.pageWidth,
+        pageHeight: settings.pageHeight,
+        marginTop: settings.marginTop,
+        marginRight: settings.marginRight,
+        marginBottom: settings.marginBottom,
+        marginLeft: settings.marginLeft,
+      },
       stagesDone: ['index', 'model'],
       stagesPending: [],
       warnings: [],
@@ -122,7 +137,11 @@ async function open(input: OpenInput): Promise<{
     return { model, fonts: fontSummaries }
   }
   const metadata = await scanDocxMetadata(Readable.from([documentXml]))
-  const parser = await createDocxBlockParser(bytes, metadata)
+  const parser = await createDocxBlockParser(bytes, {
+    ...metadata,
+    mediaUrl: (partPath) =>
+      `${input.baseUrl.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(input.fileId)}/parts/${encodeURI(partPath)}`,
+  })
   const slices = []
   for await (const slice of streamDocxBlocks(Readable.from([documentXml]))) slices.push(slice)
   const blocks = []
@@ -155,6 +174,14 @@ async function open(input: OpenInput): Promise<{
     parserVersion: input.parserVersion,
     unitKind: 'block-chunk',
     unitCount: chunkCount,
+    page: {
+      pageWidth: settings.pageWidth,
+      pageHeight: settings.pageHeight,
+      marginTop: settings.marginTop,
+      marginRight: settings.marginRight,
+      marginBottom: settings.marginBottom,
+      marginLeft: settings.marginLeft,
+    },
     stagesDone: ['index', 'model'],
     stagesPending: [],
     warnings: [],

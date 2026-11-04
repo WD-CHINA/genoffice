@@ -106,6 +106,9 @@ describe('parse-server', () => {
       fonts: Array<{ id: string; family: string }>
     }
     expect(session.fonts[0]?.family).toBe('Carlito')
+    expect(
+      (session as { model?: { page?: { pageWidth: number } } }).model?.page?.pageWidth,
+    ).toBeGreaterThan(0)
     const font = await fetch(
       `${server.url}/v1/sessions/${session.sessionId}/fonts/${session.fonts[0].id}`,
     )

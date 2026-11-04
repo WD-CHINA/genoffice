@@ -7,14 +7,31 @@ import {
 } from '@genoffice/viewer-renderers/docs/renderer/editor/convert'
 import '@genoffice/viewer-renderers/docs/renderer/styles.css'
 import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
-import { pageTops, paginateBlocks, visiblePages, type BlockMeasure } from './docx-pagination'
+import { paginateBlocks, visiblePages, type BlockMeasure } from './docx-pagination'
 import { paginateTableRows, type TableRowLayout } from './docx-table-pagination'
 import { measureTableRows, sliceTableBlock } from './docx-table-measure'
 import { measureBlockHeights } from './docx-block-measure'
 
-const PAGE_HEIGHT = 900
-const PAGE_WIDTH = 760
+interface PageSettings {
+  pageWidth: number
+  pageHeight: number
+  marginTop: number
+  marginRight: number
+  marginBottom: number
+  marginLeft: number
+}
+
+const DEFAULT_PAGE: PageSettings = {
+  pageWidth: 11906,
+  pageHeight: 16838,
+  marginTop: 1440,
+  marginRight: 1440,
+  marginBottom: 1440,
+  marginLeft: 1440,
+}
+const PAGE_GAP = 24
 const OVERSCAN = 2
+const twipsToPx = (twips: number): number => twips / 15
 const CHUNK_LIMIT = 1
 
 interface Props {
@@ -82,6 +99,7 @@ async function loadFonts(
 
 export function DocsRemote({ server, fileId, token, name }: Props) {
   const [blocks, setBlocks] = useState<any[]>([])
+  const [page, setPage] = useState<PageSettings>(DEFAULT_PAGE)
   const [tableRows, setTableRows] = useState<Map<number, TableRowLayout[]>>(new Map())
   const [blockHeights, setBlockHeights] = useState<Map<number, number>>(new Map())
   const [status, setStatus] = useState('正在创建 DOCX 会话…')
@@ -100,6 +118,14 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     () => (token ? { Authorization: `Bearer ${token}` } : {}) as Record<string, string>,
     [token],
   )
+  const pageWidth = twipsToPx(page.pageWidth)
+  const pageHeight = twipsToPx(page.pageHeight)
+  const paddingTop = twipsToPx(page.marginTop)
+  const paddingRight = twipsToPx(page.marginRight)
+  const paddingBottom = twipsToPx(page.marginBottom)
+  const paddingLeft = twipsToPx(page.marginLeft)
+  const contentWidth = Math.max(1, pageWidth - paddingLeft - paddingRight)
+  const contentHeight = Math.max(1, pageHeight - paddingTop - paddingBottom)
 
   const loadChunk = useCallback(
     async (sessionId: string, next?: string, signal?: AbortSignal) => {
@@ -170,9 +196,11 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       if (!created.ok) throw new Error(`创建 DOCX 会话失败（HTTP ${created.status}）`)
       const opened = (await created.json()) as {
         sessionId: string
+        model?: { page?: PageSettings }
         fonts?: Array<{ id: string; family: string; bold: boolean; italic: boolean }>
       }
       session.current = opened.sessionId
+      if (opened.model?.page) setPage(opened.model.page)
       if (opened.fonts?.length) await loadFonts(server, opened.sessionId, opened.fonts, auth)
       await loadChunk(opened.sessionId, undefined, controller.signal)
     } catch (error) {
@@ -214,7 +242,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     return () => {
       cancelled = true
     }
-  }, [blocks])
+  }, [blocks, contentWidth])
 
   // Measure normal block heights incrementally; table blocks use row heights.
   useEffect(() => {
@@ -231,6 +259,8 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       const heights = await measureBlockHeights(
         { styles: new Map(), numbering: new Map(), docDefaults: undefined },
         pending,
+        100,
+        contentWidth,
       )
       if (cancelled) return
       setBlockHeights((old) => {
@@ -242,7 +272,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     return () => {
       cancelled = true
     }
-  }, [blocks])
+  }, [blocks, contentWidth])
 
   const renderBlocks = useMemo(() => {
     const result: Array<{ block: any; height: number; breakBefore?: boolean }> = []
@@ -250,7 +280,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       const rows = tableRows.get(block.docxIndex)
       if (rows?.length) {
         const headerRows = rows.filter((row) => row.header).length
-        paginateTableRows(rows, PAGE_HEIGHT, { headerRows }).forEach((tablePage, index) => {
+        paginateTableRows(rows, contentHeight, { headerRows }).forEach((tablePage, index) => {
           result.push({
             block: sliceTableBlock(block, tablePage),
             height: Math.max(1, tablePage.height),
@@ -262,11 +292,11 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       result.push({
         block,
         height: blockHeights.get(block.docxIndex) ?? estimateHeight(block),
-        breakBefore: block.type === 'heading',
+        breakBefore: block.format?.pageBreakBefore === true,
       })
     }
     return result
-  }, [blocks, tableRows, blockHeights])
+  }, [blocks, tableRows, blockHeights, contentHeight])
 
   const pages = useMemo(() => {
     if (!renderBlocks.length) return []
@@ -274,18 +304,28 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       height: item.height,
       breakBefore: item.breakBefore,
     }))
-    return paginateBlocks(measures, PAGE_HEIGHT)
-  }, [renderBlocks])
-  const tops = useMemo(() => pageTops(pages), [pages])
-  const totalHeight = tops.length ? tops[tops.length - 1] + pages[pages.length - 1].height : 0
-  const viewportHeight = viewport.current?.clientHeight || 720
-  const range = visiblePages(
-    tops,
-    pages.map((page) => page.height),
-    scrollTop,
-    viewportHeight,
-    OVERSCAN,
+    return paginateBlocks(measures, contentHeight)
+  }, [renderBlocks, contentHeight])
+  // An oversized image/table can be taller than the text area; let that page
+  // grow instead of clipping the block at the page edge.
+  const pageBoxHeights = useMemo(
+    () => pages.map((page) => Math.max(pageHeight, page.height + paddingTop + paddingBottom + 40)),
+    [pages, pageHeight, paddingTop, paddingBottom],
   )
+  const tops = useMemo(() => {
+    const result: number[] = []
+    let top = 0
+    for (const height of pageBoxHeights) {
+      result.push(top)
+      top += height + PAGE_GAP
+    }
+    return result
+  }, [pageBoxHeights])
+  const totalHeight = tops.length
+    ? tops[tops.length - 1] + pageBoxHeights[pageBoxHeights.length - 1]
+    : 0
+  const viewportHeight = viewport.current?.clientHeight || 720
+  const range = visiblePages(tops, pageBoxHeights, scrollTop, viewportHeight, OVERSCAN)
 
   const onScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget
@@ -320,9 +360,20 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
             <div
               key={page.index}
               className="viewer-doc-remote-slot"
-              style={{ transform: `translateY(${tops[page.index]}px)` }}
+              style={{
+                width: pageWidth,
+                marginLeft: -pageWidth / 2,
+                transform: `translateY(${tops[page.index]}px)`,
+              }}
             >
-              <div className="viewer-doc-remote-page" style={{ width: PAGE_WIDTH }}>
+              <div
+                className="viewer-doc-remote-page"
+                style={{
+                  width: pageWidth,
+                  height: pageBoxHeights[page.index],
+                  padding: `${paddingTop}px ${paddingRight}px ${paddingBottom}px ${paddingLeft}px`,
+                }}
+              >
                 <PageEditor
                   blocks={renderBlocks
                     .slice(page.blockStart, page.blockEnd)

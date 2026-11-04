@@ -82,6 +82,17 @@ export interface UnitSummary {
   bytes?: number
 }
 
+export interface DocPageSettings {
+  /** Page width in twips. */
+  pageWidth: number
+  /** Page height in twips. */
+  pageHeight: number
+  marginTop: number
+  marginRight: number
+  marginBottom: number
+  marginLeft: number
+}
+
 export interface DocModel {
   format: DocFormat
   parserVersion: string
@@ -93,6 +104,8 @@ export interface DocModel {
   stagesPending: ParseStage[]
   /** Asset count only; assets themselves are paged through `ParseSession.assets`. */
   assetCount?: number
+  /** Page geometry for paginated formats (DOCX sections). */
+  page?: DocPageSettings
   warnings: Diagnostic[]
 }
 

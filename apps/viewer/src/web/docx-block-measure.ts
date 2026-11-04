@@ -13,12 +13,12 @@ export async function measureBlockHeights(
   doc: any,
   blocks: any[],
   chunkSize = 100,
+  width = 760,
 ): Promise<Map<number, number>> {
   const heights = new Map<number, number>()
   if (!blocks.length) return heights
   const host = document.createElement('div')
-  host.style.cssText =
-    'position:fixed;left:-10000px;top:0;width:760px;visibility:hidden;pointer-events:none'
+  host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;visibility:hidden;pointer-events:none`
   document.body.appendChild(host)
   const editor = new Editor({
     element: host,

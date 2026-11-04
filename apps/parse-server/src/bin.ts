@@ -18,6 +18,7 @@ const server = await createParseServer({
   fontSetHash: process.env.PARSE_SERVER_FONT_SET_HASH || undefined,
   limits: {
     maxUploadBytes: Number(process.env.PARSE_SERVER_MAX_UPLOAD_BYTES) || undefined,
+    maxParseBytes: Number(process.env.PARSE_SERVER_MAX_PARSE_BYTES) || undefined,
   },
   parseTimeoutMs: Number(process.env.PARSE_SERVER_PARSE_TIMEOUT_MS) || undefined,
   unitTimeoutMs: Number(process.env.PARSE_SERVER_UNIT_TIMEOUT_MS) || undefined,

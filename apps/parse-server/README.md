@@ -115,6 +115,7 @@ first version:
   streamed for metadata and block parsing, while the compressed package is still
   loaded by JSZip. 100 MB-class synthetic XML has been exercised.
 - `pnpm --filter @genoffice/parse-server fixture:docx-large -- --mb 100 --out /tmp/docx-large-real.docx`
+- `pnpm --filter @genoffice/parse-server fixture:docx-1g -- --mb 1024 --out /tmp/docx-1g-media.docx`
 - `pnpm --filter @genoffice/parse-server stress:docx -- --url ... --file /tmp/docx-large-real.docx`
   generates a synthetic DOCX and reports open time / memory
 - DOCX parse runs in a per-session worker with parse/unit timeouts and a worker memory limit; a worker OOM returns 422 without taking down the server

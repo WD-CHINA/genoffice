@@ -686,6 +686,47 @@ GC：
 | RSS after  | ~389MB                                |
 | chunk 文件 | 1 个 `chunks.bin`（不再 2500 个文件） |
 
+### 2.26 Gate A.16：流式生成 1GB fixture
+
+新增 `docx-1g-fixture.mts`：
+
+- 不拼接 JS 字符串
+- 手动写 zip local header / central directory
+- `word/media/big.bin` 用 8MB 块流式写入（stored）
+- CRC32 流式计算
+- 生成 1GB DOCX（小 XML + 1GB 媒体）
+
+实测：
+
+| 文件        | 大小  | 上传  | 默认 maxParse | 结果                                            |
+| ----------- | ----- | ----- | ------------- | ----------------------------------------------- |
+| 100MB media | 101MB | 213ms | 256MB         | session 201，open 531ms，RSS ~243MB             |
+| 1GB media   | 1.0GB | 2.1s  | 256MB         | session 413                                     |
+| 1GB media   | 1.0GB | 2.1s  | 2GB           | session 422，worker 被内存限制终止，server 存活 |
+
+结论：
+
+- 1GB 文件可以流式生成、上传、存储
+- 当前 worker 仍 `readFile` 整个 package + JSZip，1GB 会触发 worker 内存上限
+- 需要随机访问/对象存储 reader 才能打开 1GB DOCX
+
+### 2.27 Gate A.17：100MB 真实 fixture 浏览器验收
+
+用 `/tmp/docx-large-real.docx`（100MB XML，图片+表格+修订）远程打开：
+
+- 首屏只加载 1 个 chunk
+- 显示修订/脚注/表格
+- 表格行级分页正常
+- “加载更多”可继续加载后续 chunk
+- 可见页 ±2 挂载，canvas 高度约 142,730px
+- 没有报错
+
+限制：
+
+- 没有自动滚动到底部触发全部 145 chunks
+- 图片/字体在 100MB fixture 中没有单独断言
+- 浏览器内存/滚动 FPS 没有系统采样
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -716,6 +757,8 @@ GC：
 - **Gate A.13 已通过字体接口**：embedded fonts 经 `/fonts/:id` 返回，Viewer FontFace 加载成功
 - **Gate A.14 已通过真实 100MB fixture**：图片+表格+修订，open ~9.8s，145 chunks，RSS ~439MB
 - **Gate A.15 已通过单文件 chunk 索引**：500k blocks 写 1 个 `chunks.bin`，open ~2.4s
+- **Gate A.16 已做 1GB 流式 fixture**：1GB 可生成/上传/存储；打开仍受 worker 512MB 限制
+- **Gate A.17 已做 100MB 浏览器验收**：首 chunk + 加载更多 + 表格分页正常
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

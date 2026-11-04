@@ -312,11 +312,11 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       const rows = tableRows.get(block.docxIndex)
       if (rows?.length) {
         const headerRows = rows.filter((row) => row.header).length
-        paginateTableRows(rows, contentHeight, { headerRows }).forEach((tablePage, index) => {
+        paginateTableRows(rows, contentHeight, { headerRows }).forEach((tablePage) => {
           result.push({
             block: sliceTableBlock(block, tablePage),
             height: Math.max(1, tablePage.height),
-            breakBefore: index === 0,
+            breakBefore: block.format?.pageBreakBefore === true,
           })
         })
         continue

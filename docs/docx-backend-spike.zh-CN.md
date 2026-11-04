@@ -272,6 +272,40 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 - 按行高比例拆段 vs 按真实段落边界拆段
 - 主页面里表格页与后续段落的精确 page-break 规则
 
+### 2.10 Gate A：流式 Block 语义
+
+新增：
+
+- `apps/parse-server/src/docx-block-parse.ts`
+- `apps/parse-server/tests/docx-block-parse.test.ts`
+
+做法：
+
+- 用 `streamDocxBlocks` 得到原始 XML 切片
+- 把每个切片放回原 docx 包（保留 styles/rels/media/numbering/sectPr）
+- 调用现有 `parseDocx`，取第一个 block
+- 与完整 `parseDocx` 的同位置 block 对比
+
+实测 fixture：
+
+- `table-style-ppr-spacing`
+- `render-hf-inline-picture`
+- `docx-spike-table`（修订 + 脚注 + 合并单元格 + 嵌套表格）
+
+对比项：
+
+- block type
+- 纯文本
+- 表格行数
+
+结果：**全部一致**。
+
+限制：
+
+- 每个 block 都重新生成一次 docx 包，不是真正的流式上下文
+- 还没有复用 `docx-engine` 内部的 `buildBlock`/styles/rels 上下文
+- 大文档上这个做法不可用，只证明“切片可以语义解析”
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -287,10 +321,12 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 - **已补齐：拆分行的真实渲染**，tall line 0–49/50–79 连续，合并单元格/嵌套表格/cantSplit 正常
 - **已接回主 docx-page-spike**，表格子页参与主分页
 - **仍未验证：拆分行里的合并单元格/嵌套表格跨页、边框/底纹像素级一致性**
+- **Gate A 语义切片已通过 spike**：3 个 fixture 的 type/text/table rows 与完整 parse 一致；但仍是“每块重新打包”，需要改成复用 parser context
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
-  - 拆分行的单元格段落渲染
-  - 浮动对象、合并单元格、嵌套表格
+  - 拆分行里的合并单元格/嵌套表格跨页
+  - 跨页拆分后的边框/底纹像素级一致性
+  - 浮动对象
   - 与整篇 editor 的像素级 parity
   - 页高变化后的增量重排
   - 跳页时 editor 创建/销毁的卡顿

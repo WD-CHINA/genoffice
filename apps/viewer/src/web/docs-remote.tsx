@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { editorExtensions } from '@genoffice/viewer-renderers/docs/renderer/editor/extensions'
 import {
@@ -7,6 +7,14 @@ import {
 } from '@genoffice/viewer-renderers/docs/renderer/editor/convert'
 import '@genoffice/viewer-renderers/docs/renderer/styles.css'
 import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
+import { pageTops, paginateBlocks, visiblePages, type BlockMeasure } from './docx-pagination'
+import { paginateTableRows, type TableRowLayout } from './docx-table-pagination'
+import { measureTableRows, sliceTableBlock } from './docx-table-measure'
+
+const PAGE_HEIGHT = 900
+const PAGE_WIDTH = 760
+const OVERSCAN = 2
+const CHUNK_LIMIT = 1
 
 interface Props {
   server: string
@@ -15,24 +23,95 @@ interface Props {
   name?: string
 }
 
-interface UnitChunk {
-  blocks: any[]
+interface UnitListing {
+  items: Array<{ id: string }>
+  next?: string
 }
 
-export function DocsRemote({ server, fileId, token, name }: Props) {
-  const [status, setStatus] = useState('正在创建 DOCX 会话…')
-  const [error, setError] = useState('')
-  const session = useRef<string | null>(null)
+function estimateHeight(block: any): number {
+  if (block.type === 'table') return 320
+  if (block.type === 'image') return 240
+  if (block.type === 'passthrough') return 24
+  const text = (block.runs || []).map((run: any) => run.text || '').join('')
+  return Math.max(24, 22 + Math.ceil(text.length / 70) * 20)
+}
+
+function PageEditor({ blocks }: { blocks: any[] }) {
   const editor = useEditor({
     extensions: editorExtensions,
     editable: false,
     editorProps: { attributes: { class: 'doc-page' } },
   })
-
   useEffect(() => {
     if (!editor) return
+    editor.commands.setContent(blocksToPmDoc(blocks, undefined, pmDocOptions({})), {
+      emitUpdate: false,
+    })
+  }, [editor, blocks])
+  return <EditorContent editor={editor} />
+}
+
+export function DocsRemote({ server, fileId, token, name }: Props) {
+  const [blocks, setBlocks] = useState<any[]>([])
+  const [tableRows, setTableRows] = useState<Map<number, TableRowLayout[]>>(new Map())
+  const [status, setStatus] = useState('正在创建 DOCX 会话…')
+  const [error, setError] = useState('')
+  const [scrollTop, setScrollTop] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [cursor, setCursor] = useState<string | undefined>()
+  const [hasMore, setHasMore] = useState(false)
+  const session = useRef<string | null>(null)
+  const viewport = useRef<HTMLDivElement>(null)
+  const loadingRef = useRef(false)
+  const measuredTables = useRef(new Set<number>())
+  const auth = useMemo<Record<string, string>>(
+    () => (token ? { Authorization: `Bearer ${token}` } : {}) as Record<string, string>,
+    [token],
+  )
+
+  const loadChunk = useCallback(
+    async (sessionId: string, next?: string) => {
+      if (loadingRef.current) return
+      loadingRef.current = true
+      setLoadingMore(true)
+      try {
+        const query = new URLSearchParams({ limit: String(CHUNK_LIMIT) })
+        if (next) query.set('cursor', next)
+        const listingResponse = await fetch(`${server}/v1/sessions/${sessionId}/units?${query}`, {
+          headers: auth,
+        })
+        if (!listingResponse.ok)
+          throw new Error(`读取 chunk 列表失败（HTTP ${listingResponse.status}）`)
+        const listing = (await listingResponse.json()) as UnitListing
+        setCursor(listing.next)
+        setHasMore(!!listing.next)
+        if (!listing.items.length) {
+          setStatus('')
+          return
+        }
+        const loaded: any[] = []
+        for (const item of listing.items) {
+          const response = await fetch(
+            `${server}/v1/sessions/${sessionId}/units/${encodeURIComponent(item.id)}`,
+            { headers: auth },
+          )
+          if (!response.ok) throw new Error(`读取 chunk 失败（HTTP ${response.status}）`)
+          loaded.push(...((await response.json()) as { blocks: any[] }).blocks)
+        }
+        setBlocks((old) => [...old, ...loaded])
+        setStatus('')
+      } catch (error) {
+        setError(error instanceof Error ? error.message : String(error))
+      } finally {
+        loadingRef.current = false
+        setLoadingMore(false)
+      }
+    },
+    [auth, server],
+  )
+
+  useEffect(() => {
     let cancelled = false
-    const auth: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {}
     void (async () => {
       try {
         const created = await fetch(`${server}/v1/sessions`, {
@@ -41,33 +120,10 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
           body: JSON.stringify({ fileId }),
         })
         if (!created.ok) throw new Error(`创建 DOCX 会话失败（HTTP ${created.status}）`)
-        const opened = (await created.json()) as {
-          sessionId: string
-          model: { unitCount?: number }
-        }
-        session.current = opened.sessionId
-        const units = await fetch(`${server}/v1/sessions/${opened.sessionId}/units?limit=500`, {
-          headers: auth,
-        })
-        if (!units.ok) throw new Error(`读取 DOCX chunk 列表失败（HTTP ${units.status}）`)
-        const listing = (await units.json()) as { items: Array<{ id: string }>; next?: string }
-        if (!listing.items.length) throw new Error('DOCX 没有可渲染的 chunk')
-        const blocks: any[] = []
-        for (const item of listing.items) {
-          if (cancelled) return
-          setStatus(`正在加载 chunk ${blocks.length}…`)
-          const response = await fetch(
-            `${server}/v1/sessions/${opened.sessionId}/units/${encodeURIComponent(item.id)}`,
-            { headers: auth },
-          )
-          if (!response.ok) throw new Error(`读取 DOCX chunk 失败（HTTP ${response.status}）`)
-          blocks.push(...((await response.json()) as UnitChunk).blocks)
-        }
+        const opened = (await created.json()) as { sessionId: string }
         if (cancelled) return
-        editor.commands.setContent(blocksToPmDoc(blocks, undefined, pmDocOptions({})), {
-          emitUpdate: false,
-        })
-        setStatus('')
+        session.current = opened.sessionId
+        await loadChunk(opened.sessionId)
       } catch (error) {
         if (!cancelled) setError(error instanceof Error ? error.message : String(error))
       }
@@ -81,7 +137,79 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
         }).catch(() => undefined)
       }
     }
-  }, [editor, server, fileId, token])
+  }, [server, fileId, auth, loadChunk])
+
+  // Measure table rows as their blocks arrive; do not block the first paint.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      for (const block of blocks) {
+        if (block.type !== 'table' || measuredTables.current.has(block.docxIndex)) continue
+        measuredTables.current.add(block.docxIndex)
+        const rows = await measureTableRows(
+          { styles: new Map(), numbering: new Map(), docDefaults: undefined },
+          block,
+        )
+        if (cancelled) return
+        setTableRows((old) => new Map(old).set(block.docxIndex, rows))
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [blocks])
+
+  const renderBlocks = useMemo(() => {
+    const result: Array<{ block: any; height: number; breakBefore?: boolean }> = []
+    for (const block of blocks) {
+      const rows = tableRows.get(block.docxIndex)
+      if (rows?.length) {
+        const headerRows = rows.filter((row) => row.header).length
+        paginateTableRows(rows, PAGE_HEIGHT, { headerRows }).forEach((tablePage, index) => {
+          result.push({
+            block: sliceTableBlock(block, tablePage),
+            height: Math.max(1, tablePage.height),
+            breakBefore: index === 0,
+          })
+        })
+        continue
+      }
+      result.push({
+        block,
+        height: estimateHeight(block),
+        breakBefore: block.type === 'heading',
+      })
+    }
+    return result
+  }, [blocks, tableRows])
+
+  const pages = useMemo(() => {
+    if (!renderBlocks.length) return []
+    const measures: BlockMeasure[] = renderBlocks.map((item) => ({
+      height: item.height,
+      breakBefore: item.breakBefore,
+    }))
+    return paginateBlocks(measures, PAGE_HEIGHT)
+  }, [renderBlocks])
+  const tops = useMemo(() => pageTops(pages), [pages])
+  const totalHeight = tops.length ? tops[tops.length - 1] + pages[pages.length - 1].height : 0
+  const viewportHeight = viewport.current?.clientHeight || 720
+  const range = visiblePages(
+    tops,
+    pages.map((page) => page.height),
+    scrollTop,
+    viewportHeight,
+    OVERSCAN,
+  )
+
+  const onScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget
+    setScrollTop(element.scrollTop)
+    if (!hasMore || loadingRef.current) return
+    if (element.scrollTop + element.clientHeight > element.scrollHeight - 240) {
+      if (session.current) void loadChunk(session.current, cursor)
+    }
+  }
 
   return (
     <div className="viewer-preview viewer-doc-remote">
@@ -92,9 +220,35 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
           {error}
         </p>
       )}
-      <div className="viewer-doc-canvas">
-        <EditorContent editor={editor} />
+      <div className="viewer-doc-remote-viewport" ref={viewport} onScroll={onScroll}>
+        <div className="viewer-doc-remote-canvas" style={{ height: totalHeight }}>
+          {pages.slice(range.start, range.end).map((page) => (
+            <div
+              key={page.index}
+              className="viewer-doc-remote-slot"
+              style={{ transform: `translateY(${tops[page.index]}px)` }}
+            >
+              <div className="viewer-doc-remote-page" style={{ width: PAGE_WIDTH }}>
+                <PageEditor
+                  blocks={renderBlocks
+                    .slice(page.blockStart, page.blockEnd)
+                    .map((item) => item.block)}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
+      {loadingMore && <p className="viewer-doc-remote-loading">正在加载更多…</p>}
+      {hasMore && !loadingMore && (
+        <button
+          type="button"
+          className="viewer-doc-remote-more"
+          onClick={() => session.current && void loadChunk(session.current, cursor)}
+        >
+          加载更多
+        </button>
+      )}
     </div>
   )
 }

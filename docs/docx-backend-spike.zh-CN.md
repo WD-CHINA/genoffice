@@ -396,6 +396,35 @@ session 行为：
 - 没有字体/媒体懒加载、搜索、缩略图、放映
 - 远程 DOCX 只是“能打开”，不是生产级排版
 
+### 2.14 Gate A.5：远程 DOCX 分页/懒加载
+
+`DocsRemote` 改为：
+
+- 初始只加载 1 个 chunk
+- 滚动接近底部时按 cursor 加载下一个 chunk
+- 用 `docx-pagination` 做按页虚拟化，只挂载可见页 ±2
+- 用 `docx-table-measure` + `docx-table-pagination` 处理表格行级分页
+- 表格页重复 header，拆分行的上下页连续
+
+浏览器实测 `docx-spike-table.docx`：
+
+| 指标                | 结果                                              |
+| ------------------- | ------------------------------------------------- |
+| pages               | 4                                                 |
+| 可见页挂载          | 1–3 / 滚动后变化                                  |
+| 表格拆分            | page 2 `tall line 0–49`，page 3 `tall line 50–79` |
+| header 重复         | page 2/3 都有                                     |
+| 合并单元格/嵌套表格 | page 3 显示                                       |
+| 修订/脚注           | page 1 显示                                       |
+
+限制：
+
+- 普通 block 仍用估算高度，不是真实 DOM 测量
+- 表格测量是异步的，页面数会随后变化
+- chunk 加载没有取消/错误重试 UI
+- 媒体/字体/搜索/缩略图仍未接
+- 只加载已到达的 chunk，page count 是当前已加载内容的页数
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -414,7 +443,8 @@ session 行为：
 - **Gate A 语义切片已通过 spike**：3 个 fixture 的 type/text/table rows 与完整 parse 一致
 - **Gate A.2 已通过**：`createDocxBlockParser` 复用包级上下文，不再逐块重新打包；但 context 创建仍读完整 document.xml
 - **Gate A.3 已通过**：DOCX 服务端 session 可用（block-chunk），元数据流式 pass 与重启恢复测试通过
-- **Gate A.4 第一版通过**：Viewer 可远程打开 DOCX，但还是一次性拉取 + 单 editor，未接分页/表格行级分页
+- **Gate A.4 第一版通过**：Viewer 可远程打开 DOCX
+- **Gate A.5 已通过**：远程 DOCX 支持 chunk 懒加载、按页虚拟化、表格行级分页；普通 block 仍用估算高度
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

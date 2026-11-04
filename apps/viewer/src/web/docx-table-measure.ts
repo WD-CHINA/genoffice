@@ -45,7 +45,8 @@ export function measureTableRows(doc: any, block: any): Promise<TableRowLayout[]
         editor.destroy()
         host.remove()
       }, 0)
-    } catch {
+    } catch (error) {
+      console.warn('measureTableRows failed', error)
       editor.destroy()
       host.remove()
       resolve([])

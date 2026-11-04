@@ -89,7 +89,7 @@ PARSE_SERVER_URL=http://127.0.0.1:8787 npm run dev -w @genoffice/viewer
 # open: http://localhost:11001/?parse=server&fileId=<fileId>
 ```
 
-The Viewer dev server proxies `/v1` to `PARSE_SERVER_URL` (default `http://127.0.0.1:8787`), so the normal URL only needs `?parse=server&fileId=<fileId>`; no `server=` parameter. The file bar then shows a `解析位置：自动 / 本地 / 服务端` switch. If the server requires a token, pass `&token=<token>` in the Viewer URL. For a production static build, put the same `/v1` reverse proxy in front of the Viewer. Auto sends PPTX/PDF over 64 MiB to the server and keeps smaller files local; DOCX over 32 MiB fails with an explicit message. Server mode supports PPTX (session API), PDF (Range-capable `GET /v1/files/:id/content`) and DOCX (block-chunk session API); the Viewer remote DOCX provider is a first version: it loads all block chunks into one Tiptap editor, without page/table pagination yet.
+The Viewer dev server proxies `/v1` to `PARSE_SERVER_URL` (default `http://127.0.0.1:8787`), so the normal URL only needs `?parse=server&fileId=<fileId>`; no `server=` parameter. The file bar then shows a `解析位置：自动 / 本地 / 服务端` switch. If the server requires a token, pass `&token=<token>` in the Viewer URL. For a production static build, put the same `/v1` reverse proxy in front of the Viewer. Auto sends PPTX/PDF over 64 MiB to the server and keeps smaller files local; DOCX over 32 MiB fails with an explicit message. Server mode supports PPTX (session API), PDF (Range-capable `GET /v1/files/:id/content`) and DOCX (block-chunk session API); the Viewer remote DOCX provider now lazy-loads block chunks, virtualizes pages and applies table row pagination; normal block heights are still estimated.
 
 ### How a large PPTX avoids the memory blow-up
 

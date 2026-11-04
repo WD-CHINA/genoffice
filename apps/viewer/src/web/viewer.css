@@ -1101,3 +1101,54 @@ html[data-viewer-toolbar='false'] .viewer-preview {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.viewer-doc-remote-viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 24px 16px 64px;
+}
+
+.viewer-doc-remote-canvas {
+  position: relative;
+  width: 100%;
+}
+
+.viewer-doc-remote-slot {
+  position: absolute;
+  left: 50%;
+  width: 760px;
+  margin-left: -380px;
+}
+
+.viewer-doc-remote-page {
+  height: 900px;
+  overflow: hidden;
+  padding: 48px 56px;
+  box-sizing: border-box;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-modal-strong);
+}
+
+.viewer-doc-remote-loading,
+.viewer-doc-remote-more {
+  position: sticky;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  margin: 12px auto 0;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  box-shadow: var(--shadow-btn-hover);
+}
+
+.viewer-doc-remote-more {
+  cursor: pointer;
+}

@@ -417,9 +417,11 @@ session 行为：
 | 合并单元格/嵌套表格 | page 3 显示                                       |
 | 修订/脚注           | page 1 显示                                       |
 
+后续补充：普通 block 也接入隐藏 Tiptap 分块测量（`docx-block-measure`），页面高度使用真实 DOM 高度；实测该 fixture 为 4 页，canvas 高度约 1827px。
+
 限制：
 
-- 普通 block 仍用估算高度，不是真实 DOM 测量
+- 测量只针对已加载的 block；新 chunk 到达后会增量测量并重排
 - 表格测量是异步的，页面数会随后变化
 - chunk 加载没有取消/错误重试 UI
 - 媒体/字体/搜索/缩略图仍未接
@@ -444,7 +446,7 @@ session 行为：
 - **Gate A.2 已通过**：`createDocxBlockParser` 复用包级上下文，不再逐块重新打包；但 context 创建仍读完整 document.xml
 - **Gate A.3 已通过**：DOCX 服务端 session 可用（block-chunk），元数据流式 pass 与重启恢复测试通过
 - **Gate A.4 第一版通过**：Viewer 可远程打开 DOCX
-- **Gate A.5 已通过**：远程 DOCX 支持 chunk 懒加载、按页虚拟化、表格行级分页；普通 block 仍用估算高度
+- **Gate A.5 已通过**：远程 DOCX 支持 chunk 懒加载、按页虚拟化、表格行级分页、普通 block 真实高度测量
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

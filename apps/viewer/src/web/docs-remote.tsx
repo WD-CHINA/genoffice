@@ -10,6 +10,7 @@ import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
 import { pageTops, paginateBlocks, visiblePages, type BlockMeasure } from './docx-pagination'
 import { paginateTableRows, type TableRowLayout } from './docx-table-pagination'
 import { measureTableRows, sliceTableBlock } from './docx-table-measure'
+import { measureBlockHeights } from './docx-block-measure'
 
 const PAGE_HEIGHT = 900
 const PAGE_WIDTH = 760
@@ -54,6 +55,7 @@ function PageEditor({ blocks }: { blocks: any[] }) {
 export function DocsRemote({ server, fileId, token, name }: Props) {
   const [blocks, setBlocks] = useState<any[]>([])
   const [tableRows, setTableRows] = useState<Map<number, TableRowLayout[]>>(new Map())
+  const [blockHeights, setBlockHeights] = useState<Map<number, number>>(new Map())
   const [status, setStatus] = useState('正在创建 DOCX 会话…')
   const [error, setError] = useState('')
   const [scrollTop, setScrollTop] = useState(0)
@@ -64,6 +66,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
   const viewport = useRef<HTMLDivElement>(null)
   const loadingRef = useRef(false)
   const measuredTables = useRef(new Set<number>())
+  const measuredBlocks = useRef(new Set<number>())
   const auth = useMemo<Record<string, string>>(
     () => (token ? { Authorization: `Bearer ${token}` } : {}) as Record<string, string>,
     [token],
@@ -159,6 +162,34 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     }
   }, [blocks])
 
+  // Measure normal block heights incrementally; table blocks use row heights.
+  useEffect(() => {
+    let cancelled = false
+    const pending = blocks.filter(
+      (block) =>
+        block.type !== 'table' &&
+        block.docxIndex != null &&
+        !measuredBlocks.current.has(block.docxIndex),
+    )
+    if (!pending.length) return
+    for (const block of pending) measuredBlocks.current.add(block.docxIndex)
+    void (async () => {
+      const heights = await measureBlockHeights(
+        { styles: new Map(), numbering: new Map(), docDefaults: undefined },
+        pending,
+      )
+      if (cancelled) return
+      setBlockHeights((old) => {
+        const next = new Map(old)
+        for (const [index, height] of heights) next.set(index, height)
+        return next
+      })
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [blocks])
+
   const renderBlocks = useMemo(() => {
     const result: Array<{ block: any; height: number; breakBefore?: boolean }> = []
     for (const block of blocks) {
@@ -176,12 +207,12 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       }
       result.push({
         block,
-        height: estimateHeight(block),
+        height: blockHeights.get(block.docxIndex) ?? estimateHeight(block),
         breakBefore: block.type === 'heading',
       })
     }
     return result
-  }, [blocks, tableRows])
+  }, [blocks, tableRows, blockHeights])
 
   const pages = useMemo(() => {
     if (!renderBlocks.length) return []

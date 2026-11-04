@@ -1,108 +1,25 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { Editor } from '@tiptap/core'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { parseDocx } from '@genoffice/docx-engine'
 import {
   editorExtensions,
   setLazyMediaHashes,
 } from '@genoffice/viewer-renderers/docs/renderer/editor/extensions'
+import { setDocFontTable } from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
 import {
   blocksToPmDoc,
   pmDocOptions,
 } from '@genoffice/viewer-renderers/docs/renderer/editor/convert'
-import { setDocFontTable } from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
+import { measureTableRows, sliceTableBlock } from './docx-table-measure'
 import '@genoffice/ui/tokens.css'
 import '@genoffice/viewer-renderers/docs/renderer/styles.css'
 import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
 import './docx-table-spike.css'
-import {
-  paginateTableRows,
-  type TablePage,
-  type TablePageRow,
-  type TableRowLayout,
-} from './docx-table-pagination'
+import { paginateTableRows, type TableRowLayout } from './docx-table-pagination'
 
 const PAGE_HEIGHT = 900
 const PAGE_WIDTH = 760
-
-function measureTableRows(doc: any, block: any): Promise<TableRowLayout[]> {
-  return new Promise((resolve) => {
-    const host = document.createElement('div')
-    host.style.cssText =
-      'position:fixed;left:-10000px;top:0;width:760px;visibility:hidden;pointer-events:none'
-    document.body.appendChild(host)
-    const editor = new Editor({
-      element: host,
-      extensions: editorExtensions,
-      editable: false,
-      editorProps: { attributes: { class: 'doc-page' } },
-    })
-    const finish = () => {
-      try {
-        const storage = editor.storage.listNumbering as any
-        storage.styles = doc.styles
-        storage.docDefaults = doc.docDefaults
-        storage.defs = doc.numbering
-        editor.commands.setContent(blocksToPmDoc([block], undefined, pmDocOptions(doc)), {
-          emitUpdate: false,
-        })
-        setTimeout(() => {
-          const trs = [...editor.view.dom.querySelectorAll<HTMLTableRowElement>('tr')]
-          const table = block.table
-          resolve(
-            trs.map((tr, index) => ({
-              height: tr.getBoundingClientRect().height,
-              header: table?.repeatHeaderRows?.[index] === true,
-              cantSplit: table?.rowCantSplit?.[index] === true,
-              cellParagraphs: [...tr.querySelectorAll('td')].map(
-                (td) => td.querySelectorAll('p').length || 1,
-              ),
-            })),
-          )
-          editor.destroy()
-          host.remove()
-        }, 0)
-      } catch {
-        editor.destroy()
-        host.remove()
-        resolve([])
-      }
-    }
-    finish()
-  })
-}
-
-function sliceTableBlock(block: any, page: TablePage): any {
-  const table = block.table
-  const rows = page.rows.map((entry: TablePageRow) => {
-    const source = table.rows[entry.row]
-    if (!entry.part) return source
-    return source.map((cell: any) => {
-      const rich = cell.richParas
-        ? cell.richParas.slice(entry.part!.start, entry.part!.end)
-        : undefined
-      const paras = cell.paras ? cell.paras.slice(entry.part!.start, entry.part!.end) : undefined
-      return {
-        ...cell,
-        ...(rich ? { richParas: rich } : {}),
-        ...(paras ? { paras } : {}),
-      }
-    })
-  })
-  const rowIndexes = page.rows.map((entry) => entry.row)
-  return {
-    ...block,
-    table: {
-      ...table,
-      rows,
-      repeatHeaderRows: rowIndexes.map((index) => table.repeatHeaderRows?.[index] ?? null),
-      rowCantSplit: rowIndexes.map((index) => table.rowCantSplit?.[index] ?? null),
-      rawTrPrs: rowIndexes.map((index) => table.rawTrPrs?.[index] ?? null),
-      rowRevisions: rowIndexes.map((index) => table.rowRevisions?.[index] ?? null),
-    },
-  }
-}
 
 function TablePageEditor({ doc, block }: { doc: any; block: any }) {
   const editor = useEditor({
@@ -136,7 +53,7 @@ function Spike() {
   useEffect(() => {
     void (async () => {
       try {
-        const response = await fetch('/docx-spike-behavior.docx')
+        const response = await fetch('/docx-spike-table.docx')
         if (!response.ok) throw new Error(`HTTP ${response.status}`)
         const parsed = await parseDocx(new Uint8Array(await response.arrayBuffer()))
         setLazyMediaHashes(parsed.extras.lazyMediaHashes)

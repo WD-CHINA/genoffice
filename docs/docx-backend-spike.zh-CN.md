@@ -220,6 +220,58 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 - 合并单元格、嵌套表格、行修订在拆分行里的行为
 - 表头重复与 Word 的“仅首行/多行表头”细节
 
+### 2.8 Gate B.5：拆分行渲染 + 合并单元格/嵌套表格
+
+新增 fixture：`apps/viewer/src/web/public/docx-spike-table.docx`
+
+表格包含：
+
+- 1 行 `tblHeader`
+- 3 行普通行
+- 1 行 80 段的超高可拆分行
+- 1 行 `gridSpan=2` 合并单元格
+- 1 行嵌套表格
+- 1 行 `cantSplit`
+
+表格 spike 结果：
+
+| 指标       | 结果 |
+| ---------- | ---- |
+| rows       | 8    |
+| headerRows | 1    |
+| cantSplit  | 1    |
+| pages      | 3    |
+| overflow   | 0    |
+
+分页结果：
+
+- page 1：header + 普通行 0–3
+- page 2：重复 header + 超高行上半段（tall line 0–49）
+- page 3：重复 header + 超高行下半段（tall line 50–79）+ 合并单元格 + 嵌套表格 + cantSplit 行
+
+浏览器验证：
+
+- 拆分行的上下两页内容连续，`tall line 0–49` / `50–79` 无丢失
+- 合并单元格文本 `merged across both columns` 正常
+- 嵌套表格 `nested cell` 正常
+- cantSplit 行完整出现在 page 3
+- header 在 page 2/3 重复
+
+### 2.9 接回主 docx-page-spike
+
+`docx-page-spike` 现在会把 table block 替换成行级分页后的子表格，再交给主分页模型：
+
+- behavior fixture：3 blocks → 3 页（原先 1 页）
+- 表格子页与普通 block 一起参与 `paginateBlocks`
+- table 页使用重复 header 和拆分后的行片段
+
+仍未验证：
+
+- 拆分行里的**合并单元格/嵌套表格**跨页行为（当前 fixture 把合并/嵌套放在未拆分页）
+- 跨页拆分后的单元格边框/底纹像素级一致性
+- 按行高比例拆段 vs 按真实段落边界拆段
+- 主页面里表格页与后续段落的精确 page-break 规则
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -232,7 +284,9 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 - 部分通过：真实 DOM 高度可增量测量（前 500 blocks），页数从 2700 变为 2698
 - 部分通过：behavior fixture 的修订/脚注/文本 parity 通过（1514/1514 字符）
 - **已补齐：表格行级分页**，behavior fixture 60 行表格分成 2 页，header 重复
-- **仍未验证：拆分行的单元格段落渲染**、合并单元格/嵌套表格/行修订
+- **已补齐：拆分行的真实渲染**，tall line 0–49/50–79 连续，合并单元格/嵌套表格/cantSplit 正常
+- **已接回主 docx-page-spike**，表格子页参与主分页
+- **仍未验证：拆分行里的合并单元格/嵌套表格跨页、边框/底纹像素级一致性**
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行的单元格段落渲染
@@ -325,4 +379,5 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 open http://localhost:11001/docx-spike.html
 open http://localhost:11001/docx-page-spike.html
 open http://localhost:11001/docx-table-spike.html
+open http://localhost:11001/docx-page-spike.html
 ```

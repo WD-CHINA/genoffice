@@ -17,6 +17,8 @@ import '@genoffice/viewer-renderers/docs/renderer/styles.css'
 import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
 import './docx-page-spike.css'
 import { pageTops, paginateBlocks, visiblePages, type BlockMeasure } from './docx-pagination'
+import { paginateTableRows, type TableRowLayout } from './docx-table-pagination'
+import { measureTableRows, sliceTableBlock } from './docx-table-measure'
 
 const PAGE_HEIGHT = 900
 const PAGE_WIDTH = 760
@@ -164,6 +166,7 @@ function Spike() {
   const [fixture, setFixture] = useState<'large' | 'behavior'>('large')
   const [mode, setMode] = useState<'estimate' | 'measure'>('estimate')
   const [measured, setMeasured] = useState<Map<number, number> | null>(null)
+  const [tableRows, setTableRows] = useState<Map<number, TableRowLayout[]>>(new Map())
   const [measuring, setMeasuring] = useState(false)
   const [measureDone, setMeasureDone] = useState(0)
   const [parity, setParity] = useState<{
@@ -178,6 +181,7 @@ function Spike() {
   useEffect(() => {
     setDoc(null)
     setMeasured(null)
+    setTableRows(new Map())
     setParity(null)
     setMode('estimate')
     void (async () => {
@@ -191,20 +195,52 @@ function Spike() {
         setLazyMediaHashes(parsed.extras.lazyMediaHashes)
         setDocFontTable(parsed.fontTable)
         setDoc(parsed)
+        const tables = new Map<number, TableRowLayout[]>()
+        for (const block of parsed.blocks as any[]) {
+          if (block.type !== 'table') continue
+          tables.set(block.docxIndex, await measureTableRows(parsed, block))
+        }
+        setTableRows(tables)
       } catch (error) {
         setError(error instanceof Error ? error.message : String(error))
       }
     })()
   }, [fixture])
 
-  const pages = useMemo(() => {
+  const renderBlocks = useMemo(() => {
     if (!doc) return []
-    const measures: BlockMeasure[] = doc.blocks.map((block: any) => ({
-      height: measured?.get(block.docxIndex) ?? estimateHeight(block),
-      breakBefore: block.type === 'heading',
+    const result: Array<{ block: any; height: number; breakBefore?: boolean }> = []
+    for (const block of doc.blocks as any[]) {
+      const rows = tableRows.get(block.docxIndex)
+      if (rows?.length) {
+        const headerRows = rows.filter((row) => row.header).length
+        const tablePages = paginateTableRows(rows, PAGE_HEIGHT, { headerRows })
+        tablePages.forEach((tablePage, index) => {
+          result.push({
+            block: sliceTableBlock(block, tablePage),
+            height: Math.max(1, tablePage.height),
+            breakBefore: index === 0,
+          })
+        })
+        continue
+      }
+      result.push({
+        block,
+        height: measured?.get(block.docxIndex) ?? estimateHeight(block),
+        breakBefore: block.type === 'heading',
+      })
+    }
+    return result
+  }, [doc, measured, tableRows])
+
+  const pages = useMemo(() => {
+    if (!renderBlocks.length) return []
+    const measures: BlockMeasure[] = renderBlocks.map((item) => ({
+      height: item.height,
+      breakBefore: item.breakBefore,
     }))
     return paginateBlocks(measures, PAGE_HEIGHT)
-  }, [doc, measured])
+  }, [renderBlocks])
   const tops = useMemo(() => pageTops(pages), [pages])
   const totalHeight = tops.length ? tops[tops.length - 1] + pages[pages.length - 1].height : 0
   const range = visiblePages(
@@ -305,7 +341,7 @@ function Spike() {
                 ? `测量中 ${measureDone}/${Math.min(MEASURE_LIMIT, doc.blocks.length)}`
                 : `DOM 测量前 ${Math.min(MEASURE_LIMIT, doc.blocks.length)} 块`}
             </button>
-            <button onClick={() => void runParity()} disabled={!doc}>
+            <button onClick={() => void runParity()} disabled={!doc || tableRows.size > 0}>
               Parity 检查
             </button>
           </div>
@@ -323,7 +359,9 @@ function Spike() {
                 >
                   <PageEditor
                     doc={doc}
-                    blocks={doc.blocks.slice(page.blockStart, page.blockEnd)}
+                    blocks={renderBlocks
+                      .slice(page.blockStart, page.blockEnd)
+                      .map((item) => item.block)}
                     height={page.height}
                   />
                 </div>

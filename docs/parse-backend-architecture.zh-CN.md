@@ -12,6 +12,7 @@
 - 字体：会话返回 `ppt/fonts/*.fntdata` 中的嵌入字体列表，`GET /v1/sessions/:id/fonts/:fontId` 返回 sfnt；Viewer 同时加载内置度量字体（Carlito/Caladea/Liberation/Noto）和嵌入字体，再进入字宽回传。极老的字体可能被 Chromium OTS 拒绝，回退到替代字体并输出 warning。
 - 字宽回传：`POST /v1/sessions/:id/text-widths` 接收浏览器实测宽度，服务端清空缓存 render tree、重排已加载页并返回剩余 `measurements`；Viewer 在首屏、懒加载页和放映预加载后都跑同一测量循环。
 - 媒体流式/GC：parts 路由对 stored part 直接切片并支持 Range/HEAD，deflated part 流式解压；`DELETE /files/:id` 对活跃会话返回 409；周期 GC 清理过期未引用内容、执行容量上限并清临时文件。
+- DOCX Gate A.3：`POST /v1/sessions` 接受 DOCX，按 `block-chunk`（200 blocks）返回；`docx-metadata` 流式收集 sections/comments/page-break 元数据；当前仍读完整包/document.xml，主线程解析，非 1GB 路径。
 - 指标：`GET /metrics` 输出 Prometheus 文本格式（请求/响应计数、duration histogram、errors、uploads/bytes、sessions/workers、storage、uptime、process memory）。
 - 持久化/可观测：会话元数据原子写入 `<dataDir>/sessions.json`，重启后 model/units 可读、worker 懒重建；每个请求一行 JSON 日志；`/v1/health` 暴露 sessions/activeWorkers/requests/errors/uploads/bytes/parseTimeouts/tooManySessions/memory。
 - 稳定性：每个 PPTX 会话一个 `worker_threads` worker，`openPptx`/`buildRenderSlide` 不在 HTTP 事件循环；超时/内存超限直接 terminate，返回 `504 parse_timeout`，`/v1/health` 不受影响；并发会话上限返回 `429`。

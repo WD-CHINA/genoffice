@@ -12,11 +12,11 @@ export const CONTRACT_VERSION = 1
 /** Formats the Viewer can display. `docx` is local-only in v1 (no remote parser). */
 export type DocFormat = 'pptx' | 'pdf' | 'docx'
 
-/** Formats the remote provider can parse. DOCX is intentionally excluded for now. */
-export type RemoteFormat = Extract<DocFormat, 'pptx' | 'pdf'>
+/** Formats the remote provider can parse. */
+export type RemoteFormat = Extract<DocFormat, 'pptx' | 'pdf' | 'docx'>
 
 export function isRemoteFormat(format: DocFormat): format is RemoteFormat {
-  return format === 'pptx' || format === 'pdf'
+  return format === 'pptx' || format === 'pdf' || format === 'docx'
 }
 
 /** A file already accepted by the server, addressed by content hash. */
@@ -71,7 +71,7 @@ export interface ParseOptions {
   fonts?: Array<{ id: string; family: string; bold: boolean; italic: boolean }>
 }
 
-export type UnitKind = 'slide' | 'pdf-page'
+export type UnitKind = 'slide' | 'pdf-page' | 'block-chunk'
 
 export interface UnitSummary {
   id: string

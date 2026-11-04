@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import JSZip from 'jszip'
@@ -45,13 +45,81 @@ async function zipWith(entries: Record<string, string>): Promise<Buffer> {
 }
 
 describe('parse-server', () => {
-  it('advertises capabilities without DOCX', async () => {
+  it('advertises PPTX/PDF/DOCX capabilities', async () => {
     const { server } = await start()
     const response = await fetch(`${server.url}/v1/capabilities`)
     expect(response.status).toBe(200)
     const caps = (await response.json()) as { formats: string[]; contractVersion: number }
     expect(caps.contractVersion).toBe(1)
-    expect(caps.formats).toEqual(['pptx', 'pdf'])
+    expect(caps.formats).toEqual(['pptx', 'pdf', 'docx'])
+  })
+
+  it('opens a DOCX block-chunk session', async () => {
+    const { server } = await start()
+    const bytes = await readFile(
+      join(process.cwd(), '..', 'viewer', 'src', 'web', 'public', 'docx-spike-table.docx'),
+    )
+    const uploaded = await upload(server.url, bytes)
+    expect(uploaded.status).toBe(201)
+    const file = (await uploaded.json()) as { fileId: string; format: string }
+    expect(file.format).toBe('docx')
+    const opened = await fetch(`${server.url}/v1/sessions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fileId: file.fileId }),
+    })
+    expect(opened.status).toBe(201)
+    const session = (await opened.json()) as {
+      sessionId: string
+      model: { format: string; unitKind: string; unitCount: number }
+    }
+    expect(session.model.format).toBe('docx')
+    expect(session.model.unitKind).toBe('block-chunk')
+    expect(session.model.unitCount).toBeGreaterThan(0)
+    const units = await fetch(`${server.url}/v1/sessions/${session.sessionId}/units`)
+    expect(units.status).toBe(200)
+    const listing = (await units.json()) as { items: Array<{ kind: string }> }
+    expect(listing.items.every((item) => item.kind === 'block-chunk')).toBe(true)
+    const unit = await fetch(`${server.url}/v1/sessions/${session.sessionId}/units/0`)
+    expect(unit.status).toBe(200)
+    const chunk = (await unit.json()) as { blocks: unknown[] }
+    expect(chunk.blocks.length).toBeGreaterThan(0)
+    expect(
+      (await fetch(`${server.url}/v1/sessions/${session.sessionId}`, { method: 'DELETE' })).status,
+    ).toBe(204)
+  })
+
+  it('restores a DOCX session after restart', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'parse-server-docx-restart-'))
+    const first = await createParseServer({ dataDir: dir })
+    try {
+      const bytes = await readFile(
+        join(process.cwd(), '..', 'viewer', 'src', 'web', 'public', 'docx-spike-table.docx'),
+      )
+      const uploaded = await upload(first.url, bytes)
+      const file = (await uploaded.json()) as { fileId: string }
+      const opened = await fetch(`${first.url}/v1/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fileId: file.fileId }),
+      })
+      const session = (await opened.json()) as { sessionId: string }
+      await first.close()
+      const second = await createParseServer({ dataDir: dir })
+      try {
+        const units = await fetch(`${second.url}/v1/sessions/${session.sessionId}/units`)
+        expect(units.status).toBe(200)
+        const listing = (await units.json()) as { items: Array<{ kind: string }> }
+        expect(listing.items[0]?.kind).toBe('block-chunk')
+        const unit = await fetch(`${second.url}/v1/sessions/${session.sessionId}/units/0`)
+        expect(unit.status).toBe(200)
+      } finally {
+        await second.close()
+      }
+    } finally {
+      await first.close().catch(() => undefined)
+      await rm(dir, { recursive: true, force: true })
+    }
   })
 
   it('exposes Prometheus metrics', async () => {
@@ -143,15 +211,15 @@ describe('parse-server', () => {
     expect((await fetch(`${server.url}/v1/files/${meta.fileId}`)).status).toBe(404)
   })
 
-  it('accepts PPTX and rejects DOCX/XLSX', async () => {
+  it('accepts PPTX/DOCX and rejects XLSX', async () => {
     const { server } = await start()
     const pptx = await upload(server.url, await zipWith({ 'ppt/presentation.xml': '<p/>' }))
     expect(pptx.status).toBe(201)
     expect(((await pptx.json()) as { format: string }).format).toBe('pptx')
 
     const docx = await upload(server.url, await zipWith({ 'word/document.xml': '<w/>' }))
-    expect(docx.status).toBe(415)
-    expect(((await docx.json()) as { code: string }).code).toBe('unsupported_format')
+    expect(docx.status).toBe(201)
+    expect(((await docx.json()) as { format: string }).format).toBe('docx')
 
     const xlsx = await upload(server.url, await zipWith({ 'xl/workbook.xml': '<x/>' }))
     expect(xlsx.status).toBe(415)

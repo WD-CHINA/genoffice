@@ -13,6 +13,7 @@ import { openFilePart } from './parts'
 import { parseRange } from './range'
 import { signResource, verifyResource } from './sign'
 import { PptxSession } from './pptx'
+import { DocxSession } from './docx-session'
 import { ParseLimitError } from './pptx-slim'
 import { SessionStore, type SessionRecord } from './session-store'
 import {
@@ -67,9 +68,11 @@ export interface ParseServer {
   close(): Promise<void>
 }
 
+type SessionHandle = PptxSession | DocxSession
+
 interface SessionEntry {
   record: SessionRecord
-  session?: PptxSession
+  session?: SessionHandle
 }
 
 interface Context {
@@ -188,11 +191,11 @@ function capabilitiesOf(ctx: Context): Capabilities {
   return {
     contractVersion: CONTRACT_VERSION,
     parserVersion: ctx.parserVersion,
-    // DOCX is deliberately absent: the remote parser does not support it in v1.
-    formats: ['pptx', 'pdf'],
+    formats: ['pptx', 'pdf', 'docx'],
     stages: {
       pptx: ['index', 'model', 'layout'],
       pdf: [],
+      docx: ['index', 'model'],
     },
     maxBytes: ctx.limits.maxUploadBytes,
     fontSetHash: ctx.fontSetHash,
@@ -209,7 +212,10 @@ function sessionUnits(
   model: DocModel,
   cursor?: string,
   limit = 100,
-): { items: Array<{ id: string; kind: 'slide'; index: number; anchor: string }>; next?: string } {
+): {
+  items: Array<{ id: string; kind: DocModel['unitKind']; index: number; anchor: string }>
+  next?: string
+} {
   const total = model.unitCount ?? 0
   const start = cursor ? Number.parseInt(cursor, 10) : 0
   if (!Number.isInteger(start) || start < 0 || start > total) {
@@ -218,7 +224,7 @@ function sessionUnits(
   const end = Math.min(total, start + Math.max(1, Math.min(limit, 500)))
   const items = []
   for (let index = start; index < end; index++) {
-    items.push({ id: String(index), kind: 'slide' as const, index, anchor: String(index) })
+    items.push({ id: String(index), kind: model.unitKind, index, anchor: String(index) })
   }
   return { items, ...(end < total ? { next: String(end) } : {}) }
 }
@@ -251,12 +257,25 @@ async function ensureSession(
   entry: SessionEntry,
   req: IncomingMessage,
   ctx: Context,
-): Promise<PptxSession> {
+): Promise<SessionHandle> {
   if (entry.session) return entry.session
   const path = await ctx.store.pathOf(entry.record.fileId)
   if (!path) throw new HttpError(404, 'not_found', 'file content is missing')
   const baseUrl = baseUrlOf(req, ctx)
   try {
+    if (entry.record.model.format === 'docx') {
+      entry.session = await DocxSession.open({
+        id: entry.record.id,
+        fileId: entry.record.fileId,
+        path,
+        parserVersion: entry.record.parserVersion,
+        baseUrl,
+        limits: ctx.limits,
+      })
+      entry.record.baseUrl = baseUrl
+      touchEntry(entry, ctx)
+      return entry.session
+    }
     entry.session = await PptxSession.open({
       id: entry.record.id,
       fileId: entry.record.fileId,
@@ -296,8 +315,12 @@ async function handleCreateSession(
     : 960
   const meta = await ctx.store.stat(fileId)
   if (!meta) throw new HttpError(404, 'not_found', 'unknown file')
-  if (meta.format !== 'pptx') {
-    throw new HttpError(415, 'unsupported_format', 'only pptx can be opened as a slide session')
+  if (meta.format !== 'pptx' && meta.format !== 'docx') {
+    throw new HttpError(
+      415,
+      'unsupported_format',
+      'only pptx and docx can be opened as parse sessions',
+    )
   }
   const path = await ctx.store.pathOf(fileId)
   if (!path) throw new HttpError(404, 'not_found', 'file content is missing')
@@ -306,25 +329,35 @@ async function handleCreateSession(
   }
   const sessionId = randomUUID()
   const baseUrl = baseUrlOf(req, ctx)
-  let session: PptxSession
+  let session: SessionHandle
   try {
-    session = await PptxSession.open({
-      id: sessionId,
-      fileId,
-      path,
-      width,
-      parserVersion: ctx.parserVersion,
-      baseUrl,
-      limits: ctx.limits,
-      mediaSecret: ctx.token,
-      parseTimeoutMs: ctx.parseTimeoutMs,
-      unitTimeoutMs: ctx.unitTimeoutMs,
-      workerMemoryMb: ctx.workerMemoryMb,
-      onDead: () => {
-        ctx.sessions.delete(sessionId)
-        void ctx.sessionStore.remove(sessionId)
-      },
-    })
+    session =
+      meta.format === 'docx'
+        ? await DocxSession.open({
+            id: sessionId,
+            fileId,
+            path,
+            parserVersion: ctx.parserVersion,
+            baseUrl,
+            limits: ctx.limits,
+          })
+        : await PptxSession.open({
+            id: sessionId,
+            fileId,
+            path,
+            width,
+            parserVersion: ctx.parserVersion,
+            baseUrl,
+            limits: ctx.limits,
+            mediaSecret: ctx.token,
+            parseTimeoutMs: ctx.parseTimeoutMs,
+            unitTimeoutMs: ctx.unitTimeoutMs,
+            workerMemoryMb: ctx.workerMemoryMb,
+            onDead: () => {
+              ctx.sessions.delete(sessionId)
+              void ctx.sessionStore.remove(sessionId)
+            },
+          })
   } catch (error) {
     throw parseFailure(error)
   }
@@ -497,13 +530,13 @@ async function handleUpload(
     await ctx.store.abort(upload)
     throw error
   }
-  if (detected !== 'pptx' && detected !== 'pdf') {
+  if (detected !== 'pptx' && detected !== 'pdf' && detected !== 'docx') {
     await ctx.store.abort(upload)
     sendError(
       res,
       415,
       'unsupported_format',
-      `unsupported document format${detected ? ` (${detected})` : ''}; only pptx and pdf are parsed`,
+      `unsupported document format${detected ? ` (${detected})` : ''}; only pptx, pdf and docx are parsed`,
     )
     return
   }

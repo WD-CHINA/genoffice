@@ -333,6 +333,40 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 - 真正 1GB 还需要把这些元数据也流式化
 - 还没有接服务端 DOCX session / chunk 存储
 
+### 2.12 Gate A.3：元数据流式化 + 服务端 DOCX session
+
+新增：
+
+- `apps/parse-server/src/docx-metadata.ts`：流式收集 block/section/comment/page-break 元数据
+- `apps/parse-server/src/docx-session.ts`：DOCX `block-chunk` session
+- `POST /v1/sessions` 接受 DOCX
+- `GET /v1/sessions/:id/units` / `units/:id` 返回 `block-chunk`
+
+session 行为：
+
+- 用 `createDocxBlockParser` 解析切片
+- 每 200 个 block 一个 chunk
+- `DocModel.unitKind = 'block-chunk'`
+- 会话记录持久化到 `sessions.json`
+- 重启后第一次访问懒重建 session
+
+实测（HTTP 测试）：
+
+- 上传 DOCX → 201，format=docx
+- 创建 session → 201，model.format=docx，unitKind=block-chunk
+- units 列表 kind=block-chunk
+- unit 0 返回非空 blocks
+- 重启后 session/units 仍可访问
+- parse-server tests：35 项通过
+
+限制：
+
+- `DocxSession` 仍然读取完整 package + document.xml，并跑在主线程
+- 还没有 chunk 落盘/落库、worker 隔离、取消
+- Viewer 还没有 remote DOCX provider，仍走本地 DOCX
+- `maxParseBytes` 256MiB 保护，不是 1GB 路径
+- `createDocxBlockParser` 的 context 仍读完整 document.xml；`docx-metadata` 目前只是独立流式 pass
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -350,6 +384,7 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 - **仍未验证：拆分行里的合并单元格/嵌套表格跨页、边框/底纹像素级一致性**
 - **Gate A 语义切片已通过 spike**：3 个 fixture 的 type/text/table rows 与完整 parse 一致
 - **Gate A.2 已通过**：`createDocxBlockParser` 复用包级上下文，不再逐块重新打包；但 context 创建仍读完整 document.xml
+- **Gate A.3 已通过**：DOCX 服务端 session 可用（block-chunk），元数据流式 pass 与重启恢复测试通过；仍未接 Viewer 远程 provider
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

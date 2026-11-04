@@ -1,6 +1,6 @@
 # @genoffice/parse-server
 
-Standalone document parse service for the GenOffice Viewer. v1 parses **PPTX / PDF**; DOCX and XLSX are out of scope (see `docs/parse-backend-architecture.zh-CN.md`).
+Standalone document parse service for the GenOffice Viewer. v1 parses **PPTX / PDF / DOCX**; XLSX is out of scope (see `docs/parse-backend-architecture.zh-CN.md`).
 
 This is the first vertical slice: content-addressed uploads, Range reads, the versioned contract, and an in-process PPTX session API. The Viewer remote provider is wired for PPTX (MVP).
 
@@ -28,7 +28,7 @@ Environment:
 ```text
 GET    /v1/health                     {ok, metrics snapshot}
 GET    /metrics                       Prometheus text exposition
-GET    /v1/capabilities               contract + formats (pptx/pdf) + limits
+GET    /v1/capabilities               contract + formats (pptx/pdf/docx) + limits
 POST   /v1/files                      stream an upload -> {fileId,sha256,size,format}
 GET    /v1/files/:id                  metadata
 GET    /v1/files/:id/content          Range/ETag/HEAD
@@ -89,7 +89,7 @@ PARSE_SERVER_URL=http://127.0.0.1:8787 npm run dev -w @genoffice/viewer
 # open: http://localhost:11001/?parse=server&fileId=<fileId>
 ```
 
-The Viewer dev server proxies `/v1` to `PARSE_SERVER_URL` (default `http://127.0.0.1:8787`), so the normal URL only needs `?parse=server&fileId=<fileId>`; no `server=` parameter. The file bar then shows a `解析位置：自动 / 本地 / 服务端` switch. If the server requires a token, pass `&token=<token>` in the Viewer URL. For a production static build, put the same `/v1` reverse proxy in front of the Viewer. Auto sends PPTX/PDF over 64 MiB to the server and keeps smaller files local; DOCX over 32 MiB fails with an explicit message. Server mode supports PPTX (session API) and PDF (the Viewer hands PDF.js the Range-capable `GET /v1/files/:id/content` URL); DOCX stays local.
+The Viewer dev server proxies `/v1` to `PARSE_SERVER_URL` (default `http://127.0.0.1:8787`), so the normal URL only needs `?parse=server&fileId=<fileId>`; no `server=` parameter. The file bar then shows a `解析位置：自动 / 本地 / 服务端` switch. If the server requires a token, pass `&token=<token>` in the Viewer URL. For a production static build, put the same `/v1` reverse proxy in front of the Viewer. Auto sends PPTX/PDF over 64 MiB to the server and keeps smaller files local; DOCX over 32 MiB fails with an explicit message. Server mode supports PPTX (session API), PDF (Range-capable `GET /v1/files/:id/content`) and DOCX (block-chunk session API); the Viewer DOCX remote provider is still a follow-up, so the current Viewer keeps DOCX local.
 
 ### How a large PPTX avoids the memory blow-up
 
@@ -98,6 +98,21 @@ The Viewer dev server proxies `/v1` to `PARSE_SERVER_URL` (default `http://127.0
 3. Slide render trees reference media through absolute `GET /v1/files/:id/parts/:partPath` URLs; the browser fetches each image when the slide needs it.
 
 Local measurement: a 256 MiB deck (blank slide + 256 MiB stored media) opens a session in ~22 ms and adds ~0.5 MiB RSS (the media is never inflated). A 1 GiB upload alone has been measured at ~867 MB/s with ~103 MiB peak RSS.
+
+### DOCX block-chunk sessions
+
+`POST /v1/sessions` also accepts DOCX. The current DOCX session is a Gate A.3
+first version:
+
+- parses the package with `createDocxBlockParser`
+- splits `word/document.xml` into top-level blocks
+- groups 200 blocks per `block-chunk` unit
+- `GET /v1/sessions/:id/units` lists `block-chunk` units
+- `GET /v1/sessions/:id/units/:id` returns `{ blocks, playback: [] }`
+- session metadata persists in `sessions.json`; a restart lazily reopens the session
+- DOCX parse is bounded by `maxParseBytes` (256 MiB default); it still reads the
+  full package/document XML in this version, so it is not the 1 GB path yet
+- DOCX parse currently runs on the main thread; worker isolation is a follow-up
 
 ### Media streaming and storage lifecycle
 

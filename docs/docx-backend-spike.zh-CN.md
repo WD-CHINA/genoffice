@@ -427,6 +427,30 @@ session 行为：
 - 媒体/字体/搜索/缩略图仍未接
 - 只加载已到达的 chunk，page count 是当前已加载内容的页数
 
+### 2.15 Gate A.6：chunk 取消/重试
+
+`DocsRemote` 增加：
+
+- `AbortController` 覆盖 session 创建与 chunk 请求
+- 组件卸载时 abort 未完成请求并 DELETE session
+- 请求失败显示错误 + “重试”按钮
+- 重试逻辑：
+  - 已有 session：从当前 cursor 继续加载
+  - 无 session：重新创建 session
+
+浏览器行为：
+
+- 正常打开远程 DOCX 不受影响
+- 请求失败不再静默停在 loading
+- 重试可继续加载
+
+限制：
+
+- 重试没有指数退避
+- 没有区分“可重试/不可重试”错误
+- 没有离线/网络切换提示
+- 媒体/字体/搜索仍未接
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -447,6 +471,7 @@ session 行为：
 - **Gate A.3 已通过**：DOCX 服务端 session 可用（block-chunk），元数据流式 pass 与重启恢复测试通过
 - **Gate A.4 第一版通过**：Viewer 可远程打开 DOCX
 - **Gate A.5 已通过**：远程 DOCX 支持 chunk 懒加载、按页虚拟化、表格行级分页、普通 block 真实高度测量
+- **Gate A.6 已通过**：chunk/session 请求支持 abort、卸载清理、错误重试
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

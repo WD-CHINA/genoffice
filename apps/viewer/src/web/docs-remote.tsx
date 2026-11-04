@@ -65,6 +65,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
   const session = useRef<string | null>(null)
   const viewport = useRef<HTMLDivElement>(null)
   const loadingRef = useRef(false)
+  const abortRef = useRef<AbortController | null>(null)
   const measuredTables = useRef(new Set<number>())
   const measuredBlocks = useRef(new Set<number>())
   const auth = useMemo<Record<string, string>>(
@@ -73,15 +74,22 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
   )
 
   const loadChunk = useCallback(
-    async (sessionId: string, next?: string) => {
+    async (sessionId: string, next?: string, signal?: AbortSignal) => {
       if (loadingRef.current) return
       loadingRef.current = true
       setLoadingMore(true)
+      const controller = signal ? null : new AbortController()
+      const requestSignal = signal ?? controller!.signal
+      if (controller) {
+        abortRef.current?.abort()
+        abortRef.current = controller
+      }
       try {
         const query = new URLSearchParams({ limit: String(CHUNK_LIMIT) })
         if (next) query.set('cursor', next)
         const listingResponse = await fetch(`${server}/v1/sessions/${sessionId}/units?${query}`, {
           headers: auth,
+          signal: requestSignal,
         })
         if (!listingResponse.ok)
           throw new Error(`读取 chunk 列表失败（HTTP ${listingResponse.status}）`)
@@ -96,7 +104,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
         for (const item of listing.items) {
           const response = await fetch(
             `${server}/v1/sessions/${sessionId}/units/${encodeURIComponent(item.id)}`,
-            { headers: auth },
+            { headers: auth, signal: requestSignal },
           )
           if (!response.ok) throw new Error(`读取 chunk 失败（HTTP ${response.status}）`)
           loaded.push(...((await response.json()) as { blocks: any[] }).blocks)
@@ -104,8 +112,12 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
         setBlocks((old) => [...old, ...loaded])
         setStatus('')
       } catch (error) {
-        setError(error instanceof Error ? error.message : String(error))
+        if ((error as Error)?.name !== 'AbortError') {
+          setError(error instanceof Error ? error.message : String(error))
+          setStatus('')
+        }
       } finally {
+        if (abortRef.current === controller) abortRef.current = null
         loadingRef.current = false
         setLoadingMore(false)
       }
@@ -113,26 +125,36 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     [auth, server],
   )
 
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      try {
-        const created = await fetch(`${server}/v1/sessions`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...auth },
-          body: JSON.stringify({ fileId }),
-        })
-        if (!created.ok) throw new Error(`创建 DOCX 会话失败（HTTP ${created.status}）`)
-        const opened = (await created.json()) as { sessionId: string }
-        if (cancelled) return
-        session.current = opened.sessionId
-        await loadChunk(opened.sessionId)
-      } catch (error) {
-        if (!cancelled) setError(error instanceof Error ? error.message : String(error))
+  const startSession = useCallback(async () => {
+    setError('')
+    setStatus('正在创建 DOCX 会话…')
+    session.current = null
+    abortRef.current?.abort()
+    const controller = new AbortController()
+    abortRef.current = controller
+    try {
+      const created = await fetch(`${server}/v1/sessions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...auth },
+        body: JSON.stringify({ fileId }),
+        signal: controller.signal,
+      })
+      if (!created.ok) throw new Error(`创建 DOCX 会话失败（HTTP ${created.status}）`)
+      const opened = (await created.json()) as { sessionId: string }
+      session.current = opened.sessionId
+      await loadChunk(opened.sessionId, undefined, controller.signal)
+    } catch (error) {
+      if ((error as Error)?.name !== 'AbortError') {
+        setError(error instanceof Error ? error.message : String(error))
+        setStatus('')
       }
-    })()
+    }
+  }, [server, fileId, auth, loadChunk])
+
+  useEffect(() => {
+    void startSession()
     return () => {
-      cancelled = true
+      abortRef.current?.abort()
       if (session.current) {
         void fetch(`${server}/v1/sessions/${session.current}`, {
           method: 'DELETE',
@@ -140,7 +162,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
         }).catch(() => undefined)
       }
     }
-  }, [server, fileId, auth, loadChunk])
+  }, [server, fileId, auth, startSession])
 
   // Measure table rows as their blocks arrive; do not block the first paint.
   useEffect(() => {
@@ -247,9 +269,18 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       {name && <span className="viewer-doc-remote-name">{name}</span>}
       {status && <p className="viewer-status">{status}</p>}
       {error && (
-        <p className="viewer-error" role="alert">
-          {error}
-        </p>
+        <div className="viewer-doc-remote-error" role="alert">
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => {
+              if (session.current) void loadChunk(session.current, cursor)
+              else void startSession()
+            }}
+          >
+            重试
+          </button>
+        </div>
       )}
       <div className="viewer-doc-remote-viewport" ref={viewport} onScroll={onScroll}>
         <div className="viewer-doc-remote-canvas" style={{ height: totalHeight }}>

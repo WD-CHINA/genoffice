@@ -485,8 +485,8 @@ export async function parseDocx(
     sectionAt,
     docDefaults,
     ...(defaultParaStyle ? { defaultParaStyle } : {}),
-    xmlSpacePreserve: partXmlSpacePreserve(documentXml, 'w:document'),
-    ...(documentXml.includes('<v:shapetype')
+    xmlSpacePreserve: documentXml ? partXmlSpacePreserve(documentXml, 'w:document') : false,
+    ...(documentXml?.includes('<v:shapetype')
       ? { vmlShapeTypes: vmlShapeTypeTable(documentXml) }
       : {}),
     nextZoteroFieldId:
@@ -8560,16 +8560,28 @@ async function extractChart(xml: string, ctx: BuildContext): Promise<ChartDispla
  * metadata (sections, comments, first page break). A later step can make that
  * metadata streaming too.
  */
-export interface DocxBlockParser {
-  parseBlock(xml: string, index?: number): Promise<Block>
+export interface DocxDocumentMetadata {
+  /** w:sectPr slices with document.xml offsets. */
+  sections?: Array<{ start: number; end: number; xml: string }>
+  /** Comment range ids present in document.xml. */
+  commentRangeStarts?: Set<string>
+  /** Absolute offset of the first explicit page break. */
+  firstPageBreakAt?: number
 }
 
-export async function createDocxBlockParser(bytes: Uint8Array): Promise<DocxBlockParser> {
+export interface DocxBlockParser {
+  parseBlock(xml: string, index?: number, offset?: number): Promise<Block>
+}
+
+export async function createDocxBlockParser(
+  bytes: Uint8Array,
+  metadata?: DocxDocumentMetadata,
+): Promise<DocxBlockParser> {
   const zip = await loadDocxZip(bytes)
   assertZipWithinLimits(zip)
   const docPath = await resolveMainDocumentPath(zip)
   if (!docPath) throw new Error('not a docx: missing word/document.xml')
-  const documentXml = await zip.file(docPath)!.async('string')
+  const documentXml = metadata ? undefined : await zip.file(docPath)!.async('string')
 
   const theme = await parseTheme(zip)
   const { styles, docDefaults } = await parseStyles(zip, theme.colors, theme.fonts)
@@ -8577,26 +8589,40 @@ export async function createDocxBlockParser(bytes: Uint8Array): Promise<DocxBloc
   const { formats: numFormats, defs: numbering, picBullets } = await parseNumbering(zip)
   await resolvePicBullets(zip, numbering, picBullets)
   const comments = await parseComments(zip)
-  const rangedCommentIds = new Set(
-    [...documentXml.matchAll(/<w:commentRangeStart\b[^>]*\bw:id\s*=\s*["']([^"']+)["']/g)].map(
-      (match) => match[1],
-    ),
-  )
+  const rangedCommentIds = metadata?.commentRangeStarts
+    ? metadata.commentRangeStarts
+    : new Set(
+        [...documentXml!.matchAll(/<w:commentRangeStart\b[^>]*\bw:id\s*=\s*["']([^"']+)["']/g)].map(
+          (match) => match[1],
+        ),
+      )
   const referenceOnlyComments = new Set(
     comments.map((comment) => comment.id).filter((id) => !rangedCommentIds.has(id)),
   )
-  const scan = scanBody(documentXml)
-  const mediaByRid = await tableBlipMedia(scan.elements, documentXml, zip, rels, docPath)
-  const externalTxbxByRid = await externalTxbxParts(documentXml, zip, rels, docPath)
-  const sectSlices = [...documentXml.matchAll(/<w:sectPr[^>]*\/>|<w:sectPr[\s\S]*?<\/w:sectPr>/g)]
+  const scan = documentXml ? scanBody(documentXml) : { elements: [] }
+  const mediaByRid = documentXml
+    ? await tableBlipMedia(scan.elements, documentXml, zip, rels, docPath)
+    : new Map()
+  const externalTxbxByRid = documentXml
+    ? await externalTxbxParts(documentXml, zip, rels, docPath)
+    : new Map()
+  const sections =
+    metadata?.sections ??
+    [...(documentXml ?? '').matchAll(/<w:sectPr[^>]*\/>|<w:sectPr[\s\S]*?<\/w:sectPr>/g)].map(
+      (match) => ({
+        start: match.index ?? 0,
+        end: (match.index ?? 0) + match[0].length,
+        xml: match[0],
+      }),
+    )
   const gutterAtTop = await parseSettingsFlag(zip, 'w:gutterAtTop')
   const sectCache = new Map<number, SectionSettings>()
   const sectionAt = (docOffset: number): SectionSettings => {
-    let index = sectSlices.findIndex((match) => (match.index ?? 0) + match[0].length > docOffset)
-    if (index === -1) index = sectSlices.length - 1
+    let index = sections.findIndex((section) => section.end > docOffset)
+    if (index === -1) index = sections.length - 1
     let settings = sectCache.get(index)
     if (!settings) {
-      settings = sectionSettingsFromXml(index >= 0 ? sectSlices[index][0] : '', { gutterAtTop })
+      settings = sectionSettingsFromXml(index >= 0 ? sections[index].xml : '', { gutterAtTop })
       sectCache.set(index, settings)
     }
     return settings
@@ -8631,9 +8657,15 @@ export async function createDocxBlockParser(bytes: Uint8Array): Promise<DocxBloc
   } as unknown as BuildContext
   const footnotes = await parseNotesPart(zip, 'footnote', noteCtx)
   const endnotes = await parseNotesPart(zip, 'endnote', noteCtx)
-  const { footnoteProps, endnoteProps } = await parseNoteProps(zip, documentXml)
-  const noteNumbers = noteNumbersOf(documentXml, footnotes, endnotes, footnoteProps, endnoteProps)
-  const zoteroFieldParagraphs = crossParagraphZoteroFields(scan.elements, documentXml)
+  const { footnoteProps, endnoteProps } = documentXml
+    ? await parseNoteProps(zip, documentXml)
+    : { footnoteProps: undefined, endnoteProps: undefined }
+  const noteNumbers = documentXml
+    ? noteNumbersOf(documentXml, footnotes, endnotes, footnoteProps, endnoteProps)
+    : new Map()
+  const zoteroFieldParagraphs = documentXml
+    ? crossParagraphZoteroFields(scan.elements, documentXml)
+    : new Map()
   const buildCtx: BuildContext = {
     zip,
     compat,
@@ -8654,25 +8686,31 @@ export async function createDocxBlockParser(bytes: Uint8Array): Promise<DocxBloc
     sectionAt,
     docDefaults,
     ...(defaultParaStyle ? { defaultParaStyle } : {}),
-    xmlSpacePreserve: partXmlSpacePreserve(documentXml, 'w:document'),
-    ...(documentXml.includes('<v:shapetype')
+    xmlSpacePreserve: documentXml ? partXmlSpacePreserve(documentXml, 'w:document') : false,
+    ...(documentXml?.includes('<v:shapetype')
       ? { vmlShapeTypes: vmlShapeTypeTable(documentXml) }
       : {}),
     nextZoteroFieldId:
       Math.max(0, ...[...zoteroFieldParagraphs.values()].map((field) => field.id)) + 1,
-    firstPageBreakAt: (() => {
-      const br = documentXml.search(
-        /<w:br [^>]*w:type="page"|<w:pageBreakBefore[^>]*\/>|<w:lastRenderedPageBreak[^>]*\/>/,
-      )
-      const sect = documentXml.indexOf('</w:sectPr>')
-      const candidates = [br, sect].filter((offset) => offset !== -1)
-      return candidates.length > 0 ? Math.min(...candidates) : undefined
-    })(),
+    ...(metadata?.firstPageBreakAt !== undefined
+      ? { firstPageBreakAt: metadata.firstPageBreakAt }
+      : documentXml
+        ? {
+            firstPageBreakAt: (() => {
+              const br = documentXml.search(
+                /<w:br [^>]*w:type="page"|<w:pageBreakBefore[^>]*\/>|<w:lastRenderedPageBreak[^>]*\/>/,
+              )
+              const sect = documentXml.indexOf('</w:sectPr>')
+              const candidates = [br, sect].filter((offset) => offset !== -1)
+              return candidates.length > 0 ? Math.min(...candidates) : undefined
+            })(),
+          }
+        : {}),
   }
   return {
-    async parseBlock(xml: string, index = 0): Promise<Block> {
+    async parseBlock(xml: string, index = 0, offset = 0): Promise<Block> {
       const name = /^<([^\s/>]+)/.exec(xml)?.[1] ?? 'w:p'
-      return buildBlock({ name, start: 0, end: xml.length }, index, xml, buildCtx)
+      return buildBlock({ name, start: offset, end: offset + xml.length }, index, xml, buildCtx)
     },
   }
 }

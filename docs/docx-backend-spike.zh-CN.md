@@ -497,6 +497,35 @@ session 行为：
 - 这正是 worker 隔离要保证的行为
 - 100MB XML 仍需要流式 metadata + 更大预算/分段解析
 
+### 2.18 Gate A.9：document.xml 流式 metadata
+
+`createDocxBlockParser(bytes, metadata?)` 现在支持不传完整 document.xml：
+
+- parse-server 用 `openDocxDocumentStream` 从 zip entry 流式读取 `word/document.xml`
+- `scanDocxMetadata` 流式收集：
+  - `w:sectPr` 切片与 offset
+  - comment range ids
+  - first page break offset
+- parser context 用这些 metadata 构建 `sectionAt` / comments / firstPageBreak
+- worker 不再把整个 `document.xml` 读成字符串
+
+仍然保留的整份读取：
+
+- package 的压缩字节仍由 JSZip 加载（压缩文件通常较小）
+- `mediaByRid` 在 metadata 模式下为空；表格内图片解析后续补
+- `noteNumbers` / zotero 字段在 metadata 模式下暂不计算
+
+### 2.19 流式 metadata 后的压力结果
+
+| blocks  | XML 规模 | openMs | 结果            | RSS    |
+| ------- | -------- | ------ | --------------- | ------ |
+| 300,000 | ~60MB    | 1,330  | 201，unit0 正常 | ~284MB |
+| 500,000 | ~100MB   | 1,929  | 201，unit0 正常 | ~324MB |
+
+对比 worker 隔离但未流式 metadata 的 300k：**open 5.8s / RSS 860MB → open 1.3s / RSS 284MB**。
+
+这说明 100MB 级 `document.xml` 已经可以进入当前 worker 路径；但真实文档的表格/图片/修订仍需 fixture 验证。
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -520,6 +549,7 @@ session 行为：
 - **Gate A.6 已通过**：chunk/session 请求支持 abort、卸载清理、错误重试
 - **Gate A.7 已做压力基线**：300k blocks / ~60MB XML 主线程可打开但 heap 1.09GB
 - **Gate A.8 已通过 worker 隔离**：100k blocks 正常；300k 被 512MB 限制终止但 server 存活
+- **Gate A.9 已通过流式 metadata**：300k/500k blocks（~60MB/100MB XML）可解析，RSS ~284/324MB
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

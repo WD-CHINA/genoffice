@@ -110,8 +110,9 @@ first version:
 - `GET /v1/sessions/:id/units` lists `block-chunk` units
 - `GET /v1/sessions/:id/units/:id` returns `{ blocks, playback: [] }`
 - session metadata persists in `sessions.json`; a restart lazily reopens the session
-- DOCX parse is bounded by `maxParseBytes` (256 MiB default); it still reads the
-  full package/document XML in this version, so it is not the 1 GB path yet
+- DOCX parse is bounded by `maxParseBytes` (256 MiB default); `document.xml` is
+  streamed for metadata and block parsing, while the compressed package is still
+  loaded by JSZip. 100 MB-class synthetic XML has been exercised.
 - `pnpm --filter @genoffice/parse-server stress:docx -- --url ... --blocks 100000`
   generates a synthetic DOCX and reports open time / memory
 - DOCX parse runs in a per-session worker with parse/unit timeouts and a worker memory limit; a worker OOM returns 422 without taking down the server

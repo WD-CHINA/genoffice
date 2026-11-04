@@ -28,6 +28,7 @@ export {
   type ParseExtras,
   type ParseOptions,
   type DocxBlockParser,
+  type DocxDocumentMetadata,
 } from './parse'
 export {
   compareOperands,

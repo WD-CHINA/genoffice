@@ -1,12 +1,11 @@
 import { readFile, stat } from 'node:fs/promises'
-import { Readable } from 'node:stream'
 import { parentPort } from 'node:worker_threads'
-import JSZip from 'jszip'
 import { createDocxBlockParser } from '@genoffice/docx-engine'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
 import { ParseLimitError } from './pptx-slim'
-import { streamDocxBlocks } from './docx-stream'
+import { openDocxDocumentStream, streamDocxBlocks } from './docx-stream'
+import { scanDocxMetadata } from './docx-metadata'
 
 interface OpenInput {
   id: string
@@ -31,16 +30,17 @@ async function open(input: OpenInput): Promise<{ model: DocModel; fonts: never[]
   const info = await stat(input.path)
   if (info.size > input.limits.maxParseBytes) throw new ParseLimitError(input.limits.maxParseBytes)
   const bytes = await readFile(input.path)
-  const zip = await JSZip.loadAsync(bytes)
-  const documentFile = zip.file('word/document.xml')
-  if (!documentFile) throw new Error('not a docx: missing word/document.xml')
-  const documentXml = await documentFile.async('string')
-  const parser = await createDocxBlockParser(bytes)
+  const metadata = await scanDocxMetadata(await openDocxDocumentStream(input.path, input.limits))
+  const parser = await createDocxBlockParser(bytes, metadata)
   const slices = []
-  for await (const slice of streamDocxBlocks(Readable.from([documentXml]))) slices.push(slice)
+  for await (const slice of streamDocxBlocks(
+    await openDocxDocumentStream(input.path, input.limits),
+  )) {
+    slices.push(slice)
+  }
   const blocks = []
   for (let index = 0; index < slices.length; index++) {
-    blocks.push(await parser.parseBlock(slices[index].xml, index))
+    blocks.push(await parser.parseBlock(slices[index].xml, index, slices[index].start))
   }
   chunks = []
   for (let offset = 0; offset < blocks.length; offset += CHUNK_BLOCKS) {

@@ -1,4 +1,9 @@
+import { createReadStream } from 'node:fs'
+import { createInflateRaw } from 'node:zlib'
 import type { Readable } from 'node:stream'
+import { readZipEntries, type ZipEntry } from '@genoffice/zip-reader'
+import { withFileSource } from './file-source'
+import type { ServerLimits } from './limits'
 
 export interface DocxBlockSlice {
   /** Index of the top-level <w:body> child in the original document.xml. */
@@ -7,6 +12,10 @@ export interface DocxBlockSlice {
   tag: string
   /** Exact XML slice, including the element itself. */
   xml: string
+  /** Absolute byte offset of the slice in document.xml. */
+  start: number
+  /** Absolute end offset (exclusive). */
+  end: number
 }
 
 type Chunk = string | Uint8Array
@@ -37,7 +46,7 @@ export async function* streamDocxBlocks(
     const endInBuffer = end - base
     const xml = buffer.slice(startInBuffer, endInBuffer)
     const tag = /^<([^\s/>]+)/.exec(xml)?.[1] ?? ''
-    const block = { docxIndex: blockIndex++, tag, xml }
+    const block = { docxIndex: blockIndex++, tag, xml, start: captureStart, end }
     captureStart = -1
     captureDepth = -1
     return block
@@ -126,4 +135,30 @@ export async function* streamDocxBlocks(
     const block = emit(base + buffer.length)
     if (block) yield block
   }
+}
+
+/** Open word/document.xml as a stream straight from the docx zip entry. */
+export async function openDocxDocumentStream(
+  path: string,
+  limits: ServerLimits,
+): Promise<Readable> {
+  let found: ZipEntry | null = null
+  await withFileSource(path, async (source) => {
+    const entries = await readZipEntries(source, {
+      maxParts: limits.maxParts,
+      maxPartBytes: limits.maxPartBytes,
+      maxTotalBytes: limits.maxTotalUncompressedBytes,
+    })
+    found = entries.find((item) => item.name === 'word/document.xml') ?? null
+  })
+  const entry = found as ZipEntry | null
+  if (!entry) throw new Error('not a docx: missing word/document.xml')
+  const compressed = createReadStream(path, {
+    start: entry.dataOffset,
+    end: entry.dataOffset + entry.csize - 1,
+  })
+  if (entry.method === 0) return compressed
+  if (entry.method === 8) return compressed.pipe(createInflateRaw())
+  compressed.destroy()
+  throw new Error(`unsupported zip compression method ${entry.method}`)
 }

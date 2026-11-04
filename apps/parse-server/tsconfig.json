@@ -1,0 +1,7 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"]
+  },
+  "include": ["src", "tests", "vitest.config.ts", "../../packages/pptx-render/src/bidi-js.d.ts"]
+}

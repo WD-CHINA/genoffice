@@ -235,6 +235,15 @@ html[data-viewer-errors='false'] #root .viewer-warning {
   min-height: 36px;
   padding-inline: 12px;
 }
+.viewer-parse-mode select {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  padding: 2px 4px;
+}
+
 .viewer-button input {
   width: 1px;
   height: 1px;

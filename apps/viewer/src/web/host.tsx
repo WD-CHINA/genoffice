@@ -9,13 +9,46 @@ import './viewer.css'
 
 type Format = 'pptx' | 'pdf' | 'docx'
 type Source = { kind: 'file'; file: File } | { kind: 'url'; url: string }
-type Opened = { id: string; name: string; format: Format; src: string }
+type RemoteTarget = { server: string; fileId: string; token?: string; contentUrl?: string }
+type ParseMode = 'local' | 'server' | 'auto'
+type Opened = { id: string; name: string; format: Format; src: string; remote?: RemoteTarget }
 const linkParams = new URLSearchParams(location.search)
 const ui = readViewerUi(linkParams)
 const initialUrl = linkParams.get('url')?.trim() || ''
+const initialFileId = linkParams.get('fileId')?.trim() || ''
+const initialName = linkParams.get('name')?.trim() || ''
+const parseParam = linkParams.get('parse')
+const serverUrl = (
+  linkParams.get('server') ||
+  (parseParam === 'server' || parseParam === 'auto' || linkParams.get('fileId')
+    ? location.origin
+    : '')
+)
+  .trim()
+  .replace(/\/+$/, '')
+const serverToken = (linkParams.get('token') || '').trim()
+const PARSE_MODE_KEY = 'genoffice-viewer-parse-mode'
+function initialParseMode(): ParseMode {
+  const requested = linkParams.get('parse')
+  if (requested === 'server' && serverUrl) return 'server'
+  if (requested === 'auto' && serverUrl) return 'auto'
+  if (requested === 'local') return 'local'
+  try {
+    const stored = localStorage.getItem(PARSE_MODE_KEY)
+    if (stored === 'local') return 'local'
+    if (serverUrl && (stored === 'server' || stored === 'auto')) return stored
+  } catch {
+    /* storage may be unavailable in private mode */
+  }
+  return serverUrl ? 'auto' : 'local'
+}
 applyViewerUi(ui)
 
 const MAX_BYTES = 1024 * 1024 * 1024
+/** Local DOCX preview is not the 1 GB path; fail explicitly instead of trying to parse it. */
+const DOCX_LOCAL_MAX_BYTES = 32 * 1024 * 1024
+/** auto mode sends larger decks to the server; small ones stay local. */
+const AUTO_REMOTE_BYTES = 64 * 1024 * 1024
 
 function extensionOf(name: string): Format | null {
   const ext = name.split('.').pop()?.toLowerCase()
@@ -59,17 +92,67 @@ function Host() {
   const [opened, setOpened] = useState<Opened | null>(null),
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
+    [parseMode, setParseMode] = useState<ParseMode>(initialParseMode),
     [importUrl, setImportUrl] = useState(initialUrl)
   const lastSource = useRef<Source | null>(null)
   const opening = useRef(false)
   const currentUrl = useRef<string | null>(null)
+  async function openRemote(fileId: string) {
+    if (!serverUrl) {
+      setError('缺少解析服务地址（?server=http://…）')
+      return
+    }
+    opening.current = true
+    setBusy(true)
+    setError('')
+    setOpened(null)
+    try {
+      const auth: Record<string, string> = serverToken
+        ? { Authorization: `Bearer ${serverToken}` }
+        : {}
+      const response = await fetch(`${serverUrl}/v1/files/${encodeURIComponent(fileId)}`, {
+        headers: auth,
+      })
+      if (!response.ok) throw new Error(`读取文件信息失败（HTTP ${response.status}）`)
+      const meta = (await response.json()) as { format: Format }
+      if (meta.format === 'docx') throw new Error('服务端解析暂不支持 DOCX')
+      let contentUrl = `${serverUrl}/v1/files/${encodeURIComponent(fileId)}/content`
+      if (serverToken && meta.format === 'pdf') {
+        const signed = await fetch(
+          `${serverUrl}/v1/files/${encodeURIComponent(fileId)}/content-url`,
+          { headers: auth },
+        )
+        if (!signed.ok) throw new Error(`获取 PDF 访问 URL 失败（HTTP ${signed.status}）`)
+        contentUrl = ((await signed.json()) as { url: string }).url
+      }
+      setParseMode('server')
+      setOpened({
+        id: fileId,
+        name: initialName || fileId.slice(0, 8),
+        format: meta.format,
+        src: contentUrl,
+        remote: {
+          server: serverUrl,
+          fileId,
+          token: serverToken || undefined,
+          contentUrl: meta.format === 'pdf' ? contentUrl : undefined,
+        },
+      })
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error))
+    } finally {
+      opening.current = false
+      setBusy(false)
+    }
+  }
   useEffect(() => {
-    if (initialUrl) void open({ kind: 'url', url: initialUrl })
+    if (initialFileId) void openRemote(initialFileId)
+    else if (initialUrl) void open({ kind: 'url', url: initialUrl })
     return () => {
       if (currentUrl.current) URL.revokeObjectURL(currentUrl.current)
     }
   }, [])
-  async function open(source?: Source) {
+  async function open(source?: Source, mode: ParseMode = parseMode) {
     if (!source || opening.current) return
     opening.current = true
     lastSource.current = source
@@ -84,6 +167,7 @@ function Host() {
       // in memory twice (the read plus the blob) for no reason.
       let file: Blob
       if (source.kind === 'file' && extensionOf(source.file.name)) {
+        if (source.file.size > MAX_BYTES) throw new Error('文件超过 1 GiB')
         name = source.file.name
         format = extensionOf(source.file.name)!
         file = source.file
@@ -112,10 +196,51 @@ function Host() {
         format = await formatOf(name, bytes)
         file = new Blob([bytes])
       }
+      if (format === 'docx' && file.size > DOCX_LOCAL_MAX_BYTES) {
+        throw new Error('大 DOCX 暂不支持：本地预览上限 32 MiB，后端 DOCX 解析尚未开放')
+      }
+      const resolvedMode: ParseMode =
+        mode === 'auto'
+          ? serverUrl && format !== 'docx' && file.size > AUTO_REMOTE_BYTES
+            ? 'server'
+            : 'local'
+          : mode
+      let remote: RemoteTarget | undefined
+      if (resolvedMode === 'server') {
+        if (!serverUrl) throw new Error('没有配置解析服务地址（?server=http://…）')
+        if (format === 'docx') throw new Error('服务端解析暂不支持 DOCX')
+        const auth: Record<string, string> = serverToken
+          ? { Authorization: `Bearer ${serverToken}` }
+          : {}
+        const response = await fetch(`${serverUrl}/v1/files`, {
+          method: 'POST',
+          body: file,
+          headers: auth,
+        })
+        if (!response.ok) {
+          let detail = `HTTP ${response.status}`
+          try {
+            const body = (await response.json()) as { message?: string }
+            detail = body.message || detail
+          } catch {
+            /* non-JSON error body */
+          }
+          throw new Error(`上传到解析服务失败：${detail}`)
+        }
+        const uploaded = (await response.json()) as { fileId: string }
+        remote = { server: serverUrl, fileId: uploaded.fileId, token: serverToken || undefined }
+        if (format === 'pdf' && serverToken) {
+          const signed = await fetch(`${serverUrl}/v1/files/${uploaded.fileId}/content-url`, {
+            headers: auth,
+          })
+          if (!signed.ok) throw new Error(`获取 PDF 访问 URL 失败（HTTP ${signed.status}）`)
+          remote.contentUrl = ((await signed.json()) as { url: string }).url
+        }
+      }
       if (currentUrl.current) URL.revokeObjectURL(currentUrl.current)
       const src = URL.createObjectURL(file)
       currentUrl.current = src
-      setOpened({ id: src, name, format, src })
+      setOpened({ id: src, name, format, src, remote })
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     } finally {
@@ -135,6 +260,28 @@ function Host() {
         <span className="viewer-file-name" title={opened?.name || undefined}>
           {opened?.name || 'PPT · PDF · Word'}
         </span>
+        <label className="viewer-button viewer-parse-mode" hidden={!serverUrl} title="解析位置">
+          解析位置
+          <select
+            aria-label="解析位置"
+            value={parseMode}
+            disabled={busy}
+            onChange={(event) => {
+              const next = event.target.value as ParseMode
+              setParseMode(next)
+              try {
+                localStorage.setItem(PARSE_MODE_KEY, next)
+              } catch {
+                /* storage may be unavailable */
+              }
+              if (lastSource.current) void open(lastSource.current, next)
+            }}
+          >
+            <option value="auto">自动</option>
+            <option value="local">本地</option>
+            <option value="server">服务端</option>
+          </select>
+        </label>
         <label className="viewer-button" hidden={!ui.showImport}>
           <ToolbarIcon name="folder" />
           打开文件
@@ -189,13 +336,26 @@ function Host() {
         <iframe
           key={opened.id}
           title={opened.name}
-          src={`${import.meta.env.BASE_URL}preview.html?${new URLSearchParams({ src: opened.src, format: opened.format, name: opened.name, ...viewerUiParams(ui) })}`}
+          src={`${import.meta.env.BASE_URL}preview.html?${new URLSearchParams({
+            src: opened.src,
+            format: opened.format,
+            name: opened.name,
+            ...(opened.remote
+              ? {
+                  server: opened.remote.server,
+                  fileId: opened.remote.fileId,
+                  ...(opened.remote.token ? { token: opened.remote.token } : {}),
+                  ...(opened.remote.contentUrl ? { contentUrl: opened.remote.contentUrl } : {}),
+                }
+              : {}),
+            ...viewerUiParams(ui),
+          })}`}
           allow="fullscreen"
         />
       ) : (
         <div className="viewer-empty">
           <h1>打开文档，开始预览</h1>
-          <p>支持 .pptx、.pdf、.docx。解析和绘制都在这台浏览器里完成。</p>
+          <p>支持 .pptx、.pdf、.docx。默认在浏览器解析，配置解析服务后可切换本地/服务端。</p>
           <p>支持预览和 PPT 放映。</p>
           <p>可选择本地文件，或粘贴允许跨域下载的 HTTP/HTTPS 文件链接。</p>
         </div>

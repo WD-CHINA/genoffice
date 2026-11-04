@@ -235,7 +235,7 @@ export async function readLazyMedia(url: string): Promise<{ body: Buffer; mime: 
   const raw = await zip.read(entry.dataOffset, entry.csize)
   const ext = ref.partPath.split('.').pop()?.toLowerCase() ?? ''
   return {
-    body: entry.method === 0 ? raw : inflateRawSync(raw),
+    body: entry.method === 0 ? Buffer.from(raw) : inflateRawSync(raw),
     mime: MIME[ext] ?? 'application/octet-stream',
   }
 }

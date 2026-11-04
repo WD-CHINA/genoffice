@@ -8,7 +8,15 @@ const Pdf = lazy(() => import('./pdf').then((m) => ({ default: m.Pdf })))
 const Docs = lazy(() => import('./docs').then((m) => ({ default: m.Docs })))
 const params = new URLSearchParams(location.search),
   src = params.get('src') || '',
-  format = params.get('format')
+  format = params.get('format'),
+  server = params.get('server') || '',
+  fileId = params.get('fileId') || '',
+  token = params.get('token') || '',
+  contentUrl = params.get('contentUrl') || ''
+const remoteSrc =
+  server && fileId
+    ? `${server.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(fileId)}/content`
+    : ''
 applyViewerUi(readViewerUi(params))
 class Boundary extends React.Component<{ children: React.ReactNode }, { error: string }> {
   state = { error: '' }
@@ -33,9 +41,14 @@ createRoot(document.getElementById('root')!).render(
           没有可预览的文件
         </p>
       ) : format === 'pptx' ? (
-        <Slides src={src} />
+        <Slides
+          src={src}
+          server={server || undefined}
+          fileId={fileId || undefined}
+          token={token || undefined}
+        />
       ) : format === 'pdf' ? (
-        <Pdf src={src} />
+        <Pdf src={contentUrl || remoteSrc || src} />
       ) : (
         <Docs src={src} />
       )}

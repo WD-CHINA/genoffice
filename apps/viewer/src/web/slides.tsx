@@ -12,6 +12,8 @@ import { hitLink } from '@genoffice/viewer-renderers/slides/renderer/preview-lin
 import { ToolbarIcon } from './toolbar-icon'
 import { ViewerBar } from './viewer-bar'
 import { createPptxSession, type PptxDeck } from './pptx-session'
+import { createRemotePptxSession } from './pptx-remote-session'
+import { METRIC_FONTS } from './metric-fonts'
 import { readViewerUi } from './ui-options'
 import { createViewerTiming } from './performance'
 import {
@@ -30,23 +32,78 @@ const SlideShowView = lazy(() =>
   })),
 )
 
+const PART_URL = /^https?:\/\/[^\s"']+\/v1\/files\/[^/]+\/parts\//
+function isMediaUrl(value: string) {
+  return value.startsWith('data:image/') || PART_URL.test(value)
+}
+
 function imageUrls(data: unknown, urls = new Set<string>()) {
-  if (typeof data === 'string' && data.startsWith('data:image/')) urls.add(data)
+  if (typeof data === 'string' && isMediaUrl(data)) urls.add(data)
   else if (Array.isArray(data)) for (const value of data) imageUrls(value, urls)
   else if (data && typeof data === 'object')
     for (const value of Object.values(data)) imageUrls(value, urls)
   return urls
 }
 
+type MeasureSession = { measure(widths: Record<string, number>): Promise<PptxDeck> }
+
+/** Ask the browser to measure pending run widths, then let the session re-layout. */
+async function measureWidths(
+  initial: PptxDeck,
+  session: MeasureSession,
+  cancelled: () => boolean,
+): Promise<PptxDeck> {
+  const ctx = document.createElement('canvas').getContext('2d')!
+  let data = initial
+  for (let round = 0; round < 6 && !cancelled(); round++) {
+    const widths: Record<string, number> = {}
+    for (const item of data.measurements) {
+      ctx.font =
+        (item.italic ? 'italic ' : '') +
+        (item.bold ? 'bold ' : '') +
+        '100px "' +
+        item.family +
+        "\", 'PingFang SC', 'Microsoft YaHei', 'Yu Gothic', 'Malgun Gothic', sans-serif"
+      widths[item.key] = ctx.measureText(item.text).width
+    }
+    if (Object.keys(widths).length) data = await session.measure(widths)
+    else break
+    if (!data.measurements.length) break
+  }
+  return data
+}
+
+/** Faces the Viewer ships for metric-compatible substitution; remote decks use the same list. */
+const REMOTE_FONTS = METRIC_FONTS.map((font) => ({
+  id: font.url,
+  family: font.family,
+  bold: font.bold,
+  italic: font.italic,
+  url: font.url,
+  also: font.names.filter((name) => name !== font.family),
+}))
+
 /** Sidebar raster width (px): it draws at 126, so 2x keeps the thumb crisp on HiDPI. */
 const THUMB_PX = 252
 
-/** mime of a data url descriptor, so a blob/object url can be typed after it */
-function mimeOf(dataUrl: string) {
-  const start = dataUrl.indexOf('data:') + 5
-  return (
-    dataUrl.slice(start, Math.max(dataUrl.indexOf(';', start), start)) || 'application/octet-stream'
-  )
+/** mime of a media URL (data URL descriptor or parts URL), so a blob/object url can be typed after it */
+function mimeOf(url: string) {
+  if (!url.startsWith('data:')) {
+    const ext = url.split('?')[0].split('.').pop()?.toLowerCase() ?? ''
+    return (
+      {
+        png: 'image/png',
+        jpg: 'image/jpeg',
+        jpeg: 'image/jpeg',
+        gif: 'image/gif',
+        bmp: 'image/bmp',
+        webp: 'image/webp',
+        svg: 'image/svg+xml',
+      }[ext] || 'application/octet-stream'
+    )
+  }
+  const start = url.indexOf('data:') + 5
+  return url.slice(start, Math.max(url.indexOf(';', start), start)) || 'application/octet-stream'
 }
 
 /**
@@ -83,7 +140,17 @@ async function stillRaster(img: HTMLImageElement, mime: string): Promise<HTMLIma
     return null
   }
 }
-export function Slides({ src }: { src: string }) {
+export function Slides({
+  src,
+  server,
+  fileId,
+  token,
+}: {
+  src: string
+  server?: string
+  fileId?: string
+  token?: string
+}) {
   const [deck, setDeck] = useState<any>(null),
     /** full-resolution pictures, kept only for the slide on screen (its +/-) */
     [images, setImages] = useState(new Map<string, HTMLImageElement>()),
@@ -107,6 +174,10 @@ export function Slides({ src }: { src: string }) {
     visited = useRef<number[]>([]),
     faces = useRef(new Map<string, FontFace>()),
     pptx = useRef<ReturnType<typeof createPptxSession> | null>(null),
+    deckRef = useRef<any>(null),
+    loadingSlides = useRef(new Set<number>()),
+    loadSlideRef = useRef<(index: number) => Promise<void>>(async () => {}),
+    partsRef = useRef(new Map<string, string>()),
     /** per-slide picture keys, so navigation can ask for just that slide's images */
     slideUrls = useRef<string[][]>([]),
     allUrls = useRef<string[]>([]),
@@ -275,9 +346,13 @@ export function Slides({ src }: { src: string }) {
     const loader = createImageLoader(applyImages)
     const thumbLoader = createImageLoader(applyImages, 4, 100, 1)
     loaderRef.current = loader
-    const session = createPptxSession()
+    const session =
+      server && fileId
+        ? createRemotePptxSession({ server, fileId, token, fonts: REMOTE_FONTS })
+        : createPptxSession()
     pptx.current = session
-    const parts = new Map<string, string>()
+    const parts = partsRef.current
+    parts.clear()
     const queued = new Set<string>()
     const active = new Set<string>()
     let inFlight = 0
@@ -322,17 +397,19 @@ export function Slides({ src }: { src: string }) {
       pump()
     }
     void (async () => {
-      const file = await fetch(src)
-      if (!file.ok) throw new Error('无法读取演示文稿')
-      const bytes = await file.arrayBuffer()
+      const bytes =
+        server && fileId
+          ? new ArrayBuffer(0)
+          : await (async () => {
+              const file = await fetch(src)
+              if (!file.ok) throw new Error('无法读取演示文稿')
+              return file.arrayBuffer()
+            })()
       stageTiming.mark('fileRead')
       let data: PptxDeck = await session.open(bytes)
       stageTiming.mark('workerOpen')
       stageTiming.worker(data.timings)
       ;(window as any).__genofficeDocFontsSynced = false
-      const loaded = new Set<string>()
-      const fontKey = (font: { family: string; bold: boolean; italic: boolean }) =>
-        `${font.family}:${!!font.bold}:${!!font.italic}`
       await Promise.all(
         data.fonts.map(async (font) => {
           for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
@@ -348,16 +425,17 @@ export function Slides({ src }: { src: string }) {
                 await face.load()
                 if (cancelled) return
                 document.fonts.add(face)
-                for (const name of font.also || [])
-                  document.fonts.add(
-                    new FontFace(name, source, {
-                      weight: font.bold ? '700' : '400',
-                      style: font.italic ? 'italic' : 'normal',
-                    }),
-                  )
+                for (const name of font.also || []) {
+                  const alias = new FontFace(name, source, {
+                    weight: font.bold ? '700' : '400',
+                    style: font.italic ? 'italic' : 'normal',
+                  })
+                  await alias.load()
+                  if (cancelled) return
+                  document.fonts.add(alias)
+                }
                 faces.current.set(font.id, face)
               }
-              loaded.add(fontKey(font))
               break
             } catch {
               if (attempt < 2)
@@ -368,33 +446,7 @@ export function Slides({ src }: { src: string }) {
       )
       await document.fonts.ready
       stageTiming.mark('fontsReady')
-      const ctx = document.createElement('canvas').getContext('2d')!
-      const privateFamilies = new Set(data.fonts.map((font) => font.family))
-      const privateVariants = new Set(data.fonts.map(fontKey))
-      for (let round = 0; round < 6 && !cancelled; round++) {
-        const widths: Record<string, number> = {}
-        for (const item of data.measurements) {
-          if (
-            privateFamilies.has(item.family) &&
-            (privateVariants.has(fontKey(item))
-              ? !loaded.has(fontKey(item))
-              : !data.fonts.some(
-                  (font) => font.family === item.family && loaded.has(fontKey(font)),
-                ))
-          )
-            continue
-          ctx.font =
-            (item.italic ? 'italic ' : '') +
-            (item.bold ? 'bold ' : '') +
-            '100px "' +
-            item.family +
-            "\", 'PingFang SC', 'Microsoft YaHei', 'Yu Gothic', 'Malgun Gothic', sans-serif"
-          widths[item.key] = ctx.measureText(item.text).width
-        }
-        if (Object.keys(widths).length) data = await session.measure(widths)
-        else break
-        if (!data.measurements.length) break
-      }
+      data = await measureWidths(data, session, () => cancelled)
       if (cancelled) return
       stageTiming.mark('layoutStable')
       stageTiming.worker(data.timings)
@@ -438,7 +490,65 @@ export function Slides({ src }: { src: string }) {
       // and are rebuilt by the next run (the effect re-runs on retry, unmount drops them)
       for (const url of revoked) URL.revokeObjectURL(url)
     }
-  }, [src, retry])
+  }, [src, retry, server, fileId, token])
+  useEffect(() => {
+    deckRef.current = deck
+  }, [deck])
+  const indexSlide = (index: number, slide: unknown) => {
+    const urls = [...new Set(imageUrls(slide))]
+    slideUrls.current[index] = urls
+    for (const key of urls) {
+      if (!allUrls.current.includes(key)) allUrls.current.push(key)
+      thumbsMime.current.set(key, mimeOf(key))
+      if (!partsRef.current.has(key)) {
+        sourceOf.current.set(key, key)
+        keyOf.current.set(key, key)
+      }
+      thumbsStarted.current.delete(key)
+    }
+    requestImages.current(new Set(urls))
+  }
+  const loadSlide = async (index: number): Promise<void> => {
+    const session = pptx.current as
+      (typeof pptx.current & { loadUnit?: (i: number) => Promise<any> }) | null
+    const current = deckRef.current
+    const slide = current?.slides[index]
+    if (!session?.loadUnit || !slide?.placeholder || loadingSlides.current.has(index)) return
+    loadingSlides.current.add(index)
+    try {
+      const unit = await session.loadUnit(index)
+      indexSlide(index, unit.slide)
+      const old = deckRef.current
+      if (!old) return
+      const slides = old.slides.slice()
+      slides[index] = unit.slide
+      const playback = old.playback.slice()
+      playback[index] = unit.playback
+      const measurements = new Map<string, any>(
+        (old.measurements || []).map((item: any) => [item.key, item]),
+      )
+      for (const item of unit.measurements || []) measurements.set(item.key, item)
+      const next = { ...old, slides, playback, measurements: [...measurements.values()] }
+      setDeck(next)
+      if (next.measurements.length) {
+        const settled = await measureWidths(next, session as any, () => false)
+        setDeck(settled)
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error))
+    } finally {
+      loadingSlides.current.delete(index)
+    }
+  }
+  loadSlideRef.current = loadSlide
+  useEffect(() => {
+    if (!deck) return
+    void loadSlideRef.current(page)
+  }, [deck, page])
+  useEffect(() => {
+    if (!deck || !thumbsOpen) return
+    for (const index of visibleThumbs) void loadSlideRef.current(index)
+  }, [deck, visibleThumbs, thumbsOpen])
   if (!deck)
     return (
       <p className="viewer-status" role={error ? 'alert' : undefined}>
@@ -497,7 +607,42 @@ export function Slides({ src }: { src: string }) {
       navigate(next)
     }
   }
-  const start = () => {
+  const start = async () => {
+    const session = pptx.current as
+      (typeof pptx.current & { loadUnit?: (i: number) => Promise<any> }) | null
+    if (session?.loadUnit && deck) {
+      const missing = deck.slides
+        .map((slide: any, index: number) => (slide?.placeholder ? index : -1))
+        .filter((index: number) => index >= 0)
+      if (missing.length) {
+        try {
+          const loaded = await Promise.all(missing.map((index: number) => session.loadUnit!(index)))
+          missing.forEach((index: number, order: number) => indexSlide(index, loaded[order].slide))
+          const old = deckRef.current
+          if (old) {
+            const slides = old.slides.slice()
+            const playback = old.playback.slice()
+            const measurements = new Map<string, any>(
+              (old.measurements || []).map((item: any) => [item.key, item]),
+            )
+            missing.forEach((index: number, order: number) => {
+              slides[index] = loaded[order].slide
+              playback[index] = loaded[order].playback
+              for (const item of loaded[order].measurements || []) measurements.set(item.key, item)
+            })
+            const next = { ...old, slides, playback, measurements: [...measurements.values()] }
+            setDeck(next)
+            if (next.measurements.length) {
+              const settled = await measureWidths(next, session as any, () => false)
+              setDeck(settled)
+            }
+          }
+        } catch (error) {
+          setError(error instanceof Error ? error.message : String(error))
+          return
+        }
+      }
+    }
     void document.documentElement.requestFullscreen?.().catch(() => {})
     setShow(true)
   }
@@ -524,7 +669,7 @@ export function Slides({ src }: { src: string }) {
             icon="play"
             label="开始放映"
             className="viewer-primary-action"
-            onClick={start}
+            onClick={() => void start()}
           >
             开始放映
           </ControlButton>

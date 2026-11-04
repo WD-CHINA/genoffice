@@ -2,6 +2,10 @@
  * Raw zip splicing for lazy media (Node only): entries are copied between
  * archives as stored bytes, never inflated or re-deflated, so a 1 GB document
  * costs the reads of its XML parts and nothing else.
+ *
+ * The random-access zip reader itself lives in `@genoffice/zip-reader` so the
+ * parse server can use it without pulling in this package's Node-only splice
+ * helpers.
  */
 import { open, type FileHandle } from 'node:fs/promises'
 import { crc32, inflateRawSync } from 'node:zlib'
@@ -11,50 +15,33 @@ import {
   lazyMediaHashOf,
   lazyMediaPlaceholder,
 } from './lazy-media'
-import { DOCX_ZIP_LIMITS, assertDeclaredSizesWithinLimits, type ZipLimits } from './zip-load'
+import { DOCX_ZIP_LIMITS, type ZipLimits } from './zip-load'
+import {
+  bufferSource,
+  readZipEntries as readZipEntriesPure,
+  type ByteSource,
+  type ZipEntry,
+} from '@genoffice/zip-reader'
 
-export interface ZipEntry {
-  name: string
-  nameBytes: Buffer
-  flags: number
-  method: number
-  time: number
-  date: number
-  crc: number
-  csize: number
-  usize: number
-  verMade: number
-  verNeed: number
-  intAttr: number
-  extAttr: number
-  /** first byte of the (compressed) data inside the archive */
-  dataOffset: number
-}
-
-export interface ByteSource {
-  size: number
-  read(offset: number, length: number): Promise<Buffer>
-}
+export { bufferSource, type ByteSource, type ZipEntry } from '@genoffice/zip-reader'
 
 export interface ZipFile extends ByteSource {
   entries: Map<string, ZipEntry>
   close(): Promise<void>
 }
 
+/** Read the central directory with the DOCX gate (the same limits the JSZip path applies). */
+export function readZipEntries(
+  src: ByteSource,
+  limits: ZipLimits = DOCX_ZIP_LIMITS,
+): Promise<ZipEntry[]> {
+  return readZipEntriesPure(src, limits)
+}
+
 const SIG_LOCAL = 0x04034b50
 const SIG_CENTRAL = 0x02014b50
 const SIG_EOCD = 0x06054b50
-const SIG_ZIP64_LOCATOR = 0x07064b50
-const FLAG_ENCRYPTED = 0x1
 const FLAG_DATA_DESCRIPTOR = 0x8
-const FLAG_UTF8 = 0x800
-
-export function bufferSource(buf: Buffer): ByteSource {
-  return {
-    size: buf.length,
-    read: async (offset, length) => buf.subarray(offset, offset + length),
-  }
-}
 
 function fileSource(fh: FileHandle, size: number): ByteSource {
   return {
@@ -70,100 +57,6 @@ function fileSource(fh: FileHandle, size: number): ByteSource {
       return buf
     },
   }
-}
-
-export async function readZipEntries(
-  src: ByteSource,
-  limits: ZipLimits = DOCX_ZIP_LIMITS,
-): Promise<ZipEntry[]> {
-  const tailLen = Math.min(src.size, 22 + 0xffff)
-  const tail = await src.read(src.size - tailLen, tailLen)
-  let eocd = -1
-  for (let i = tail.length - 22; i >= 0; i--) {
-    if (tail.readUInt32LE(i) === SIG_EOCD) {
-      eocd = i
-      break
-    }
-  }
-  if (eocd < 0) throw new Error('zip: end of central directory not found')
-  if (eocd >= 20 && tail.readUInt32LE(eocd - 20) === SIG_ZIP64_LOCATOR) {
-    throw new Error('zip: zip64 archives are not supported')
-  }
-  const count = tail.readUInt16LE(eocd + 10)
-  const cdSize = tail.readUInt32LE(eocd + 12)
-  const cdOffset = tail.readUInt32LE(eocd + 16)
-  if (count === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff) {
-    throw new Error('zip: zip64 archives are not supported')
-  }
-  if (cdOffset > src.size || cdSize > src.size || cdOffset + cdSize > src.size) {
-    throw new Error('zip: corrupt central directory')
-  }
-  const cd = await src.read(cdOffset, cdSize)
-  if (cd.length < cdSize) {
-    throw new Error('zip: corrupt central directory')
-  }
-  const entries: ZipEntry[] = []
-  let pos = 0
-  for (let i = 0; i < count; i++) {
-    if (pos + 46 > cd.length || cd.readUInt32LE(pos) !== SIG_CENTRAL) {
-      throw new Error('zip: corrupt central directory')
-    }
-    const flags = cd.readUInt16LE(pos + 8)
-    if (flags & FLAG_ENCRYPTED) throw new Error('zip: encrypted entries are not supported')
-    const nameLen = cd.readUInt16LE(pos + 28)
-    const extraLen = cd.readUInt16LE(pos + 30)
-    const commentLen = cd.readUInt16LE(pos + 32)
-    const nameBytes = Buffer.from(cd.subarray(pos + 46, pos + 46 + nameLen))
-    const csize = cd.readUInt32LE(pos + 20)
-    const usize = cd.readUInt32LE(pos + 24)
-    const localOffset = cd.readUInt32LE(pos + 42)
-    if (csize === 0xffffffff || usize === 0xffffffff || localOffset === 0xffffffff) {
-      throw new Error('zip: zip64 archives are not supported')
-    }
-    entries.push({
-      name: nameBytes.toString(flags & FLAG_UTF8 ? 'utf8' : 'latin1'),
-      nameBytes,
-      flags,
-      method: cd.readUInt16LE(pos + 10),
-      time: cd.readUInt16LE(pos + 12),
-      date: cd.readUInt16LE(pos + 14),
-      crc: cd.readUInt32LE(pos + 16),
-      csize,
-      usize,
-      verMade: cd.readUInt16LE(pos + 4),
-      verNeed: cd.readUInt16LE(pos + 6),
-      intAttr: cd.readUInt16LE(pos + 36),
-      extAttr: cd.readUInt32LE(pos + 38),
-      dataOffset: localOffset,
-    })
-    pos += 46 + nameLen + extraLen + commentLen
-  }
-  // Same bounded-archive gate the normal parse path applies, run before a
-  // single entry is read: this reader backs every lazy-media open (openZipFile,
-  // slimDocx, lazyMediaHashesIn, materializeDocx), and it used to concatenate
-  // an unchecked archive — a central directory declaring excessive parts or
-  // expanded bytes was honoured wholesale. Directories carry no payload, so
-  // they are not counted, exactly as the JSZip-side gate counts them.
-  assertDeclaredSizesWithinLimits(
-    entries.filter((e) => !e.name.endsWith('/')).map((e) => ({ name: e.name, usize: e.usize })),
-    limits,
-  )
-  // the local header's name/extra lengths may differ from the central copy
-  for (const e of entries) {
-    const local = await src.read(e.dataOffset, 30)
-    if (local.length < 30 || local.readUInt32LE(0) !== SIG_LOCAL)
-      throw new Error(`zip: corrupt local header for ${e.name}`)
-    e.dataOffset += 30 + local.readUInt16LE(26) + local.readUInt16LE(28)
-    // csize is the archive's own word about itself; readers below allocate
-    // from it before touching the file, so a declared length past the end
-    // (or past int32 — fs.read aborts the process on one) must never reach them.
-    if (e.dataOffset > src.size || e.csize > src.size - e.dataOffset)
-      throw new Error(
-        `zip: entry ${e.name} declares ${e.csize} bytes at ${e.dataOffset}, ` +
-          `outside the ${src.size}-byte archive`,
-      )
-  }
-  return entries
 }
 
 /**
@@ -187,15 +80,15 @@ export async function openZipFile(path: string): Promise<ZipFile> {
 
 interface OutEntry {
   meta: Omit<ZipEntry, 'dataOffset'>
-  data: Buffer
+  data: Uint8Array
 }
 
 /** Writes a plain (non-zip64) archive: data descriptors are folded into the
  *  headers and extra fields dropped, so every entry is self-describing. */
 export function writeZip(entries: OutEntry[]): Buffer {
   if (entries.length >= 0xffff) throw new Error('zip: too many entries for a plain archive')
-  const chunks: Buffer[] = []
-  const centrals: Buffer[] = []
+  const chunks: Uint8Array[] = []
+  const centrals: Uint8Array[] = []
   let offset = 0
   for (const { meta, data } of entries) {
     const flags = meta.flags & ~FLAG_DATA_DESCRIPTOR
@@ -284,14 +177,18 @@ export async function slimDocx(
   return { bytes: writeZip(out), lazyParts: lazy.map((e) => e.name) }
 }
 
-function inflated(e: ZipEntry, raw: Buffer): Buffer {
-  if (e.method === 0) return raw
+function inflated(e: ZipEntry, raw: Uint8Array): Buffer {
+  if (e.method === 0) return Buffer.from(raw)
   if (e.method === 8) return inflateRawSync(raw)
   throw new Error(`zip: unsupported compression method ${e.method} for ${e.name}`)
 }
 
 /** the placeholder hash when the entry is one, else null */
-async function placeholderHash(src: ByteSource, e: ZipEntry, raw?: Buffer): Promise<string | null> {
+async function placeholderHash(
+  src: ByteSource,
+  e: ZipEntry,
+  raw?: Uint8Array,
+): Promise<string | null> {
   if (e.usize !== LAZY_MEDIA_PLACEHOLDER_BYTES) return null
   return lazyMediaHashOf(inflated(e, raw ?? (await src.read(e.dataOffset, e.csize))))
 }

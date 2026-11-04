@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import JSZip from 'jszip'
@@ -104,6 +104,9 @@ describe('parse-server', () => {
         body: JSON.stringify({ fileId: file.fileId }),
       })
       const session = (await opened.json()) as { sessionId: string }
+      const chunkFiles = await readdir(join(dir, 'chunks', session.sessionId))
+      expect(chunkFiles).toContain('manifest.json')
+      expect(chunkFiles.some((name) => name.startsWith('chunk-'))).toBe(true)
       await first.close()
       const second = await createParseServer({ dataDir: dir })
       try {
@@ -113,6 +116,7 @@ describe('parse-server', () => {
         expect(listing.items[0]?.kind).toBe('block-chunk')
         const unit = await fetch(`${second.url}/v1/sessions/${session.sessionId}/units/0`)
         expect(unit.status).toBe(200)
+        expect(((await unit.json()) as { blocks: unknown[] }).blocks.length).toBeGreaterThan(0)
       } finally {
         await second.close()
       }

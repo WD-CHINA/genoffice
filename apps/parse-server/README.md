@@ -109,7 +109,8 @@ first version:
 - groups 200 blocks per `block-chunk` unit
 - `GET /v1/sessions/:id/units` lists `block-chunk` units
 - `GET /v1/sessions/:id/units/:id` returns `{ blocks, playback: [] }`
-- session metadata persists in `sessions.json`; a restart lazily reopens the session
+- chunks persist under `<dataDir>/chunks/<sessionId>/` (`manifest.json` + `chunk-*.json`); a restart reopens from disk without reparsing
+- session metadata persists in `sessions.json`; delete/TTL/GC remove chunk directories
 - DOCX parse is bounded by `maxParseBytes` (256 MiB default); `document.xml` is
   streamed for metadata and block parsing, while the compressed package is still
   loaded by JSZip. 100 MB-class synthetic XML has been exercised.

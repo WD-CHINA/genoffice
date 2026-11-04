@@ -526,6 +526,44 @@ session 行为：
 
 这说明 100MB 级 `document.xml` 已经可以进入当前 worker 路径；但真实文档的表格/图片/修订仍需 fixture 验证。
 
+### 2.20 Gate A.10：chunk 持久化 + 重启恢复
+
+新增 `apps/parse-server/src/docx-chunks.ts`：
+
+- 每个 DOCX session 一个目录：`<dataDir>/chunks/<sessionId>/`
+- `manifest.json`：fileId、parserVersion、unitCount、chunkBlocks
+- `chunk-<n>.json`：每个 chunk 的 blocks
+- worker 解析后写盘，随后释放内存中的 chunks
+- `unit` 请求从磁盘按需读取
+
+重启恢复：
+
+- worker 发现 manifest 且 fileId/parserVersion 匹配时跳过重新解析
+- 直接从 chunk 文件提供 units
+
+GC：
+
+- 删除 session 时删除 chunk 目录
+- session TTL 到期删除
+- `runGc` 清理无主 chunk 目录
+
+实测（500k blocks / ~100MB XML）：
+
+| 指标         | 结果                               |
+| ------------ | ---------------------------------- |
+| openMs       | ~2.5s（含 2500 个 chunk 文件写入） |
+| unit0        | 200 blocks                         |
+| RSS after    | ~348MB                             |
+| 重启后 unit0 | 从 manifest/chunk 读取，不重新解析 |
+
+限制：
+
+- chunk 是 JSON 文件，不是数据库；2500 个文件/500k blocks
+- manifest 只校验 fileId/parserVersion，没有内容 hash
+- chunk 文件没有压缩
+- 没有多实例共享存储
+- 删除 session 会删 chunk；内容文件仍按内容 GC
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -550,6 +588,7 @@ session 行为：
 - **Gate A.7 已做压力基线**：300k blocks / ~60MB XML 主线程可打开但 heap 1.09GB
 - **Gate A.8 已通过 worker 隔离**：100k blocks 正常；300k 被 512MB 限制终止但 server 存活
 - **Gate A.9 已通过流式 metadata**：300k/500k blocks（~60MB/100MB XML）可解析，RSS ~284/324MB
+- **Gate A.10 已通过 chunk 持久化**：500k blocks 写 2500 个 chunk，重启从磁盘恢复，不重新解析
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import {
@@ -14,6 +15,7 @@ import { parseRange } from './range'
 import { signResource, verifyResource } from './sign'
 import { PptxSession } from './pptx'
 import { DocxSession } from './docx-session'
+import { chunkDir, collectOrphanChunks, removeChunks } from './docx-chunks'
 import { ParseLimitError } from './pptx-slim'
 import { SessionStore, type SessionRecord } from './session-store'
 import {
@@ -94,6 +96,7 @@ interface Context {
   contentTtlMs: number
   maxStoreBytes: number
   gcIntervalMs: number
+  chunkRoot: string
 }
 
 const CONTENT_TYPES: Record<DocFormat, string> = {
@@ -274,9 +277,11 @@ async function ensureSession(
         parseTimeoutMs: ctx.parseTimeoutMs,
         unitTimeoutMs: ctx.unitTimeoutMs,
         workerMemoryMb: ctx.workerMemoryMb,
+        chunksDir: chunkDir(ctx.chunkRoot, entry.record.id),
         onDead: () => {
           ctx.sessions.delete(entry.record.id)
           void ctx.sessionStore.remove(entry.record.id)
+          void removeChunks(chunkDir(ctx.chunkRoot, entry.record.id))
         },
       })
       entry.record.baseUrl = baseUrl
@@ -350,9 +355,11 @@ async function handleCreateSession(
             parseTimeoutMs: ctx.parseTimeoutMs,
             unitTimeoutMs: ctx.unitTimeoutMs,
             workerMemoryMb: ctx.workerMemoryMb,
+            chunksDir: chunkDir(ctx.chunkRoot, sessionId),
             onDead: () => {
               ctx.sessions.delete(sessionId)
               void ctx.sessionStore.remove(sessionId)
+              void removeChunks(chunkDir(ctx.chunkRoot, sessionId))
             },
           })
         : await PptxSession.open({
@@ -411,6 +418,7 @@ async function handleSession(
     entry.session?.close()
     ctx.sessions.delete(sessionId)
     await ctx.sessionStore.remove(sessionId)
+    await removeChunks(chunkDir(ctx.chunkRoot, sessionId))
     res.writeHead(204)
     res.end()
     return
@@ -505,6 +513,11 @@ async function runGc(ctx: Context, keepFileId?: string): Promise<void> {
     }
   }
   await ctx.store.cleanupTemp(60 * 60_000)
+  await collectOrphanChunks(
+    ctx.chunkRoot,
+    new Set(ctx.sessionStore.values().map((record) => record.id)),
+    ctx.contentTtlMs,
+  )
 }
 
 function fileInUse(ctx: Context, fileId: string): boolean {
@@ -852,6 +865,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     contentTtlMs: options.contentTtlMs ?? 7 * 24 * 60 * 60_000,
     maxStoreBytes: options.maxStoreBytes ?? 20 * 1024 ** 3,
     gcIntervalMs: options.gcIntervalMs ?? 10 * 60_000,
+    chunkRoot: join(options.dataDir, 'chunks'),
   }
   for (const record of sessionStore.values()) ctx.sessions.set(record.id, { record })
   const server: Server = createServer((req, res) => {
@@ -890,6 +904,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
       entry.session?.close()
       ctx.sessions.delete(id)
       void ctx.sessionStore.remove(id)
+      void removeChunks(chunkDir(ctx.chunkRoot, id))
     }
   }, 60_000)
   sweeper.unref?.()

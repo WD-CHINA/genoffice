@@ -13,6 +13,8 @@ export interface DocxOpenInput {
   parseTimeoutMs: number
   unitTimeoutMs: number
   workerMemoryMb: number
+  /** Directory for persisted chunk JSON files. */
+  chunksDir: string
   onDead?: () => void
 }
 

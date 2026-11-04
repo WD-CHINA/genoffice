@@ -8548,3 +8548,131 @@ async function extractChart(xml: string, ctx: BuildContext): Promise<ChartDispla
   }
   return display
 }
+
+/**
+ * Reusable block parser over one docx package.
+ *
+ * Gate A.2: package-level context (styles, numbering, rels, theme, notes,
+ * sections, media) is built once; callers can feed streamed top-level block
+ * slices without repackaging the document for every block.
+ *
+ * `createDocxBlockParser` still reads `word/document.xml` to build document-wide
+ * metadata (sections, comments, first page break). A later step can make that
+ * metadata streaming too.
+ */
+export interface DocxBlockParser {
+  parseBlock(xml: string, index?: number): Promise<Block>
+}
+
+export async function createDocxBlockParser(bytes: Uint8Array): Promise<DocxBlockParser> {
+  const zip = await loadDocxZip(bytes)
+  assertZipWithinLimits(zip)
+  const docPath = await resolveMainDocumentPath(zip)
+  if (!docPath) throw new Error('not a docx: missing word/document.xml')
+  const documentXml = await zip.file(docPath)!.async('string')
+
+  const theme = await parseTheme(zip)
+  const { styles, docDefaults } = await parseStyles(zip, theme.colors, theme.fonts)
+  const rels = await parseRels(zip, docPath.replace(/([^/]+)$/, '_rels/$1.rels'))
+  const { formats: numFormats, defs: numbering, picBullets } = await parseNumbering(zip)
+  await resolvePicBullets(zip, numbering, picBullets)
+  const comments = await parseComments(zip)
+  const rangedCommentIds = new Set(
+    [...documentXml.matchAll(/<w:commentRangeStart\b[^>]*\bw:id\s*=\s*["']([^"']+)["']/g)].map(
+      (match) => match[1],
+    ),
+  )
+  const referenceOnlyComments = new Set(
+    comments.map((comment) => comment.id).filter((id) => !rangedCommentIds.has(id)),
+  )
+  const scan = scanBody(documentXml)
+  const mediaByRid = await tableBlipMedia(scan.elements, documentXml, zip, rels, docPath)
+  const externalTxbxByRid = await externalTxbxParts(documentXml, zip, rels, docPath)
+  const sectSlices = [...documentXml.matchAll(/<w:sectPr[^>]*\/>|<w:sectPr[\s\S]*?<\/w:sectPr>/g)]
+  const gutterAtTop = await parseSettingsFlag(zip, 'w:gutterAtTop')
+  const sectCache = new Map<number, SectionSettings>()
+  const sectionAt = (docOffset: number): SectionSettings => {
+    let index = sectSlices.findIndex((match) => (match.index ?? 0) + match[0].length > docOffset)
+    if (index === -1) index = sectSlices.length - 1
+    let settings = sectCache.get(index)
+    if (!settings) {
+      settings = sectionSettingsFromXml(index >= 0 ? sectSlices[index][0] : '', { gutterAtTop })
+      sectCache.set(index, settings)
+    }
+    return settings
+  }
+  const compatibilityMode = await parseCompatibilityMode(zip)
+  const layoutSettings = await parseLayoutSettings(zip)
+  const compat: ResolveCompat = {
+    mode: compatibilityMode,
+    additiveParaSpacing: layoutSettings.doNotUseHTMLParagraphAutoSpacing === true,
+    indentNotNumberingTabStop: layoutSettings.indentNotNumberingTabStop === true,
+  }
+  const defaultParaStyle = [...styles.values()].find(
+    (style) => style.type === 'paragraph' && style.isDefault,
+  )
+  const resolver: ResolveCtx = {
+    styles,
+    ...(defaultParaStyle ? { defaultParaStyle } : {}),
+    docDefaults,
+    numbering,
+    themeFonts: theme.fonts,
+    themeColors: theme.colors,
+    compat,
+  }
+  const noteCtx = {
+    rels: new Map(),
+    noteNumbers: new Map(),
+    themeColors: theme.colors,
+    themeFonts: theme.fonts,
+    styles,
+    xmlSpacePreserve: false,
+    resolver,
+  } as unknown as BuildContext
+  const footnotes = await parseNotesPart(zip, 'footnote', noteCtx)
+  const endnotes = await parseNotesPart(zip, 'endnote', noteCtx)
+  const { footnoteProps, endnoteProps } = await parseNoteProps(zip, documentXml)
+  const noteNumbers = noteNumbersOf(documentXml, footnotes, endnotes, footnoteProps, endnoteProps)
+  const zoteroFieldParagraphs = crossParagraphZoteroFields(scan.elements, documentXml)
+  const buildCtx: BuildContext = {
+    zip,
+    compat,
+    resolver,
+    sourcePath: docPath,
+    styles,
+    rels,
+    numFormats,
+    numbering,
+    chartParts: {},
+    noteNumbers,
+    compatibilityMode,
+    themeColors: theme.colors,
+    themeFonts: theme.fonts,
+    mediaByRid,
+    externalTxbxByRid,
+    referenceOnlyComments,
+    sectionAt,
+    docDefaults,
+    ...(defaultParaStyle ? { defaultParaStyle } : {}),
+    xmlSpacePreserve: partXmlSpacePreserve(documentXml, 'w:document'),
+    ...(documentXml.includes('<v:shapetype')
+      ? { vmlShapeTypes: vmlShapeTypeTable(documentXml) }
+      : {}),
+    nextZoteroFieldId:
+      Math.max(0, ...[...zoteroFieldParagraphs.values()].map((field) => field.id)) + 1,
+    firstPageBreakAt: (() => {
+      const br = documentXml.search(
+        /<w:br [^>]*w:type="page"|<w:pageBreakBefore[^>]*\/>|<w:lastRenderedPageBreak[^>]*\/>/,
+      )
+      const sect = documentXml.indexOf('</w:sectPr>')
+      const candidates = [br, sect].filter((offset) => offset !== -1)
+      return candidates.length > 0 ? Math.min(...candidates) : undefined
+    })(),
+  }
+  return {
+    async parseBlock(xml: string, index = 0): Promise<Block> {
+      const name = /^<([^\s/>]+)/.exec(xml)?.[1] ?? 'w:p'
+      return buildBlock({ name, start: 0, end: xml.length }, index, xml, buildCtx)
+    },
+  }
+}

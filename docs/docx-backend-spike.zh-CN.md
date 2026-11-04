@@ -306,6 +306,33 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 - 还没有复用 `docx-engine` 内部的 `buildBlock`/styles/rels 上下文
 - 大文档上这个做法不可用，只证明“切片可以语义解析”
 
+### 2.11 Gate A.2：可复用 block parser context
+
+新增：
+
+- `packages/docx-engine/src/parse.ts` 导出 `createDocxBlockParser(bytes)`
+- `apps/parse-server/src/docx-block-parse.ts` 改为使用该 parser
+
+做法：
+
+- 包级上下文只构建一次：styles、numbering、rels、theme、notes、sections、media
+- 每个流式 block 切片直接 `parser.parseBlock(xml, index)`
+- 不再为每个 block 重新生成 docx 包
+
+测试：
+
+- `table-style-ppr-spacing`
+- `render-hf-inline-picture`
+- `docx-spike-table`（修订/脚注/合并单元格/嵌套表格）
+
+对比 block type、纯文本、表格行数，全部一致；测试耗时从“每块重新打包”的 ~236ms 降到 ~82ms（fixture 级别，非大文件基准）。
+
+限制：
+
+- `createDocxBlockParser` 仍然读取完整 `word/document.xml` 来建立 sections/comments/firstPageBreak 等文档级元数据
+- 真正 1GB 还需要把这些元数据也流式化
+- 还没有接服务端 DOCX session / chunk 存储
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -321,7 +348,8 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 - **已补齐：拆分行的真实渲染**，tall line 0–49/50–79 连续，合并单元格/嵌套表格/cantSplit 正常
 - **已接回主 docx-page-spike**，表格子页参与主分页
 - **仍未验证：拆分行里的合并单元格/嵌套表格跨页、边框/底纹像素级一致性**
-- **Gate A 语义切片已通过 spike**：3 个 fixture 的 type/text/table rows 与完整 parse 一致；但仍是“每块重新打包”，需要改成复用 parser context
+- **Gate A 语义切片已通过 spike**：3 个 fixture 的 type/text/table rows 与完整 parse 一致
+- **Gate A.2 已通过**：`createDocxBlockParser` 复用包级上下文，不再逐块重新打包；但 context 创建仍读完整 document.xml
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

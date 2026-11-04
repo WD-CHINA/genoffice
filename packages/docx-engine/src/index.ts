@@ -21,11 +21,13 @@ export {
 } from './content-control'
 export {
   parseDocx,
+  createDocxBlockParser,
   reconcileGridColumns,
   paraCsFormat,
   styleRunFormat,
   type ParseExtras,
   type ParseOptions,
+  type DocxBlockParser,
 } from './parse'
 export {
   compareOperands,

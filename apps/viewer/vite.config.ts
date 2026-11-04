@@ -93,6 +93,7 @@ export default defineConfig({
         host: resolve(app, 'src/web/index.html'),
         preview: resolve(app, 'src/web/preview.html'),
         upload: resolve(app, 'src/web/upload.html'),
+        docxSpike: resolve(app, 'src/web/docx-spike.html'),
       },
     },
   },

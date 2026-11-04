@@ -1,0 +1,96 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-family:
+    'PingFang SC',
+    'Microsoft YaHei',
+    'Noto Sans CJK SC',
+    system-ui,
+    -apple-system,
+    sans-serif;
+}
+
+.docx-spike {
+  width: min(1100px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 24px 0 40px;
+}
+
+.docx-spike-head a {
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.docx-spike-head h1 {
+  margin: 8px 0;
+  font-size: 22px;
+}
+
+.docx-spike-head p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.docx-spike-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 16px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.docx-spike-viewport {
+  height: 72vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--canvas);
+}
+
+.docx-spike-canvas {
+  position: relative;
+  width: 100%;
+}
+
+.docx-page {
+  position: absolute;
+  left: 50%;
+  width: min(760px, calc(100% - 32px));
+  transform-origin: top center;
+  margin-left: min(-380px, calc(-50% + 16px));
+  padding: 48px 56px;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-modal-strong);
+}
+
+.docx-page-number {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+}
+
+.docx-block {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.docx-block.is-heading {
+  font-weight: 700;
+  font-size: 18px;
+}

@@ -420,6 +420,9 @@ importers:
         specifier: ^4.21.0
         version: 4.23.15
     devDependencies:
+      '@genoffice/docx-engine':
+        specifier: '*'
+        version: link:../../packages/docx-engine
       '@types/node':
         specifier: ^24.10.1
         version: 24.19.2

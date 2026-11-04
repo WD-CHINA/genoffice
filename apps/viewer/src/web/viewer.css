@@ -1065,3 +1065,39 @@ html[data-viewer-errors='false'] #root .viewer-warning {
 html[data-viewer-toolbar='false'] .viewer-preview {
   --viewer-panel-bottom: 24px;
 }
+
+/* Remote DOCX: block-chunk session rendered through Tiptap. */
+.viewer-doc-remote {
+  overflow: auto;
+  padding: 24px 16px 64px;
+  background: var(--surface-subtle);
+}
+
+.viewer-doc-remote .viewer-doc-canvas {
+  position: static;
+  left: auto;
+  top: auto;
+  display: flex;
+  justify-content: center;
+  visibility: visible;
+}
+
+.viewer-doc-remote .doc-page {
+  width: 760px;
+  min-height: 900px;
+  padding: 48px 56px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-modal-strong);
+}
+
+.viewer-doc-remote-name {
+  display: block;
+  max-width: 760px;
+  margin: 0 auto 12px;
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

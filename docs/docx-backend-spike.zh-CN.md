@@ -367,6 +367,35 @@ session 行为：
 - `maxParseBytes` 256MiB 保护，不是 1GB 路径
 - `createDocxBlockParser` 的 context 仍读完整 document.xml；`docx-metadata` 目前只是独立流式 pass
 
+### 2.13 Gate A.4：Viewer 远程 DOCX provider（第一版）
+
+新增：
+
+- `apps/viewer/src/web/docs-remote.tsx`
+- `preview.tsx` 在 `format=docx && server && fileId` 时走远程 provider
+- `host.tsx` 允许 DOCX 上传到服务端 / 服务端模式；自动模式大于 64 MiB 走服务端
+
+行为：
+
+- 创建 DOCX session
+- 拉取 `block-chunk` units
+- 用 Tiptap 渲染 blocks
+- 卸载时 DELETE session
+
+实测：
+
+- 通过 `?parse=server&fileId=...` 打开 `docx-spike-table.docx`
+- 修订、脚注、表格、合并单元格、嵌套表格都显示
+- 没有报错
+
+限制：
+
+- 当前一次性拉取所有 chunk，不是懒加载
+- 用一个 Tiptap editor 渲染全部 blocks，没有接按页/表格行级分页
+- 表格会作为一个长 block 溢出页面
+- 没有字体/媒体懒加载、搜索、缩略图、放映
+- 远程 DOCX 只是“能打开”，不是生产级排版
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -384,7 +413,8 @@ session 行为：
 - **仍未验证：拆分行里的合并单元格/嵌套表格跨页、边框/底纹像素级一致性**
 - **Gate A 语义切片已通过 spike**：3 个 fixture 的 type/text/table rows 与完整 parse 一致
 - **Gate A.2 已通过**：`createDocxBlockParser` 复用包级上下文，不再逐块重新打包；但 context 创建仍读完整 document.xml
-- **Gate A.3 已通过**：DOCX 服务端 session 可用（block-chunk），元数据流式 pass 与重启恢复测试通过；仍未接 Viewer 远程 provider
+- **Gate A.3 已通过**：DOCX 服务端 session 可用（block-chunk），元数据流式 pass 与重启恢复测试通过
+- **Gate A.4 第一版通过**：Viewer 可远程打开 DOCX，但还是一次性拉取 + 单 editor，未接分页/表格行级分页
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

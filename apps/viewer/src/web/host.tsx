@@ -115,7 +115,6 @@ function Host() {
       })
       if (!response.ok) throw new Error(`读取文件信息失败（HTTP ${response.status}）`)
       const meta = (await response.json()) as { format: Format }
-      if (meta.format === 'docx') throw new Error('服务端解析暂不支持 DOCX')
       let contentUrl = `${serverUrl}/v1/files/${encodeURIComponent(fileId)}/content`
       if (serverToken && meta.format === 'pdf') {
         const signed = await fetch(
@@ -196,19 +195,14 @@ function Host() {
         format = await formatOf(name, bytes)
         file = new Blob([bytes])
       }
-      if (format === 'docx' && file.size > DOCX_LOCAL_MAX_BYTES) {
-        throw new Error('大 DOCX 暂不支持：本地预览上限 32 MiB，后端 DOCX 解析尚未开放')
-      }
       const resolvedMode: ParseMode =
-        mode === 'auto'
-          ? serverUrl && format !== 'docx' && file.size > AUTO_REMOTE_BYTES
-            ? 'server'
-            : 'local'
-          : mode
+        mode === 'auto' ? (serverUrl && file.size > AUTO_REMOTE_BYTES ? 'server' : 'local') : mode
+      if (format === 'docx' && resolvedMode === 'local' && file.size > DOCX_LOCAL_MAX_BYTES) {
+        throw new Error('大 DOCX 本地预览上限 32 MiB；请切换到服务端解析')
+      }
       let remote: RemoteTarget | undefined
       if (resolvedMode === 'server') {
         if (!serverUrl) throw new Error('没有配置解析服务地址（?server=http://…）')
-        if (format === 'docx') throw new Error('服务端解析暂不支持 DOCX')
         const auth: Record<string, string> = serverToken
           ? { Authorization: `Bearer ${serverToken}` }
           : {}

@@ -7,6 +7,7 @@ const Slides = lazy(() => import('./slides').then((m) => ({ default: m.Slides })
 const Pdf = lazy(() => import('./pdf').then((m) => ({ default: m.Pdf })))
 const Docs = lazy(() => import('./docs').then((m) => ({ default: m.Docs })))
 const DocsRemote = lazy(() => import('./docs-remote').then((m) => ({ default: m.DocsRemote })))
+const DocsServer = lazy(() => import('./docs-server').then((m) => ({ default: m.DocsServer })))
 const params = new URLSearchParams(location.search),
   src = params.get('src') || '',
   format = params.get('format'),
@@ -51,7 +52,7 @@ createRoot(document.getElementById('root')!).render(
       ) : format === 'pdf' ? (
         <Pdf src={contentUrl || remoteSrc || src} />
       ) : format === 'docx' && server && fileId ? (
-        <DocsRemote
+        <DocsServer
           server={server}
           fileId={fileId}
           token={token || undefined}

@@ -1,11 +1,12 @@
-import { readFile, stat } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
+import { Readable } from 'node:stream'
 import JSZip from 'jszip'
 import { parentPort } from 'node:worker_threads'
 import { createDocxBlockParser, readDocxEmbeddedFonts } from '@genoffice/docx-engine'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
-import { ParseLimitError } from './pptx-slim'
-import { openDocxDocumentStream, streamDocxBlocks } from './docx-stream'
+import { streamDocxBlocks } from './docx-stream'
+import { slimDocxFile } from './docx-slim'
 import { scanDocxMetadata } from './docx-metadata'
 import {
   readChunk,
@@ -78,9 +79,12 @@ async function open(input: OpenInput): Promise<{
   fonts: Array<{ id: string; family: string; bold: boolean; italic: boolean; also: string[] }>
 }> {
   chunksDir = input.chunksDir
-  const info = await stat(input.path)
-  if (info.size > input.limits.maxParseBytes) throw new ParseLimitError(input.limits.maxParseBytes)
-  const bytes = await readFile(input.path)
+  const slim = await slimDocxFile(input.path, input.limits)
+  const bytes = slim.bytes
+  const zip = await JSZip.loadAsync(bytes)
+  const documentFile = zip.file('word/document.xml')
+  if (!documentFile) throw new Error('not a docx: missing word/document.xml')
+  const documentXml = await documentFile.async('string')
   const embedded = await readDocxEmbeddedFonts(bytes)
   fonts = embedded.map((font, index) => ({
     id: `font-${index}`,
@@ -117,14 +121,10 @@ async function open(input: OpenInput): Promise<{
     }
     return { model, fonts: fontSummaries }
   }
-  const metadata = await scanDocxMetadata(await openDocxDocumentStream(input.path, input.limits))
+  const metadata = await scanDocxMetadata(Readable.from([documentXml]))
   const parser = await createDocxBlockParser(bytes, metadata)
   const slices = []
-  for await (const slice of streamDocxBlocks(
-    await openDocxDocumentStream(input.path, input.limits),
-  )) {
-    slices.push(slice)
-  }
+  for await (const slice of streamDocxBlocks(Readable.from([documentXml]))) slices.push(slice)
   const blocks = []
   for (let index = 0; index < slices.length; index++) {
     blocks.push(await parser.parseBlock(slices[index].xml, index, slices[index].start))

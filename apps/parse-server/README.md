@@ -109,6 +109,7 @@ first version:
 - groups 200 blocks per `block-chunk` unit
 - `GET /v1/sessions/:id/units` lists `block-chunk` units
 - `GET /v1/sessions/:id/units/:id` returns `{ blocks, playback: [] }`
+- DOCX media/embeddings are stripped into a stored-only slim archive for the worker; the original parts stay on disk and are served by the parts route
 - chunks persist under `<dataDir>/chunks/<sessionId>/` (`manifest.json` + single `chunks.bin` with per-chunk offsets/SHA-256); body images are rewritten to `/v1/files/:id/parts/...` URLs; embedded fonts are exposed at `/v1/sessions/:id/fonts/:fontId`; a restart reopens from disk without reparsing
 - session metadata persists in `sessions.json`; delete/TTL/GC remove chunk directories
 - DOCX parse is bounded by `maxParseBytes` (256 MiB default); `document.xml` is

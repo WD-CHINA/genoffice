@@ -71,8 +71,8 @@ function UploadPage() {
   const upload = (file: File) => {
     if (busy) return
     const lower = file.name.toLowerCase()
-    if (!lower.endsWith('.pptx') && !lower.endsWith('.pdf')) {
-      setError('只支持 .pptx 或 .pdf 文件')
+    if (!lower.endsWith('.pptx') && !lower.endsWith('.pdf') && !lower.endsWith('.docx')) {
+      setError('只支持 .pptx / .pdf / .docx 文件')
       return
     }
     setBusy(true)
@@ -153,7 +153,7 @@ function UploadPage() {
             ref={input}
             className="upload-input"
             type="file"
-            accept=".pptx,.pdf"
+            accept=".pptx,.pdf,.docx"
             onChange={(event) => {
               onFiles(event.target.files)
               event.target.value = ''

@@ -727,6 +727,33 @@ GC：
 - 图片/字体在 100MB fixture 中没有单独断言
 - 浏览器内存/滚动 FPS 没有系统采样
 
+### 2.28 Gate A.18：DOCX slim 随机访问（1GB media）
+
+新增 `apps/parse-server/src/docx-slim.ts`：
+
+- 用 zip-reader 读目录
+- 把所有非 `word/media/*` / `word/embeddings/*` part 复制到 stored-only slim zip
+- 媒体保留在原文件，由 parts 路由按需读取
+- worker 只加载 slim 包，不再 `readFile` 整个 1GB docx
+
+实测 1GB media fixture：
+
+| 指标                | 结果              |
+| ------------------- | ----------------- |
+| 文件                | 1.0GB             |
+| upload              | 3.3s              |
+| openMs              | 486ms             |
+| session             | 201               |
+| unit0               | 200 blocks        |
+| RSS after           | ~167MB            |
+| 默认 maxParse 256MB | 通过（slim 很小） |
+
+结论：
+
+- 1GB media DOCX 已经可以打开
+- 1GB **XML** 仍需要随机访问 document.xml；slim 仍会把 XML 读入
+- 1GB 媒体不进入 worker 内存，parts 路由负责按需读取
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -759,6 +786,7 @@ GC：
 - **Gate A.15 已通过单文件 chunk 索引**：500k blocks 写 1 个 `chunks.bin`，open ~2.4s
 - **Gate A.16 已做 1GB 流式 fixture**：1GB 可生成/上传/存储；打开仍受 worker 512MB 限制
 - **Gate A.17 已做 100MB 浏览器验收**：首 chunk + 加载更多 + 表格分页正常
+- **Gate A.18 已通过 1GB media slim**：1GB media DOCX session 201，open 486ms，RSS 167MB
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

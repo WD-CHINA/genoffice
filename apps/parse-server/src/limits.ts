@@ -14,7 +14,7 @@ export interface ServerLimits {
 
 export const DEFAULT_LIMITS: ServerLimits = {
   maxUploadBytes: 2 * 1024 * 1024 * 1024,
-  maxPartBytes: 512 * 1024 * 1024,
+  maxPartBytes: 2 * 1024 * 1024 * 1024,
   maxTotalUncompressedBytes: 4 * 1024 * 1024 * 1024,
   maxParts: 10_000,
   maxParseBytes: 256 * 1024 * 1024,

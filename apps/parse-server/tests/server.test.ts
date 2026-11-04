@@ -54,6 +54,41 @@ describe('parse-server', () => {
     expect(caps.formats).toEqual(['pptx', 'pdf'])
   })
 
+  it('exposes Prometheus metrics', async () => {
+    const { server } = await start()
+    await fetch(`${server.url}/v1/capabilities`)
+    const response = await fetch(`${server.url}/metrics`)
+    expect(response.status).toBe(200)
+    expect(response.headers.get('content-type')).toContain('text/plain')
+    const body = await response.text()
+    expect(body).toContain('# TYPE genoffice_parse_requests_total counter')
+    expect(body).toContain('genoffice_parse_requests_total{method="GET"}')
+    expect(body).toContain('genoffice_parse_sessions_active 0')
+    expect(body).toContain('genoffice_parse_storage_bytes')
+    expect(body).toContain('genoffice_parse_request_duration_seconds_count')
+  })
+
+  it('reports structured health metrics', async () => {
+    const { server } = await start()
+    await fetch(`${server.url}/v1/capabilities`)
+    const response = await fetch(`${server.url}/v1/health`)
+    expect(response.status).toBe(200)
+    const health = (await response.json()) as {
+      ok: boolean
+      uptimeSec: number
+      sessions: number
+      activeWorkers: number
+      requests: number
+      memory: { rss: number }
+    }
+    expect(health.ok).toBe(true)
+    expect(health.uptimeSec).toBeGreaterThanOrEqual(0)
+    expect(health.sessions).toBe(0)
+    expect(health.activeWorkers).toBe(0)
+    expect(health.requests).toBeGreaterThanOrEqual(1)
+    expect(health.memory.rss).toBeGreaterThan(0)
+  })
+
   it('streams an upload, stores it by hash and serves it with Range', async () => {
     const { server } = await start()
     const uploaded = await upload(server.url, PDF)
@@ -168,6 +203,21 @@ describe('parse-server', () => {
     expect(signed.expiresAt).toBeTruthy()
     expect((await fetch(signed.url)).status).toBe(200)
     expect((await fetch(`${server.url}/v1/files/${meta.fileId}/content`)).status).toBe(401)
+  })
+
+  it('rejects uploads over the content-store quota', async () => {
+    const { server } = await start({ maxStoreBytes: 1024 })
+    const response = await upload(server.url, Buffer.concat([PDF, Buffer.alloc(4096, 1)]))
+    expect(response.status).toBe(507)
+    expect(((await response.json()) as { code: string }).code).toBe('storage_full')
+  })
+
+  it('gcs expired unreferenced content', async () => {
+    const { server } = await start({ contentTtlMs: 1, gcIntervalMs: 50 })
+    const uploaded = await upload(server.url, PDF)
+    const meta = (await uploaded.json()) as { fileId: string }
+    await new Promise((resolve) => setTimeout(resolve, 250))
+    expect((await fetch(`${server.url}/v1/files/${meta.fileId}`)).status).toBe(404)
   })
 
   it('requires a bearer token on non-public routes when configured', async () => {

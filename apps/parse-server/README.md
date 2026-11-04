@@ -26,7 +26,8 @@ Environment:
 ## API (v1)
 
 ```text
-GET    /v1/health                     {ok, parserVersion}
+GET    /v1/health                     {ok, metrics snapshot}
+GET    /metrics                       Prometheus text exposition
 GET    /v1/capabilities               contract + formats (pptx/pdf) + limits
 POST   /v1/files                      stream an upload -> {fileId,sha256,size,format}
 GET    /v1/files/:id                  metadata
@@ -51,6 +52,15 @@ Uploads are streamed to a temp file while hashing, then moved to `files/<sha256[
 npm run test -w @genoffice/parse-server
 npm run typecheck -w @genoffice/parse-server
 ```
+
+## Stress smoke (1 GB deck + concurrency + timeout)
+
+```sh
+# against a running server
+npm run stress -w @genoffice/parse-server -- --url http://127.0.0.1:8787 --size 1G --sessions 6
+```
+
+The script builds a PPTX whose bulk is one 1 GiB stored media part **referenced by slide 1**, uploads it, opens N sessions concurrently, checks the media part `HEAD`/`Range` and the server RSS before/after, then starts a separate 1 ms-timeout server and verifies `504 parse_timeout` while its `/v1/health` stays `200`. Last local run: 1 GiB upload, 6 concurrent sessions all `201`, media `HEAD 200 / Range 206`, RSS before/after part 364 MB -> 364 MB, health `errors=0`.
 
 ## 1 GB upload smoke
 
@@ -88,6 +98,23 @@ The Viewer dev server proxies `/v1` to `PARSE_SERVER_URL` (default `http://127.0
 3. Slide render trees reference media through absolute `GET /v1/files/:id/parts/:partPath` URLs; the browser fetches each image when the slide needs it.
 
 Local measurement: a 256 MiB deck (blank slide + 256 MiB stored media) opens a session in ~22 ms and adds ~0.5 MiB RSS (the media is never inflated). A 1 GiB upload alone has been measured at ~867 MB/s with ~103 MiB peak RSS.
+
+### Media streaming and storage lifecycle
+
+- `GET /v1/files/:id/parts/:partPath` streams the part: stored parts are sliced straight from disk and support `Range`/`HEAD`; deflated parts are inflated through a stream (Range falls back to a full 200).
+- `DELETE /v1/files/:id` returns `409 file_in_use` while a session references the file.
+- A periodic GC removes unreferenced content older than `PARSE_SERVER_CONTENT_TTL_MS`, enforces `PARSE_SERVER_MAX_STORE_BYTES` (oldest unreferenced first) and cleans stale temp uploads. `ParseServer.gc()` is available for tests/ops.
+
+### Persistence, logs and health
+
+- Session metadata is written atomically to `<dataDir>/sessions.json`; after a restart, `GET /v1/sessions/:id` and `/units` work from the index and the worker is reopened lazily on the first `/units/:id`, `/fonts/:fontId` or `/text-widths` request. Deleting a session removes its record; expired records are dropped by the TTL sweeper.
+- Every request emits one JSON line (`http_request`) with request id, method, path, status and duration. Errors also emit `request_error`.
+- `GET /metrics` exposes Prometheus counters/histograms: requests/responses, request duration buckets, errors by code, uploads/bytes, sessions/workers, storage bytes, uptime and process memory. It is public like `/v1/health`.
+- `GET /v1/health` now includes `uptimeSec`, `sessions`, `activeWorkers`, `requests`, `errors`, `uploads`, `bytesUploaded`, `sessionsCreated`, `parseTimeouts`, `tooManySessions` and `memory`.
+
+### Stability: one worker per PPTX session
+
+`openPptx` and `buildRenderSlide` run in a `worker_threads` worker, not on the HTTP event loop. Each session owns its worker; a parse that exceeds `PARSE_SERVER_PARSE_TIMEOUT_MS` or `PARSE_SERVER_WORKER_MEMORY_MB` is terminated and the HTTP request fails with `504 parse_timeout` (or `422` for worker crashes) while `/v1/health` keeps serving. `PARSE_SERVER_MAX_SESSIONS` caps concurrent workers and returns `429 too_many_sessions`.
 
 ### Fonts
 

@@ -1,6 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { createReadStream, createWriteStream, type ReadStream } from 'node:fs'
-import { mkdir, open, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises'
+import {
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat as fsStat,
+  unlink,
+  writeFile,
+} from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { Transform, type Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -141,6 +151,51 @@ export class ContentStore {
   async remove(fileId: string): Promise<void> {
     await unlink(this.contentPath(fileId)).catch(() => undefined)
     await unlink(this.metaPath(fileId)).catch(() => undefined)
+  }
+
+  /** All committed files, newest metadata read from disk. */
+  async list(): Promise<StoredFile[]> {
+    let names: string[]
+    try {
+      names = await readdir(this.metaDir)
+    } catch {
+      return []
+    }
+    const files: StoredFile[] = []
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue
+      try {
+        const meta = JSON.parse(await readFile(join(this.metaDir, name), 'utf8')) as StoredFile
+        if (meta.fileId === name.slice(0, -5) && typeof meta.size === 'number') files.push(meta)
+      } catch {
+        /* skip a corrupt meta file */
+      }
+    }
+    return files
+  }
+
+  async totalBytes(): Promise<number> {
+    return (await this.list()).reduce((total, file) => total + file.size, 0)
+  }
+
+  /** Remove stale upload temp files left by aborted or crashed requests. */
+  async cleanupTemp(maxAgeMs: number): Promise<void> {
+    let names: string[]
+    try {
+      names = await readdir(this.tmpDir)
+    } catch {
+      return
+    }
+    const cutoff = Date.now() - maxAgeMs
+    for (const name of names) {
+      const path = join(this.tmpDir, name)
+      try {
+        const info = await fsStat(path)
+        if (info.mtimeMs < cutoff) await unlink(path)
+      } catch {
+        /* raced with another request */
+      }
+    }
   }
 
   private contentPath(sha256: string): string {

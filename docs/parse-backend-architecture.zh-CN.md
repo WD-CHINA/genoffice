@@ -11,8 +11,13 @@
 - 解析位置：Viewer dev server 把 `/v1` 同源代理到 parse-server，因此常用链接只需 `?parse=server&fileId=<fileId>`；auto 模式对 >64MiB 的 PPTX/PDF 走服务端、小文件留本地；DOCX 超过 32MiB 明确报错“大 DOCX 暂不支持”。Viewer 的 1GiB 门槛已覆盖已知扩展名的本地文件（打开前检查 `file.size`）。
 - 字体：会话返回 `ppt/fonts/*.fntdata` 中的嵌入字体列表，`GET /v1/sessions/:id/fonts/:fontId` 返回 sfnt；Viewer 同时加载内置度量字体（Carlito/Caladea/Liberation/Noto）和嵌入字体，再进入字宽回传。极老的字体可能被 Chromium OTS 拒绝，回退到替代字体并输出 warning。
 - 字宽回传：`POST /v1/sessions/:id/text-widths` 接收浏览器实测宽度，服务端清空缓存 render tree、重排已加载页并返回剩余 `measurements`；Viewer 在首屏、懒加载页和放映预加载后都跑同一测量循环。
+- 媒体流式/GC：parts 路由对 stored part 直接切片并支持 Range/HEAD，deflated part 流式解压；`DELETE /files/:id` 对活跃会话返回 409；周期 GC 清理过期未引用内容、执行容量上限并清临时文件。
+- 指标：`GET /metrics` 输出 Prometheus 文本格式（请求/响应计数、duration histogram、errors、uploads/bytes、sessions/workers、storage、uptime、process memory）。
+- 持久化/可观测：会话元数据原子写入 `<dataDir>/sessions.json`，重启后 model/units 可读、worker 懒重建；每个请求一行 JSON 日志；`/v1/health` 暴露 sessions/activeWorkers/requests/errors/uploads/bytes/parseTimeouts/tooManySessions/memory。
+- 稳定性：每个 PPTX 会话一个 `worker_threads` worker，`openPptx`/`buildRenderSlide` 不在 HTTP 事件循环；超时/内存超限直接 terminate，返回 `504 parse_timeout`，`/v1/health` 不受影响；并发会话上限返回 `429`。
 - PPTX 大文件：`slimPptxFile` 用 `@genoffice/zip-reader` 只把非媒体 part 复制成 stored-only zip 给解析器，`ppt/media/*` 留在磁盘、由 `GET /v1/files/:id/parts/:partPath` 按需返回；`maxParseBytes` 限制的是 slim 后的 XML 总量。实测 256MiB 媒体 deck 建会话 ~22ms、RSS +0.5MiB。
 - Viewer 远程模式（MVP）：文件栏 `解析位置：自动 / 本地 / 服务端`（配置 `?server=` 时默认 auto）；`?server=http://…&parse=server` 上传 PPTX 后由服务端建会话，`Slides` 通过 `createRemotePptxSession` 懒加载：`open` 只取 model + 第一页，翻页/可见缩略图按需 `loadUnit`，放映前再补齐剩余页；PDF 直接把 `GET /v1/files/:id/content` 交给 PDF.js（服务端已支持 Range/ETag/HEAD）；Viewer 构建通过（13 项既有测试）。
+- 压力冒烟：`npm run stress -w @genoffice/parse-server -- --url ... --size 1G --sessions 6`；1GiB 媒体由 slide 1 引用，实测 6 并发会话全部 201、媒体 HEAD 200/Range 206、parts 请求前后 RSS 364MB→364MB、超时注入 504 后 health 仍 200。
 - 1GB 上传冒烟：本机 loopback，867MB/s，服务端峰值 RSS ≈103MB（`apps/parse-server/scripts/upload-smoke.mjs`），证明上传路径不整份缓冲。
 
 未实现/已知限制：PPTX 媒体中 stored part 已支持 Range，deflated part 仍整段返回；首帧仍用启发式度量直到浏览器宽度返回、放映会先补齐所有页；token 模式已改为 HMAC 签名 URL（`exp`/`sig`），`<img>`/PDF.js 无需 Authorization；服务器化（租户/存储驱动/可观测性）未做。

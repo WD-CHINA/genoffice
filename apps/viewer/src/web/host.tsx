@@ -260,6 +260,16 @@ function Host() {
         <span className="viewer-file-name" title={opened?.name || undefined}>
           {opened?.name || 'PPT · PDF · Word'}
         </span>
+        <a
+          className="viewer-button"
+          href={`${import.meta.env.BASE_URL}upload.html`}
+          target="_blank"
+          rel="noreferrer"
+          title="上传文件到解析服务"
+        >
+          <ToolbarIcon name="link" />
+          上传到服务端
+        </a>
         <label className="viewer-button viewer-parse-mode" hidden={!serverUrl} title="解析位置">
           解析位置
           <select

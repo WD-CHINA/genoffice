@@ -1,3 +1,14 @@
 packages:
   - apps/*
   - packages/*
+# pnpm 10+ reads workspace settings from this file. The repo's packages use
+# "*" dependencies, so local workspace packages must be linked instead of
+# resolved from the npm registry.
+linkWorkspacePackages: true
+preferWorkspacePackages: true
+# Allow the few packages whose install scripts are required (Electron binary,
+# esbuild native binary, protobufjs postinstall, electron-winstaller).
+allowBuilds:
+  electron-winstaller: true
+  esbuild: true
+  protobufjs: true

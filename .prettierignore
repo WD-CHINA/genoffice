@@ -8,6 +8,7 @@ coverage/
 
 # Generated artifacts and dependency-managed metadata.
 package-lock.json
+pnpm-lock.yaml
 apps/*/build/
 apps/shell/build/THIRD-PARTY-NOTICES.txt
 packages/font-metrics/word-faces.json

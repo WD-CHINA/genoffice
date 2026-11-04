@@ -92,6 +92,7 @@ export default defineConfig({
       input: {
         host: resolve(app, 'src/web/index.html'),
         preview: resolve(app, 'src/web/preview.html'),
+        upload: resolve(app, 'src/web/upload.html'),
       },
     },
   },

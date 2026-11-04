@@ -1,14 +1,28 @@
 import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { CONTRACT_VERSION, type Capabilities, type DocFormat } from '@genoffice/parse-contract'
+import {
+  CONTRACT_VERSION,
+  type Capabilities,
+  type DocFormat,
+  type DocModel,
+} from '@genoffice/parse-contract'
 import { detectFormat } from './detect'
 import { resolveLimits, type ServerLimits } from './limits'
-import { readFilePart } from './parts'
+import { openFilePart } from './parts'
 import { parseRange } from './range'
 import { signResource, verifyResource } from './sign'
 import { PptxSession } from './pptx'
 import { ParseLimitError } from './pptx-slim'
+import { SessionStore, type SessionRecord } from './session-store'
+import {
+  createMetrics,
+  logEvent,
+  recordError,
+  recordRequest,
+  renderPrometheus,
+  type ServerMetrics,
+} from './telemetry'
 import { ContentStore, UploadTooLargeError, type StoredFile } from './storage'
 
 export interface ParseServerOptions {
@@ -28,25 +42,55 @@ export interface ParseServerOptions {
   sessionTtlMs?: number
   /** Absolute origin used in media part URLs; derived from the request when unset. */
   publicBaseUrl?: string
+  /** Wall-clock budget for opening a deck (slim archive + parse). */
+  parseTimeoutMs?: number
+  /** Wall-clock budget for one slide/font/measurement call. */
+  unitTimeoutMs?: number
+  /** V8 old-generation cap for the per-session parse worker. */
+  workerMemoryMb?: number
+  /** Concurrent PPTX sessions; further requests get 429. */
+  maxSessions?: number
+  /** Delete unreferenced content older than this. */
+  contentTtlMs?: number
+  /** Soft cap for the content store; new uploads over it get 507. */
+  maxStoreBytes?: number
+  /** How often to sweep unreferenced content/temp files. */
+  gcIntervalMs?: number
 }
 
 export interface ParseServer {
   url: string
   port: number
   store: ContentStore
+  /** Run the content GC immediately (tests/ops). */
+  gc(): Promise<void>
   close(): Promise<void>
+}
+
+interface SessionEntry {
+  record: SessionRecord
+  session?: PptxSession
 }
 
 interface Context {
   store: ContentStore
+  sessionStore: SessionStore
+  metrics: ServerMetrics
   limits: ServerLimits
   parserVersion: string
   fontSetHash: string
   token?: string
   allowedOrigins: string[]
-  sessions: Map<string, PptxSession>
+  sessions: Map<string, SessionEntry>
   sessionTtlMs: number
   publicBaseUrl?: string
+  parseTimeoutMs: number
+  unitTimeoutMs: number
+  workerMemoryMb: number
+  maxSessions: number
+  contentTtlMs: number
+  maxStoreBytes: number
+  gcIntervalMs: number
 }
 
 const CONTENT_TYPES: Record<DocFormat, string> = {
@@ -161,6 +205,83 @@ function capabilitiesOf(ctx: Context): Capabilities {
   }
 }
 
+function sessionUnits(
+  model: DocModel,
+  cursor?: string,
+  limit = 100,
+): { items: Array<{ id: string; kind: 'slide'; index: number; anchor: string }>; next?: string } {
+  const total = model.unitCount ?? 0
+  const start = cursor ? Number.parseInt(cursor, 10) : 0
+  if (!Number.isInteger(start) || start < 0 || start > total) {
+    throw new HttpError(400, 'invalid_request', 'invalid unit cursor')
+  }
+  const end = Math.min(total, start + Math.max(1, Math.min(limit, 500)))
+  const items = []
+  for (let index = start; index < end; index++) {
+    items.push({ id: String(index), kind: 'slide' as const, index, anchor: String(index) })
+  }
+  return { items, ...(end < total ? { next: String(end) } : {}) }
+}
+
+function touchEntry(entry: SessionEntry, ctx: Context): void {
+  entry.record.lastUsed = Date.now()
+  void ctx.sessionStore.set(entry.record)
+}
+
+function parseFailure(error: unknown): HttpError {
+  const code = (error as { code?: string })?.code
+  if (error instanceof ParseLimitError || code === 'parse_limit') {
+    return new HttpError(
+      413,
+      'file_too_large_for_parse',
+      error instanceof Error ? error.message : 'slim presentation is too large',
+    )
+  }
+  if (code === 'parse_timeout') {
+    return new HttpError(504, 'parse_timeout', 'pptx parse timed out')
+  }
+  return new HttpError(
+    422,
+    'parse_failed',
+    error instanceof Error ? error.message : 'pptx parse failed',
+  )
+}
+
+async function ensureSession(
+  entry: SessionEntry,
+  req: IncomingMessage,
+  ctx: Context,
+): Promise<PptxSession> {
+  if (entry.session) return entry.session
+  const path = await ctx.store.pathOf(entry.record.fileId)
+  if (!path) throw new HttpError(404, 'not_found', 'file content is missing')
+  const baseUrl = baseUrlOf(req, ctx)
+  try {
+    entry.session = await PptxSession.open({
+      id: entry.record.id,
+      fileId: entry.record.fileId,
+      path,
+      width: entry.record.width,
+      parserVersion: entry.record.parserVersion,
+      baseUrl,
+      limits: ctx.limits,
+      mediaSecret: ctx.token,
+      parseTimeoutMs: ctx.parseTimeoutMs,
+      unitTimeoutMs: ctx.unitTimeoutMs,
+      workerMemoryMb: ctx.workerMemoryMb,
+      onDead: () => {
+        ctx.sessions.delete(entry.record.id)
+        void ctx.sessionStore.remove(entry.record.id)
+      },
+    })
+  } catch (error) {
+    throw parseFailure(error)
+  }
+  entry.record.baseUrl = baseUrl
+  touchEntry(entry, ctx)
+  return entry.session
+}
+
 async function handleCreateSession(
   req: IncomingMessage,
   res: ServerResponse,
@@ -180,7 +301,11 @@ async function handleCreateSession(
   }
   const path = await ctx.store.pathOf(fileId)
   if (!path) throw new HttpError(404, 'not_found', 'file content is missing')
+  if (ctx.sessions.size >= ctx.maxSessions) {
+    throw new HttpError(429, 'too_many_sessions', 'too many concurrent parse sessions')
+  }
   const sessionId = randomUUID()
+  const baseUrl = baseUrlOf(req, ctx)
   let session: PptxSession
   try {
     session = await PptxSession.open({
@@ -189,21 +314,34 @@ async function handleCreateSession(
       path,
       width,
       parserVersion: ctx.parserVersion,
-      baseUrl: baseUrlOf(req, ctx),
+      baseUrl,
       limits: ctx.limits,
       mediaSecret: ctx.token,
+      parseTimeoutMs: ctx.parseTimeoutMs,
+      unitTimeoutMs: ctx.unitTimeoutMs,
+      workerMemoryMb: ctx.workerMemoryMb,
+      onDead: () => {
+        ctx.sessions.delete(sessionId)
+        void ctx.sessionStore.remove(sessionId)
+      },
     })
   } catch (error) {
-    if (error instanceof ParseLimitError) {
-      throw new HttpError(413, 'file_too_large_for_parse', error.message)
-    }
-    throw new HttpError(
-      422,
-      'parse_failed',
-      error instanceof Error ? error.message : 'pptx parse failed',
-    )
+    throw parseFailure(error)
   }
-  ctx.sessions.set(sessionId, session)
+  ctx.metrics.sessionsCreated++
+  const record: SessionRecord = {
+    id: sessionId,
+    fileId,
+    width,
+    parserVersion: ctx.parserVersion,
+    baseUrl,
+    model: session.model,
+    fonts: session.fonts,
+    createdAt: Date.now(),
+    lastUsed: Date.now(),
+  }
+  ctx.sessions.set(sessionId, { record, session })
+  await ctx.sessionStore.set(record)
   sendJson(res, 201, { sessionId, state: 'ready', model: session.model, fonts: session.fonts })
 }
 
@@ -215,27 +353,40 @@ async function handleSession(
   sessionId: string,
   requestId: string,
 ): Promise<void> {
-  const session = ctx.sessions.get(sessionId)
-  if (!session) {
+  const entry = ctx.sessions.get(sessionId)
+  if (!entry) {
     sendError(res, 404, 'not_found', 'unknown session', false, requestId)
     return
   }
   const segments = url.pathname.split('/').filter(Boolean)
   const rest = segments.slice(3)
   if (req.method === 'DELETE' && rest.length === 0) {
-    session.close()
+    entry.session?.close()
     ctx.sessions.delete(sessionId)
+    await ctx.sessionStore.remove(sessionId)
     res.writeHead(204)
     res.end()
     return
   }
   if (req.method === 'GET' && rest.length === 0) {
-    session.touch()
-    sendJson(res, 200, { state: 'ready', model: session.model })
+    touchEntry(entry, ctx)
+    sendJson(res, 200, { state: 'ready', model: entry.record.model })
+    return
+  }
+  if (req.method === 'GET' && rest.length === 1 && rest[0] === 'units') {
+    touchEntry(entry, ctx)
+    const rawLimit = Number(url.searchParams.get('limit') ?? 100)
+    const limit = Number.isFinite(rawLimit) ? rawLimit : 100
+    sendJson(
+      res,
+      200,
+      sessionUnits(entry.record.model, url.searchParams.get('cursor') ?? undefined, limit),
+    )
     return
   }
   if (req.method === 'GET' && rest.length === 2 && rest[0] === 'fonts') {
-    const bytes = session.fontBytes(decodeURIComponent(rest[1]))
+    const session = await ensureSession(entry, req, ctx)
+    const bytes = await session.fontBytes(decodeURIComponent(rest[1]))
     if (!bytes) {
       sendError(res, 404, 'not_found', 'unknown font', false, requestId)
       return
@@ -260,22 +411,21 @@ async function handleSession(
       if (typeof item.width !== 'number' || !Number.isFinite(item.width) || item.width < 0) continue
       widths[item.key] = item.width
     }
-    session.acceptWidths(widths)
-    sendJson(res, 200, { measurements: session.pendingMeasurements() })
-    return
-  }
-  if (req.method === 'GET' && rest.length === 1 && rest[0] === 'units') {
-    session.touch()
-    const rawLimit = Number(url.searchParams.get('limit') ?? 100)
-    const limit = Number.isFinite(rawLimit) ? rawLimit : 100
-    sendJson(res, 200, session.units(url.searchParams.get('cursor') ?? undefined, limit))
+    const session = await ensureSession(entry, req, ctx)
+    const measurements = await session.acceptWidths(widths)
+    sendJson(res, 200, { measurements })
     return
   }
   if (req.method === 'GET' && rest.length === 2 && rest[0] === 'units') {
-    session.touch()
     try {
-      sendJson(res, 200, session.unit(decodeURIComponent(rest[1])))
+      const session = await ensureSession(entry, req, ctx)
+      sendJson(res, 200, await session.unit(decodeURIComponent(rest[1])))
     } catch (error) {
+      if (error instanceof HttpError) throw error
+      const code = (error as { code?: string })?.code
+      if (code === 'parse_timeout') {
+        throw new HttpError(504, 'parse_timeout', 'slide render timed out')
+      }
       throw new HttpError(
         404,
         'not_found',
@@ -285,6 +435,33 @@ async function handleSession(
     return
   }
   sendError(res, 404, 'not_found', 'unknown route', false, requestId)
+}
+
+async function runGc(ctx: Context, keepFileId?: string): Promise<void> {
+  const referenced = new Set([...ctx.sessions.values()].map((entry) => entry.record.fileId))
+  const files = await ctx.store.list()
+  const now = Date.now()
+  const candidates = files
+    .filter((file) => !referenced.has(file.fileId) && file.fileId !== keepFileId)
+    .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+  for (const file of candidates) {
+    if (now - Date.parse(file.createdAt) <= ctx.contentTtlMs) continue
+    await ctx.store.remove(file.fileId)
+  }
+  if (ctx.maxStoreBytes > 0) {
+    let total = await ctx.store.totalBytes()
+    for (const file of candidates) {
+      if (total <= ctx.maxStoreBytes) break
+      if (!(await ctx.store.stat(file.fileId))) continue
+      await ctx.store.remove(file.fileId)
+      total -= file.size
+    }
+  }
+  await ctx.store.cleanupTemp(60 * 60_000)
+}
+
+function fileInUse(ctx: Context, fileId: string): boolean {
+  return [...ctx.sessions.values()].some((entry) => entry.record.fileId === fileId)
 }
 
 async function handleUpload(
@@ -331,6 +508,13 @@ async function handleUpload(
     return
   }
   const stored = await ctx.store.commit(upload, detected)
+  ctx.metrics.uploads++
+  ctx.metrics.bytesUploaded += stored.size
+  await runGc(ctx, stored.fileId)
+  if (ctx.maxStoreBytes > 0 && (await ctx.store.totalBytes()) > ctx.maxStoreBytes) {
+    await ctx.store.remove(stored.fileId)
+    throw new HttpError(507, 'storage_full', 'content store is over its configured quota')
+  }
   sendJson(res, 201, stored)
 }
 
@@ -387,10 +571,26 @@ async function route(
     return
   }
   const url = new URL(req.url ?? '/', 'http://localhost')
+  const startedAt = Date.now()
+  res.on('finish', () => {
+    recordRequest(ctx.metrics, req.method ?? 'GET', res.statusCode, Date.now() - startedAt)
+    logEvent(
+      res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info',
+      'http_request',
+      {
+        requestId,
+        method: req.method,
+        path: url.pathname,
+        status: res.statusCode,
+        ms: Date.now() - startedAt,
+      },
+    )
+  })
   const segments = url.pathname.split('/').filter(Boolean)
   const isPublic =
     (req.method === 'GET' && url.pathname === '/v1/health') ||
-    (req.method === 'GET' && url.pathname === '/v1/capabilities')
+    (req.method === 'GET' && url.pathname === '/v1/capabilities') ||
+    (req.method === 'GET' && url.pathname === '/metrics')
   if (!isPublic && ctx.token) {
     // <img>/<video>/PDF.js cannot send Authorization: content and part URLs
     // carry an HMAC signature instead of the bearer token.
@@ -421,8 +621,41 @@ async function route(
     }
   }
 
+  if (req.method === 'GET' && url.pathname === '/metrics') {
+    const memory = process.memoryUsage()
+    const body = renderPrometheus({
+      metrics: ctx.metrics,
+      sessions: ctx.sessions.size,
+      workers: [...ctx.sessions.values()].filter((entry) => entry.session).length,
+      storageBytes: await ctx.store.totalBytes(),
+      memory: { rss: memory.rss, heapUsed: memory.heapUsed },
+      parserVersion: ctx.parserVersion,
+    })
+    res.writeHead(200, {
+      'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+      'Content-Length': Buffer.byteLength(body),
+    })
+    res.end(body)
+    return
+  }
   if (req.method === 'GET' && url.pathname === '/v1/health') {
-    sendJson(res, 200, { ok: true, parserVersion: ctx.parserVersion })
+    const memory = process.memoryUsage()
+    sendJson(res, 200, {
+      ok: true,
+      parserVersion: ctx.parserVersion,
+      uptimeSec: Math.floor((Date.now() - ctx.metrics.startedAt) / 1000),
+      sessions: ctx.sessions.size,
+      activeWorkers: [...ctx.sessions.values()].filter((entry) => entry.session).length,
+      requests: ctx.metrics.requests,
+      errors: ctx.metrics.errors,
+      uploads: ctx.metrics.uploads,
+      bytesUploaded: ctx.metrics.bytesUploaded,
+      sessionsCreated: ctx.metrics.sessionsCreated,
+      parseTimeouts: ctx.metrics.parseTimeouts,
+      tooManySessions: ctx.metrics.tooManySessions,
+      storageBytes: await ctx.store.totalBytes(),
+      memory: { rss: memory.rss, heapUsed: memory.heapUsed },
+    })
     return
   }
   if (req.method === 'GET' && url.pathname === '/v1/capabilities') {
@@ -488,7 +721,7 @@ async function route(
       sendError(res, 404, 'not_found', 'file content is missing', false, requestId)
       return
     }
-    const part = await readFilePart(path, partPath, ctx.limits, req.headers.range)
+    const part = await openFilePart(path, partPath, ctx.limits, req.headers.range)
     if (!part) {
       sendError(res, 404, 'not_found', 'unknown part', false, requestId)
       return
@@ -505,12 +738,18 @@ async function route(
     if (part.ranged && part.range) {
       res.writeHead(206, {
         'Content-Range': `bytes ${part.range.start}-${part.range.end}/${part.size}`,
-        'Content-Length': String(part.bytes.length),
+        'Content-Length': String(part.contentLength),
       })
     } else {
-      res.writeHead(200, { 'Content-Length': String(part.bytes.length) })
+      res.writeHead(200, { 'Content-Length': String(part.contentLength) })
     }
-    res.end(req.method === 'HEAD' ? undefined : part.bytes)
+    if (req.method === 'HEAD') {
+      part.stream.destroy()
+      res.end()
+      return
+    }
+    part.stream.on('error', () => res.destroy())
+    part.stream.pipe(res)
     return
   }
   if (
@@ -522,6 +761,17 @@ async function route(
     return
   }
   if (segments.length === 3 && req.method === 'DELETE') {
+    if (fileInUse(ctx, fileId)) {
+      sendError(
+        res,
+        409,
+        'file_in_use',
+        'file is referenced by an active session',
+        false,
+        requestId,
+      )
+      return
+    }
     await ctx.store.remove(fileId)
     res.writeHead(204)
     res.end()
@@ -533,21 +783,43 @@ async function route(
 export async function createParseServer(options: ParseServerOptions): Promise<ParseServer> {
   const store = new ContentStore(options.dataDir)
   await store.init()
+  const sessionTtlMs = options.sessionTtlMs ?? 15 * 60_000
+  const sessionStore = new SessionStore(options.dataDir)
+  await sessionStore.init(sessionTtlMs)
   const ctx: Context = {
     store,
+    sessionStore,
+    metrics: createMetrics(),
     limits: resolveLimits(options.limits),
     parserVersion: options.parserVersion ?? '0.1.0',
     fontSetHash: options.fontSetHash ?? 'server-default',
     token: options.token,
     allowedOrigins: options.allowedOrigins ?? [],
     sessions: new Map(),
-    sessionTtlMs: options.sessionTtlMs ?? 15 * 60_000,
+    sessionTtlMs,
     publicBaseUrl: options.publicBaseUrl,
+    parseTimeoutMs: options.parseTimeoutMs ?? 60_000,
+    unitTimeoutMs: options.unitTimeoutMs ?? 30_000,
+    workerMemoryMb: options.workerMemoryMb ?? 512,
+    maxSessions: options.maxSessions ?? 8,
+    contentTtlMs: options.contentTtlMs ?? 7 * 24 * 60 * 60_000,
+    maxStoreBytes: options.maxStoreBytes ?? 20 * 1024 ** 3,
+    gcIntervalMs: options.gcIntervalMs ?? 10 * 60_000,
   }
+  for (const record of sessionStore.values()) ctx.sessions.set(record.id, { record })
   const server: Server = createServer((req, res) => {
     const requestId = requestIdOf(req)
     route(req, res, ctx, requestId).catch((error: unknown) => {
       if (error instanceof HttpError) {
+        if (error.code === 'parse_timeout') ctx.metrics.parseTimeouts++
+        if (error.code === 'too_many_sessions') ctx.metrics.tooManySessions++
+        recordError(ctx.metrics, error.code)
+        logEvent(error.status >= 500 ? 'error' : 'warn', 'request_error', {
+          requestId,
+          code: error.code,
+          status: error.status,
+          message: error.message,
+        })
         sendError(res, error.status, error.code, error.message, false, requestId)
         return
       }
@@ -566,27 +838,39 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
   })
   const sweeper = setInterval(() => {
     const now = Date.now()
-    for (const [id, session] of ctx.sessions) {
-      if (now - session.idleSince() <= ctx.sessionTtlMs) continue
-      session.close()
+    for (const [id, entry] of ctx.sessions) {
+      if (now - entry.record.lastUsed <= ctx.sessionTtlMs) continue
+      entry.session?.close()
       ctx.sessions.delete(id)
+      void ctx.sessionStore.remove(id)
     }
   }, 60_000)
   sweeper.unref?.()
+  const gcTimer = setInterval(() => {
+    void runGc(ctx).catch((error: unknown) =>
+      logEvent('warn', 'gc_failed', {
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    )
+  }, ctx.gcIntervalMs)
+  gcTimer.unref?.()
   const address = server.address() as AddressInfo
   const close = async (): Promise<void> => {
     clearInterval(sweeper)
-    for (const session of ctx.sessions.values()) session.close()
+    clearInterval(gcTimer)
+    for (const entry of ctx.sessions.values()) entry.session?.close()
     ctx.sessions.clear()
     server.closeAllConnections?.()
     await new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()))
     })
+    await ctx.sessionStore.flush()
   }
   return {
     url: `http://127.0.0.1:${address.port}`,
     port: address.port,
     store,
+    gc: () => runGc(ctx),
     close,
   }
 }

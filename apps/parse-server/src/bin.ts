@@ -19,6 +19,13 @@ const server = await createParseServer({
   limits: {
     maxUploadBytes: Number(process.env.PARSE_SERVER_MAX_UPLOAD_BYTES) || undefined,
   },
+  parseTimeoutMs: Number(process.env.PARSE_SERVER_PARSE_TIMEOUT_MS) || undefined,
+  unitTimeoutMs: Number(process.env.PARSE_SERVER_UNIT_TIMEOUT_MS) || undefined,
+  workerMemoryMb: Number(process.env.PARSE_SERVER_WORKER_MEMORY_MB) || undefined,
+  maxSessions: Number(process.env.PARSE_SERVER_MAX_SESSIONS) || undefined,
+  contentTtlMs: Number(process.env.PARSE_SERVER_CONTENT_TTL_MS) || undefined,
+  maxStoreBytes: Number(process.env.PARSE_SERVER_MAX_STORE_BYTES) || undefined,
+  gcIntervalMs: Number(process.env.PARSE_SERVER_GC_INTERVAL_MS) || undefined,
 })
 
 console.log(`[parse-server] listening on ${server.url} (data: ${dataDir})`)

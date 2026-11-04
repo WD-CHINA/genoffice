@@ -10,19 +10,20 @@
     "start": "node --import tsx src/bin.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "stress": "node --import tsx scripts/stress-smoke.mts"
   },
   "dependencies": {
     "@genoffice/parse-contract": "*",
     "@genoffice/zip-gate": "*",
     "@genoffice/zip-reader": "*",
     "@genoffice/pptx-engine": "*",
-    "@genoffice/pptx-render": "*"
+    "@genoffice/pptx-render": "*",
+    "tsx": "^4.21.0"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",
     "jszip": "^3.10.1",
-    "tsx": "^4.21.0",
     "typescript": "^5.9.3",
     "vitest": "^4.1.12"
   }

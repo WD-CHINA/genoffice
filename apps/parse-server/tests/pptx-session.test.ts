@@ -232,3 +232,85 @@ describe('pptx media auth', () => {
     expect((await fetch(url.replace(/\?.*$/, ''))).status).toBe(401)
   })
 })
+
+describe('pptx worker isolation', () => {
+  it('caps concurrent sessions', async () => {
+    const { server } = await start({ maxSessions: 1 })
+    const file = await upload(server.url, Buffer.from(await createBlankPptx()))
+    const first = await openSession(server.url, file.fileId)
+    expect(first.status).toBe(201)
+    const second = await openSession(server.url, file.fileId)
+    expect(second.status).toBe(429)
+    expect(((await second.json()) as { code: string }).code).toBe('too_many_sessions')
+    const opened = (await first.json()) as { sessionId: string }
+    expect(
+      (await fetch(`${server.url}/v1/sessions/${opened.sessionId}`, { method: 'DELETE' })).status,
+    ).toBe(204)
+  })
+
+  it('kills a timed-out parse and keeps the server healthy', async () => {
+    const { server } = await start({ parseTimeoutMs: 1 })
+    const file = await upload(server.url, Buffer.from(await createBlankPptx()))
+    const opened = await openSession(server.url, file.fileId)
+    expect(opened.status).toBe(504)
+    expect(((await opened.json()) as { code: string }).code).toBe('parse_timeout')
+    expect((await fetch(`${server.url}/v1/health`)).status).toBe(200)
+  })
+})
+
+describe('pptx session persistence', () => {
+  it('restores session metadata and lazily reopens the worker after restart', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'parse-server-restart-'))
+    const first = await createParseServer({ dataDir: dir })
+    try {
+      const file = await upload(first.url, Buffer.from(await createBlankPptx()))
+      const opened = (await (await openSession(first.url, file.fileId)).json()) as {
+        sessionId: string
+      }
+      await first.close()
+
+      const second = await createParseServer({ dataDir: dir })
+      try {
+        const state = await fetch(`${second.url}/v1/sessions/${opened.sessionId}`)
+        expect(state.status).toBe(200)
+        const body = (await state.json()) as { model: { unitCount: number } }
+        expect(body.model.unitCount).toBe(1)
+
+        const units = await fetch(`${second.url}/v1/sessions/${opened.sessionId}/units`)
+        expect(units.status).toBe(200)
+
+        const unit = await fetch(`${second.url}/v1/sessions/${opened.sessionId}/units/0`)
+        expect(unit.status).toBe(200)
+        const payload = (await unit.json()) as { slide: { widthPx: number } }
+        expect(payload.slide.widthPx).toBeGreaterThan(0)
+      } finally {
+        await second.close()
+      }
+    } finally {
+      await first.close().catch(() => undefined)
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('content GC protection', () => {
+  it('keeps content referenced by a session and refuses to delete it', async () => {
+    const { server } = await start({ contentTtlMs: 1, gcIntervalMs: 60_000 })
+    const file = await upload(server.url, Buffer.from(await createBlankPptx()))
+    const opened = (await (await openSession(server.url, file.fileId)).json()) as {
+      sessionId: string
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await server.gc()
+    expect((await fetch(`${server.url}/v1/files/${file.fileId}`)).status).toBe(200)
+    expect(
+      (await fetch(`${server.url}/v1/files/${file.fileId}`, { method: 'DELETE' })).status,
+    ).toBe(409)
+    expect(
+      (await fetch(`${server.url}/v1/sessions/${opened.sessionId}`, { method: 'DELETE' })).status,
+    ).toBe(204)
+    expect(
+      (await fetch(`${server.url}/v1/files/${file.fileId}`, { method: 'DELETE' })).status,
+    ).toBe(204)
+  })
+})

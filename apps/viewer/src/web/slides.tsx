@@ -529,11 +529,12 @@ export function Slides({
       )
       for (const item of unit.measurements || []) measurements.set(item.key, item)
       const next = { ...old, slides, playback, measurements: [...measurements.values()] }
-      setDeck(next)
-      if (next.measurements.length) {
-        const settled = await measureWidths(next, session as any, () => false)
-        setDeck(settled)
-      }
+      // Measure before replacing the placeholder so the first visible frame of a
+      // lazily loaded slide is already laid out with browser widths.
+      const settled = next.measurements.length
+        ? await measureWidths(next, session as any, () => false)
+        : next
+      setDeck(settled)
     } catch (error) {
       setError(error instanceof Error ? error.message : String(error))
     } finally {
@@ -608,41 +609,10 @@ export function Slides({
     }
   }
   const start = async () => {
-    const session = pptx.current as
-      (typeof pptx.current & { loadUnit?: (i: number) => Promise<any> }) | null
-    if (session?.loadUnit && deck) {
-      const missing = deck.slides
-        .map((slide: any, index: number) => (slide?.placeholder ? index : -1))
-        .filter((index: number) => index >= 0)
-      if (missing.length) {
-        try {
-          const loaded = await Promise.all(missing.map((index: number) => session.loadUnit!(index)))
-          missing.forEach((index: number, order: number) => indexSlide(index, loaded[order].slide))
-          const old = deckRef.current
-          if (old) {
-            const slides = old.slides.slice()
-            const playback = old.playback.slice()
-            const measurements = new Map<string, any>(
-              (old.measurements || []).map((item: any) => [item.key, item]),
-            )
-            missing.forEach((index: number, order: number) => {
-              slides[index] = loaded[order].slide
-              playback[index] = loaded[order].playback
-              for (const item of loaded[order].measurements || []) measurements.set(item.key, item)
-            })
-            const next = { ...old, slides, playback, measurements: [...measurements.values()] }
-            setDeck(next)
-            if (next.measurements.length) {
-              const settled = await measureWidths(next, session as any, () => false)
-              setDeck(settled)
-            }
-          }
-        } catch (error) {
-          setError(error instanceof Error ? error.message : String(error))
-          return
-        }
-      }
-    }
+    // Do not preload the whole deck: current + next is enough to enter the show,
+    // and ViewerSlideShow asks for each page as it is reached.
+    await loadSlideRef.current(page)
+    await loadSlideRef.current(page + 1)
     void document.documentElement.requestFullscreen?.().catch(() => {})
     setShow(true)
   }
@@ -776,6 +746,10 @@ export function Slides({
               dataSource={source}
               images={images}
               startAt={page}
+              onPage={(index) => {
+                void loadSlideRef.current(index)
+                void loadSlideRef.current(index + 1)
+              }}
               onExit={(last) => {
                 setPage(last)
                 setShow(false)

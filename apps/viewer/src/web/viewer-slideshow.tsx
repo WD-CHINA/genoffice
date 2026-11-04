@@ -4,7 +4,10 @@ import { computePlayOrder } from '@genoffice/viewer-renderers/slides/renderer/sl
 import { ControlButton, PageControl } from './viewer-controls'
 import { ViewerBar } from './viewer-bar'
 
-type Props = React.ComponentProps<typeof SlideShowView>
+type Props = React.ComponentProps<typeof SlideShowView> & {
+  /** Called when the player moves to another deck page (used for lazy slide loading). */
+  onPage?: (index: number) => void
+}
 
 // Feed the original player's keyboard interface so animation stepping and hidden pages
 // follow the same rules as keyboard, links and the existing presentation menu.
@@ -13,6 +16,7 @@ function command(key: string) {
 }
 
 export function ViewerSlideShow(props: Props) {
+  const { onPage, startAt } = props
   const host = useRef<HTMLDivElement>(null)
   const order = useMemo(
     () => computePlayOrder(props.slides, props.startAt, props.customOrder),
@@ -57,6 +61,9 @@ export function ViewerSlideShow(props: Props) {
     }
   }, [])
   useEffect(() => {
+    onPage?.(order[position] ?? startAt)
+  }, [position, order, onPage, startAt])
+  useEffect(() => {
     const original = host.current?.querySelector('.slideshow')
     if (!original) return
     // The original player publishes its play-order position in this counter. Observe
@@ -88,9 +95,10 @@ export function ViewerSlideShow(props: Props) {
     for (const digit of '0000' + number) command(digit)
     command('Enter')
   }
+  const { onPage: _onPage, ...slideShowProps } = props
   return (
     <div className="viewer-show-host" ref={host}>
-      <SlideShowView {...props} />
+      <SlideShowView {...slideShowProps} />
       <ViewerBar floating className="viewer-show-controls" label="放映控制栏" hidden={blocked}>
         <span className="viewer-show-status">
           <i />

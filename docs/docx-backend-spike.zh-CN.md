@@ -586,6 +586,31 @@ GC：
 - gzip 是同步写入，worker 打开时 2500 个文件会有写放大
 - hash 只防损坏，不做去重/内容寻址
 
+### 2.22 Gate A.12：DOCX 图片懒加载
+
+新增 fixture：`apps/viewer/src/web/public/docx-spike-image.docx`（正文图片）。
+
+服务端：
+
+- worker 解析后检查 `imageDataUrl` 为 data URL 的 block
+- 从 `word/_rels/document.xml.rels` 找 `r:embed` 对应 part
+- 把 `imageDataUrl` 重写为：
+  `http://<host>/v1/files/<fileId>/parts/word/media/<name>`
+- chunk JSON 不再包含图片 base64
+- 复用现有 parts 路由（Range/ETag）
+
+浏览器实测：
+
+- 远程 DOCX 图片 `naturalWidth=260 / naturalHeight=67`
+- 图片请求来自 `/v1/files/.../parts/word/media/image1.png`
+- 返回 `200 image/png`
+
+限制：
+
+- 只重写正文 image block；表格内图片/浮动对象后续
+- 字体接口尚未实现，`DocxSession.fonts` 仍为空
+- 没有缩略图/预加载策略
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -612,6 +637,7 @@ GC：
 - **Gate A.9 已通过流式 metadata**：300k/500k blocks（~60MB/100MB XML）可解析，RSS ~284/324MB
 - **Gate A.10 已通过 chunk 持久化**：500k blocks 写 2500 个 chunk，重启从磁盘恢复，不重新解析
 - **Gate A.11 已通过 chunk 压缩/hash**：`.json.gz` + manifest chunkHashes，读取校验
+- **Gate A.12 已通过图片懒加载**：正文图片改写为 parts URL，浏览器按需加载；字体仍未实现
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

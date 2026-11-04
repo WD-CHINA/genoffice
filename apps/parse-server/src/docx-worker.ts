@@ -1,4 +1,5 @@
 import { readFile, stat } from 'node:fs/promises'
+import JSZip from 'jszip'
 import { parentPort } from 'node:worker_threads'
 import { createDocxBlockParser } from '@genoffice/docx-engine'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
@@ -14,6 +15,7 @@ interface OpenInput {
   path: string
   parserVersion: string
   limits: ServerLimits
+  baseUrl: string
   /** Directory for persisted chunk JSON files. */
   chunksDir: string
 }
@@ -32,6 +34,36 @@ let chunkHashes: string[] = []
 let persisted = false
 let chunksDir = ''
 let lastUsed = Date.now()
+
+async function rewriteImages(
+  blocks: any[],
+  bytes: Uint8Array,
+  baseUrl: string,
+  fileId: string,
+): Promise<void> {
+  const imageBlocks = blocks.filter(
+    (block) =>
+      typeof block.imageDataUrl === 'string' && block.imageDataUrl.startsWith('data:image/'),
+  )
+  if (!imageBlocks.length) return
+  const zip = await JSZip.loadAsync(bytes)
+  const relsFile = zip.file('word/_rels/document.xml.rels')
+  if (!relsFile) return
+  const rels = new Map<string, string>()
+  for (const match of (await relsFile.async('string')).matchAll(
+    /<Relationship\b[^>]*\bId="([^"]+)"[^>]*\bTarget="([^"]+)"/g,
+  )) {
+    rels.set(match[1], match[2])
+  }
+  for (const block of imageBlocks) {
+    const embed = /r:embed="([^"]+)"/.exec(block.originalXml || '')?.[1]
+    if (!embed) continue
+    const target = rels.get(embed)
+    if (!target || /^https?:/i.test(target)) continue
+    const partPath = target.startsWith('/') ? target.slice(1) : `word/${target}`
+    block.imageDataUrl = `${baseUrl.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(fileId)}/parts/${encodeURI(partPath)}`
+  }
+}
 
 async function open(input: OpenInput): Promise<{ model: DocModel; fonts: never[] }> {
   chunksDir = input.chunksDir
@@ -71,6 +103,7 @@ async function open(input: OpenInput): Promise<{ model: DocModel; fonts: never[]
   for (let index = 0; index < slices.length; index++) {
     blocks.push(await parser.parseBlock(slices[index].xml, index, slices[index].start))
   }
+  await rewriteImages(blocks, bytes, input.baseUrl, input.fileId)
   const parsedChunks: any[][] = []
   for (let offset = 0; offset < blocks.length; offset += CHUNK_BLOCKS) {
     parsedChunks.push(blocks.slice(offset, offset + CHUNK_BLOCKS))

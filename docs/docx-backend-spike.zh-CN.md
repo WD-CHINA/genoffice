@@ -120,6 +120,33 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 | scrollTop=50000 挂载页    | 6（55–60） |
 | 页面总数与 block 总数解耦 | 是         |
 
+### 2.5 Gate B.2：真实 DOM 测量分页
+
+在 `docx-page-spike` 上增加“DOM 测量分页”：
+
+- 用隐藏 Tiptap editor 分块渲染 blocks（100 blocks/块）
+- `getBoundingClientRect()` 读取真实 block 高度
+- 用测量高度重新 `paginateBlocks`
+- 目前只测前 500 个 block，剩余 block 仍用估算高度（50k 全量测量在浏览器里太慢）
+
+实测：
+
+| 指标            | 估算分页 | 测量分页    |
+| --------------- | -------- | ----------- |
+| pages           | 2700     | 2698        |
+| 首屏 mounted    | 3        | 4           |
+| DOM nodes       | 119      | 169         |
+| JS heap         | ~150 MiB | 137.9 MiB   |
+| measured blocks | —        | 500 / 50201 |
+
+500 个 block 的测量耗时约 5 秒（后台 tab，含 100-block 分块和布局）。
+
+结论：
+
+- 真实 DOM 高度可以增量测量，不需要整篇 editor
+- 测量后页数会变化，说明估算高度不能替代真实分页
+- 但只测了前 500 块，不能证明全量 2700 页的分页正确性
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -129,8 +156,9 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 具体来说：
 
 - 通过：每页独立 Tiptap editor 可行，2700 页时只挂载 3–6 页，DOM 115–205，heap 138–158 MiB
+- 部分通过：真实 DOM 高度可增量测量（前 500 blocks），页数从 2700 变为 2698
 - 未通过/未验证：
-  - 真实 DOM 测量分页（现在是估算高度）
+  - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 修订、脚注、浮动对象、跨页表格
   - 与整篇 editor 的像素/文本 parity
   - 页高变化后的增量重排

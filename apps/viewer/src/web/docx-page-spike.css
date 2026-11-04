@@ -1,0 +1,102 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-family:
+    'PingFang SC',
+    'Microsoft YaHei',
+    'Noto Sans CJK SC',
+    system-ui,
+    -apple-system,
+    sans-serif;
+}
+
+.docx-page-spike {
+  width: min(1200px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 24px 0 40px;
+}
+
+.docx-page-spike header a {
+  color: var(--text-secondary);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.docx-page-spike header h1 {
+  margin: 8px 0;
+  font-size: 22px;
+}
+
+.docx-page-spike header p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.docx-page-spike-error {
+  color: var(--danger);
+}
+
+.docx-page-spike-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin: 16px 0 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.docx-page-spike-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.docx-page-spike-controls button {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.docx-page-spike-controls button:hover {
+  background: var(--bg-hover);
+}
+
+.docx-page-spike-viewport {
+  height: 72vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--canvas);
+}
+
+.docx-page-spike-canvas {
+  position: relative;
+  width: 100%;
+}
+
+.docx-page-spike-slot {
+  position: absolute;
+  left: 50%;
+  width: 760px;
+  margin-left: -380px;
+}
+
+.docx-page-spike-page {
+  overflow: hidden;
+  padding: 48px 56px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-modal-strong);
+}

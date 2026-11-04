@@ -2,7 +2,7 @@
 
 > 日期：2026-11-04
 > 范围：只验证可行性，不接入生产 Viewer，不承诺 1GB。
-> 结论：两项基础能力通过；Tiptap 按页挂载和真实 DOM 分页尚未验证，因此暂不启动 1GB DOCX。
+> 结论：服务端流式切 block 通过；Tiptap 按页挂载的内存信号通过，但行为 parity 和真实 DOM 分页尚未验证，因此暂不启动 1GB DOCX。
 
 ## 1. 目标
 
@@ -53,6 +53,38 @@
 
 这证明“页描述 + 虚拟列表”的数学和渲染路径可行。
 
+### 2.4 Gate B：Tiptap 按页挂载 spike
+
+文件：
+
+- `apps/viewer/src/web/docx-page-spike.tsx`
+- `apps/viewer/src/web/docx-page-spike.html`
+- `apps/viewer/src/web/public/docx-spike-large.docx`
+
+做法：
+
+- 用真实 DOCX（合成 50k blocks / 2700 页）在浏览器 `parseDocx`
+- 按估算 block 高度分页
+- 每页一个只读 Tiptap editor
+- 只挂载可见页 ±2
+- 每 500ms 采样 DOM 节点数和 `performance.memory.usedJSHeapSize`
+
+实测：
+
+| 位置                  | mounted pages | DOM nodes | JS heap   |
+| --------------------- | ------------- | --------- | --------- |
+| 第一页                | 3             | 115       | 157.5 MiB |
+| 中间页（约 1348）     | 6             | 205       | 137.8 MiB |
+| 最后一页（2697–2700） | 4             | 155       | 142.5 MiB |
+
+结论：
+
+- 页面数从 1 到 2700，DOM 节点和 JS heap 没有随页数线性增长
+- 表格和标题在按页 editor 中正常渲染
+- 跳页可用
+
+但这是**估算高度分页**，不是真实 DOM 分页；也还没有验证修订、脚注、浮动对象和整篇渲染 parity。
+
 ## 3. 实测结果
 
 ### 服务端扫描吞吐
@@ -88,7 +120,25 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 | scrollTop=50000 挂载页    | 6（55–60） |
 | 页面总数与 block 总数解耦 | 是         |
 
-## 4. 尚未验证
+## 4. Gate B 结论
+
+内存信号：**通过**。
+
+行为 parity：**未验证**。
+
+具体来说：
+
+- 通过：每页独立 Tiptap editor 可行，2700 页时只挂载 3–6 页，DOM 115–205，heap 138–158 MiB
+- 未通过/未验证：
+  - 真实 DOM 测量分页（现在是估算高度）
+  - 修订、脚注、浮动对象、跨页表格
+  - 与整篇 editor 的像素/文本 parity
+  - 页高变化后的增量重排
+  - 跳页时 editor 创建/销毁的卡顿
+
+因此 Gate B 只能判定“方向可行”，不能判定“1GB 可做”。
+
+## 5. 尚未验证
 
 这是 spike，不是生产实现。以下都还没有答案：
 
@@ -110,7 +160,7 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
    - 超大表格、图片、修订、`sdt` 的流式处理
    - 前端 10k+ 页滚动稳定性
 
-## 5. 决策门槛
+## 6. 决策门槛
 
 在启动 1GB DOCX 前，至少要通过：
 
@@ -134,7 +184,7 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 - 100MB 级 DOCX：上传 → 流式切 block → chunk 传输 → 虚拟分页
 - 1GB 级 DOCX：在 Gate A–C 通过后再做专项
 
-## 6. 建议
+## 7. 建议
 
 **暂不投入 1GB DOCX。**
 
@@ -145,9 +195,16 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 3. 用真实 fixture 做 DOM 测量分页，跑 Gate C
 4. Gate A–C 通过后，再评估 1GB 的工期和内存预算
 
+Gate B 的下一步不是直接上 1GB，而是 **Gate B.2**：
+
+- 用包含修订、脚注、浮动对象、跨页表格的真实 fixture
+- 与整篇 Tiptap 渲染做 parity 对照
+- 用真实 DOM 测量高度分页，而不是估算
+- 测跳页/销毁 editor 的卡顿
+
 如果产品需要尽快有 DOCX 服务端能力，可以先做 **≤100–200MB / ≤20k blocks** 的受限版本，复用现有 Tiptap，不做完整 1GB 分页虚拟化。
 
-## 7. 运行方式
+## 8. 运行方式
 
 ```bash
 # 服务端流式切 block 测试
@@ -161,4 +218,5 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 
 # 可视化 spike（需 Viewer dev server）
 open http://localhost:11001/docx-spike.html
+open http://localhost:11001/docx-page-spike.html
 ```

@@ -94,6 +94,7 @@ export default defineConfig({
         preview: resolve(app, 'src/web/preview.html'),
         upload: resolve(app, 'src/web/upload.html'),
         docxSpike: resolve(app, 'src/web/docx-spike.html'),
+        docxPageSpike: resolve(app, 'src/web/docx-page-spike.html'),
       },
     },
   },

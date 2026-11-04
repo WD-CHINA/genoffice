@@ -175,22 +175,69 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 - 但当前分页只按 block 边界切，**不会在表格内部断页**
 - 60 行表格在页面里被裁切，不能直接用于生产
 
+### 2.7 Gate B.4：表格行级分页
+
+新增：
+
+- `apps/viewer/src/web/docx-table-pagination.ts`
+- `apps/viewer/src/web/docx-table-spike.tsx`
+- 页面：`http://localhost:11001/docx-table-spike.html`
+
+实现：
+
+- 用隐藏 Tiptap editor 测量每个 `<tr>` 的真实高度
+- 读取 `w:tblHeader` / `w:cantSplit`
+- 行级分页：
+  - 前导 header 行每页重复
+  - `cantSplit` 行不拆，放不下就换页；超高则标记 overflow
+  - 可拆分行按段落边界拆成 `part { start, end }`
+- 每页把表格 block 切成子表格，交给独立 Tiptap editor 渲染
+
+实测 behavior fixture：
+
+| 指标        | 结果                    |
+| ----------- | ----------------------- |
+| rows        | 60                      |
+| headerRows  | 1                       |
+| cantSplit   | 1                       |
+| pages       | 2                       |
+| overflow    | 0                       |
+| page 1 rows | 0–48（含 header）       |
+| page 2 rows | 0（重复 header）, 49–59 |
+
+页面 2 正确重复了 header 行；60 行表格不再被裁切。
+
+单元测试覆盖：
+
+- header 每页重复
+- cantSplit 行整体换页
+- 可拆分行按段落拆成 part
+- 超高 cantSplit 行标记 overflow
+
+仍未验证：
+
+- 拆分行的**单元格段落渲染**只做了模型切片，没有在真实浏览器里看到跨页拆分效果
+- 合并单元格、嵌套表格、行修订在拆分行里的行为
+- 表头重复与 Word 的“仅首行/多行表头”细节
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
 
-行为 parity：**部分通过，长表格未通过**。
+行为 parity：**部分通过，表格行级分页已补齐**。
 
 具体来说：
 
 - 通过：每页独立 Tiptap editor 可行，2700 页时只挂载 3–6 页，DOM 115–205，heap 138–158 MiB
 - 部分通过：真实 DOM 高度可增量测量（前 500 blocks），页数从 2700 变为 2698
 - 部分通过：behavior fixture 的修订/脚注/文本 parity 通过（1514/1514 字符）
-- **未通过：长表格跨页**，当前 block 级分页无法在表格内部断页
+- **已补齐：表格行级分页**，behavior fixture 60 行表格分成 2 页，header 重复
+- **仍未验证：拆分行的单元格段落渲染**、合并单元格/嵌套表格/行修订
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
-  - 修订、脚注、浮动对象、跨页表格
-  - 与整篇 editor 的像素/文本 parity
+  - 拆分行的单元格段落渲染
+  - 浮动对象、合并单元格、嵌套表格
+  - 与整篇 editor 的像素级 parity
   - 页高变化后的增量重排
   - 跳页时 editor 创建/销毁的卡顿
 
@@ -277,4 +324,5 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 # 可视化 spike（需 Viewer dev server）
 open http://localhost:11001/docx-spike.html
 open http://localhost:11001/docx-page-spike.html
+open http://localhost:11001/docx-table-spike.html
 ```

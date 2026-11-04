@@ -95,6 +95,7 @@ export default defineConfig({
         upload: resolve(app, 'src/web/upload.html'),
         docxSpike: resolve(app, 'src/web/docx-spike.html'),
         docxPageSpike: resolve(app, 'src/web/docx-page-spike.html'),
+        docxTableSpike: resolve(app, 'src/web/docx-table-spike.html'),
       },
     },
   },

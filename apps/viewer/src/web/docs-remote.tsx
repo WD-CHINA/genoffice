@@ -54,7 +54,33 @@ function estimateHeight(block: any): number {
   return Math.max(24, 22 + Math.ceil(text.length / 70) * 20)
 }
 
-function PageEditor({ blocks }: { blocks: any[] }) {
+interface StyleContextPayload {
+  styles: Array<[string, any]>
+  docDefaults?: any
+  numbering: Array<[string, any]>
+  themeColors?: any
+  themeFonts?: any
+}
+
+interface StyleContext {
+  styles: Map<string, any>
+  numbering: Map<string, any>
+  docDefaults?: any
+  themeColors?: any
+  themeFonts?: any
+}
+
+function reviveStyleContext(payload: StyleContextPayload): StyleContext {
+  return {
+    styles: new Map(payload.styles),
+    numbering: new Map(payload.numbering),
+    docDefaults: payload.docDefaults,
+    themeColors: payload.themeColors,
+    themeFonts: payload.themeFonts,
+  }
+}
+
+function PageEditor({ blocks, doc }: { blocks: any[]; doc: StyleContext }) {
   const editor = useEditor({
     extensions: editorExtensions,
     editable: false,
@@ -62,10 +88,10 @@ function PageEditor({ blocks }: { blocks: any[] }) {
   })
   useEffect(() => {
     if (!editor) return
-    editor.commands.setContent(blocksToPmDoc(blocks, undefined, pmDocOptions({})), {
+    editor.commands.setContent(blocksToPmDoc(blocks, undefined, pmDocOptions(doc)), {
       emitUpdate: false,
     })
-  }, [editor, blocks])
+  }, [editor, blocks, doc])
   return <EditorContent editor={editor} />
 }
 
@@ -100,6 +126,10 @@ async function loadFonts(
 export function DocsRemote({ server, fileId, token, name }: Props) {
   const [blocks, setBlocks] = useState<any[]>([])
   const [page, setPage] = useState<PageSettings>(DEFAULT_PAGE)
+  const [styleContext, setStyleContext] = useState<StyleContext>({
+    styles: new Map(),
+    numbering: new Map(),
+  })
   const [tableRows, setTableRows] = useState<Map<number, TableRowLayout[]>>(new Map())
   const [blockHeights, setBlockHeights] = useState<Map<number, number>>(new Map())
   const [status, setStatus] = useState('正在创建 DOCX 会话…')
@@ -202,6 +232,13 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       session.current = opened.sessionId
       if (opened.model?.page) setPage(opened.model.page)
       if (opened.fonts?.length) await loadFonts(server, opened.sessionId, opened.fonts, auth)
+      const stylesResponse = await fetch(`${server}/v1/sessions/${opened.sessionId}/styles`, {
+        headers: auth,
+        signal: controller.signal,
+      })
+      if (stylesResponse.ok) {
+        setStyleContext(reviveStyleContext((await stylesResponse.json()) as StyleContextPayload))
+      }
       await loadChunk(opened.sessionId, undefined, controller.signal)
     } catch (error) {
       if ((error as Error)?.name !== 'AbortError') {
@@ -242,7 +279,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     return () => {
       cancelled = true
     }
-  }, [blocks, contentWidth])
+  }, [blocks, contentWidth, styleContext])
 
   // Measure normal block heights incrementally; table blocks use row heights.
   useEffect(() => {
@@ -256,12 +293,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     if (!pending.length) return
     for (const block of pending) measuredBlocks.current.add(block.docxIndex)
     void (async () => {
-      const heights = await measureBlockHeights(
-        { styles: new Map(), numbering: new Map(), docDefaults: undefined },
-        pending,
-        100,
-        contentWidth,
-      )
+      const heights = await measureBlockHeights(styleContext, pending, 100, contentWidth)
       if (cancelled) return
       setBlockHeights((old) => {
         const next = new Map(old)
@@ -272,7 +304,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     return () => {
       cancelled = true
     }
-  }, [blocks, contentWidth])
+  }, [blocks, contentWidth, styleContext])
 
   const renderBlocks = useMemo(() => {
     const result: Array<{ block: any; height: number; breakBefore?: boolean }> = []
@@ -378,6 +410,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
                   blocks={renderBlocks
                     .slice(page.blockStart, page.blockEnd)
                     .map((item) => item.block)}
+                  doc={styleContext}
                 />
               </div>
             </div>

@@ -116,6 +116,10 @@ export class DocxSession {
     return this.call('unit', { id }, this.unitTimeoutMs)
   }
 
+  async styleContext(): Promise<unknown> {
+    return this.call('styles', {}, this.unitTimeoutMs)
+  }
+
   async fontBytes(id: string): Promise<Uint8Array | null> {
     const bytes = await this.call<Uint8Array | null>('font', { id }, this.unitTimeoutMs)
     return bytes ?? null

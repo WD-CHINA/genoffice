@@ -133,6 +133,14 @@ describe('parse-server', () => {
         body: JSON.stringify({ fileId: file.fileId }),
       })
       const session = (await opened.json()) as { sessionId: string }
+      const stylesResponse = await fetch(`${first.url}/v1/sessions/${session.sessionId}/styles`)
+      expect(stylesResponse.status).toBe(200)
+      const styles = (await stylesResponse.json()) as {
+        styles: unknown[]
+        numbering: unknown[]
+      }
+      expect(Array.isArray(styles.styles)).toBe(true)
+      expect(Array.isArray(styles.numbering)).toBe(true)
       const chunkFiles = await readdir(join(dir, 'chunks', session.sessionId))
       expect(chunkFiles).toContain('manifest.json')
       expect(chunkFiles).toContain('chunks.bin')

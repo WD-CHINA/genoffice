@@ -5,6 +5,7 @@ import { parentPort } from 'node:worker_threads'
 import {
   createDocxBlockParser,
   readDocxEmbeddedFonts,
+  readDocxStyleContext,
   sectionSettingsFromXml,
 } from '@genoffice/docx-engine'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
@@ -44,6 +45,7 @@ let chunkCount = 0
 let chunkManifest: ChunkManifest | null = null
 let fonts: Array<{ id: string; family: string; bold: boolean; italic: boolean; data: Uint8Array }> =
   []
+let styleContext: unknown = null
 let persisted = false
 let chunksDir = ''
 let lastUsed = Date.now()
@@ -89,6 +91,7 @@ async function open(input: OpenInput): Promise<{
   const documentFile = zip.file('word/document.xml')
   if (!documentFile) throw new Error('not a docx: missing word/document.xml')
   const documentXml = await documentFile.async('string')
+  styleContext = await readDocxStyleContext(bytes)
   const embedded = await readDocxEmbeddedFonts(bytes)
   fonts = embedded.map((font, index) => ({
     id: `font-${index}`,
@@ -246,6 +249,9 @@ parentPort?.on('message', (message: Message) => {
           respond(font ? font.data : null)
           break
         }
+        case 'styles':
+          respond(styleContext)
+          break
         case 'widths':
           respond([])
           break
@@ -254,6 +260,7 @@ parentPort?.on('message', (message: Message) => {
           model = null
           chunkCount = 0
           fonts = []
+          styleContext = null
           respond(undefined)
           break
         default:

@@ -30,6 +30,8 @@ export {
   type ParseOptions,
   type DocxBlockParser,
   type DocxDocumentMetadata,
+  readDocxStyleContext,
+  type DocxStyleContext,
 } from './parse'
 export {
   compareOperands,

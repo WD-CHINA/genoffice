@@ -8727,3 +8727,26 @@ export async function createDocxBlockParser(
     },
   }
 }
+
+/** Serializable style/numbering context for a lightweight renderer (remote DOCX). */
+export interface DocxStyleContext {
+  styles: Array<[string, StyleInfo]>
+  docDefaults?: DocDefaults
+  numbering: Array<[string, NumberingDef]>
+  themeColors?: ThemeColors | null
+  themeFonts?: ThemeFonts | null
+}
+
+export async function readDocxStyleContext(bytes: Uint8Array): Promise<DocxStyleContext> {
+  const zip = await loadDocxZip(bytes)
+  const theme = await parseTheme(zip)
+  const { styles, docDefaults } = await parseStyles(zip, theme.colors, theme.fonts)
+  const { defs } = await parseNumbering(zip)
+  return {
+    styles: [...styles.entries()],
+    ...(docDefaults ? { docDefaults } : {}),
+    numbering: [...defs.entries()],
+    themeColors: theme.colors,
+    themeFonts: theme.fonts,
+  }
+}

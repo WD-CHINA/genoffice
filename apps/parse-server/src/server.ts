@@ -439,6 +439,15 @@ async function handleSession(
     )
     return
   }
+  if (req.method === 'GET' && rest.length === 1 && rest[0] === 'styles') {
+    const session = await ensureSession(entry, req, ctx)
+    if (!(session instanceof DocxSession)) {
+      sendError(res, 404, 'not_found', 'styles are only available for DOCX', false, requestId)
+      return
+    }
+    sendJson(res, 200, await session.styleContext())
+    return
+  }
   if (req.method === 'GET' && rest.length === 2 && rest[0] === 'fonts') {
     const session = await ensureSession(entry, req, ctx)
     const bytes = await session.fontBytes(decodeURIComponent(rest[1]))

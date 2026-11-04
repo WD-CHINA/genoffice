@@ -1,4 +1,6 @@
+import { createHash } from 'node:crypto'
 import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { gunzipSync, gzipSync } from 'node:zlib'
 import { join } from 'node:path'
 
 export interface ChunkManifest {
@@ -7,6 +9,8 @@ export interface ChunkManifest {
   parserVersion: string
   unitCount: number
   chunkBlocks: number
+  /** SHA-256 of each uncompressed chunk JSON, in chunk order. */
+  chunkHashes?: string[]
   createdAt: number
 }
 
@@ -39,15 +43,27 @@ export async function writeChunkManifest(dir: string, manifest: ChunkManifest): 
   await rename(tmp, join(dir, 'manifest.json'))
 }
 
-export async function writeChunk(dir: string, index: number, blocks: unknown[]): Promise<void> {
+export async function writeChunk(dir: string, index: number, blocks: unknown[]): Promise<string> {
   await mkdir(dir, { recursive: true })
-  const tmp = join(dir, `chunk-${index}.json.tmp`)
-  await writeFile(tmp, JSON.stringify(blocks))
-  await rename(tmp, join(dir, `chunk-${index}.json`))
+  const raw = Buffer.from(JSON.stringify(blocks))
+  const hash = createHash('sha256').update(raw).digest('hex')
+  const tmp = join(dir, `chunk-${index}.json.gz.tmp`)
+  await writeFile(tmp, gzipSync(raw))
+  await rename(tmp, join(dir, `chunk-${index}.json.gz`))
+  return hash
 }
 
-export async function readChunk(dir: string, index: number): Promise<unknown[]> {
-  return JSON.parse(await readFile(join(dir, `chunk-${index}.json`), 'utf8')) as unknown[]
+export async function readChunk(
+  dir: string,
+  index: number,
+  expectedHash?: string,
+): Promise<unknown[]> {
+  const raw = gunzipSync(await readFile(join(dir, `chunk-${index}.json.gz`)))
+  if (expectedHash) {
+    const hash = createHash('sha256').update(raw).digest('hex')
+    if (hash !== expectedHash) throw new Error(`chunk ${index} hash mismatch`)
+  }
+  return JSON.parse(raw.toString('utf8')) as unknown[]
 }
 
 export async function removeChunks(dir: string): Promise<void> {

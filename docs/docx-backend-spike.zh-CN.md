@@ -564,6 +564,28 @@ GC：
 - 没有多实例共享存储
 - 删除 session 会删 chunk；内容文件仍按内容 GC
 
+### 2.21 Gate A.11：chunk 压缩 + 内容 hash
+
+`docx-chunks` 优化：
+
+- chunk 文件从 `.json` 改为 `.json.gz`（gzip）
+- 写入时计算未压缩 JSON 的 SHA-256
+- manifest 增加 `chunkHashes[]`
+- 读取时校验 hash，不匹配直接报错
+- manifest 仍只校验 fileId/parserVersion；chunk 内容用 hash 保护
+
+测试：
+
+- 重启恢复测试检查 `.json.gz` 存在
+- 检查 manifest.chunkHashes 非空
+- 重启后 unit0 仍正常
+
+限制：
+
+- 仍是“每 chunk 一个文件”，没有合并成大文件
+- gzip 是同步写入，worker 打开时 2500 个文件会有写放大
+- hash 只防损坏，不做去重/内容寻址
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -589,6 +611,7 @@ GC：
 - **Gate A.8 已通过 worker 隔离**：100k blocks 正常；300k 被 512MB 限制终止但 server 存活
 - **Gate A.9 已通过流式 metadata**：300k/500k blocks（~60MB/100MB XML）可解析，RSS ~284/324MB
 - **Gate A.10 已通过 chunk 持久化**：500k blocks 写 2500 个 chunk，重启从磁盘恢复，不重新解析
+- **Gate A.11 已通过 chunk 压缩/hash**：`.json.gz` + manifest chunkHashes，读取校验
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

@@ -28,6 +28,7 @@ const CHUNK_BLOCKS = 200
 let model: DocModel | null = null
 let chunks: any[][] = []
 let chunkCount = 0
+let chunkHashes: string[] = []
 let persisted = false
 let chunksDir = ''
 let lastUsed = Date.now()
@@ -42,6 +43,7 @@ async function open(input: OpenInput): Promise<{ model: DocModel; fonts: never[]
   ) {
     persisted = true
     chunkCount = manifest.unitCount
+    chunkHashes = manifest.chunkHashes ?? []
     chunks = []
     model = {
       format: 'docx',
@@ -73,15 +75,18 @@ async function open(input: OpenInput): Promise<{ model: DocModel; fonts: never[]
   for (let offset = 0; offset < blocks.length; offset += CHUNK_BLOCKS) {
     parsedChunks.push(blocks.slice(offset, offset + CHUNK_BLOCKS))
   }
+  const hashes: string[] = []
   for (let index = 0; index < parsedChunks.length; index++) {
-    await writeChunk(input.chunksDir, index, parsedChunks[index])
+    hashes.push(await writeChunk(input.chunksDir, index, parsedChunks[index]))
   }
+  chunkHashes = hashes
   await writeChunkManifest(input.chunksDir, {
     version: 1,
     fileId: input.fileId,
     parserVersion: input.parserVersion,
     unitCount: parsedChunks.length,
     chunkBlocks: CHUNK_BLOCKS,
+    chunkHashes: hashes,
     createdAt: Date.now(),
   })
   persisted = true
@@ -146,7 +151,9 @@ parentPort?.on('message', (message: Message) => {
             id: String(index),
             kind: 'block-chunk',
             index,
-            blocks: persisted ? await readChunk(chunksDir, index) : chunks[index],
+            blocks: persisted
+              ? await readChunk(chunksDir, index, chunkHashes[index])
+              : chunks[index],
             playback: [],
           })
           break

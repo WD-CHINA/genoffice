@@ -12,7 +12,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "stress": "node --import tsx scripts/stress-smoke.mts",
-    "stress:docx": "node --import tsx scripts/docx-stress.mts"
+    "stress:docx": "node --import tsx scripts/docx-stress.mts",
+    "fixture:docx-large": "node --import tsx scripts/docx-large-fixture.mts"
   },
   "dependencies": {
     "@genoffice/parse-contract": "*",

@@ -7,7 +7,13 @@ import type { ServerLimits } from './limits'
 import { ParseLimitError } from './pptx-slim'
 import { openDocxDocumentStream, streamDocxBlocks } from './docx-stream'
 import { scanDocxMetadata } from './docx-metadata'
-import { readChunk, readChunkManifest, writeChunk, writeChunkManifest } from './docx-chunks'
+import {
+  readChunk,
+  readChunkManifest,
+  writeChunkManifest,
+  writeChunks,
+  type ChunkManifest,
+} from './docx-chunks'
 
 interface OpenInput {
   id: string
@@ -30,7 +36,7 @@ const CHUNK_BLOCKS = 200
 let model: DocModel | null = null
 let chunks: any[][] = []
 let chunkCount = 0
-let chunkHashes: string[] = []
+let chunkManifest: ChunkManifest | null = null
 let fonts: Array<{ id: string; family: string; bold: boolean; italic: boolean; data: Uint8Array }> =
   []
 let persisted = false
@@ -98,7 +104,7 @@ async function open(input: OpenInput): Promise<{
   ) {
     persisted = true
     chunkCount = manifest.unitCount
-    chunkHashes = manifest.chunkHashes ?? []
+    chunkManifest = manifest
     chunks = []
     model = {
       format: 'docx',
@@ -128,20 +134,19 @@ async function open(input: OpenInput): Promise<{
   for (let offset = 0; offset < blocks.length; offset += CHUNK_BLOCKS) {
     parsedChunks.push(blocks.slice(offset, offset + CHUNK_BLOCKS))
   }
-  const hashes: string[] = []
-  for (let index = 0; index < parsedChunks.length; index++) {
-    hashes.push(await writeChunk(input.chunksDir, index, parsedChunks[index]))
-  }
-  chunkHashes = hashes
-  await writeChunkManifest(input.chunksDir, {
-    version: 1,
+  const entries = await writeChunks(input.chunksDir, parsedChunks)
+  const nextManifest: ChunkManifest = {
+    version: 2,
     fileId: input.fileId,
     parserVersion: input.parserVersion,
     unitCount: parsedChunks.length,
     chunkBlocks: CHUNK_BLOCKS,
-    chunkHashes: hashes,
+    chunkFile: 'chunks.bin',
+    chunks: entries,
     createdAt: Date.now(),
-  })
+  }
+  chunkManifest = nextManifest
+  await writeChunkManifest(input.chunksDir, nextManifest)
   persisted = true
   chunkCount = parsedChunks.length
   chunks = []
@@ -204,9 +209,7 @@ parentPort?.on('message', (message: Message) => {
             id: String(index),
             kind: 'block-chunk',
             index,
-            blocks: persisted
-              ? await readChunk(chunksDir, index, chunkHashes[index])
-              : chunks[index],
+            blocks: persisted ? await readChunk(chunksDir, index, chunkManifest!) : chunks[index],
             playback: [],
           })
           break

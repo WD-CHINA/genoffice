@@ -109,12 +109,13 @@ first version:
 - groups 200 blocks per `block-chunk` unit
 - `GET /v1/sessions/:id/units` lists `block-chunk` units
 - `GET /v1/sessions/:id/units/:id` returns `{ blocks, playback: [] }`
-- chunks persist under `<dataDir>/chunks/<sessionId>/` (`manifest.json` + gzip `chunk-*.json.gz` with SHA-256 hashes); body images are rewritten to `/v1/files/:id/parts/...` URLs; embedded fonts are exposed at `/v1/sessions/:id/fonts/:fontId`; a restart reopens from disk without reparsing
+- chunks persist under `<dataDir>/chunks/<sessionId>/` (`manifest.json` + single `chunks.bin` with per-chunk offsets/SHA-256); body images are rewritten to `/v1/files/:id/parts/...` URLs; embedded fonts are exposed at `/v1/sessions/:id/fonts/:fontId`; a restart reopens from disk without reparsing
 - session metadata persists in `sessions.json`; delete/TTL/GC remove chunk directories
 - DOCX parse is bounded by `maxParseBytes` (256 MiB default); `document.xml` is
   streamed for metadata and block parsing, while the compressed package is still
   loaded by JSZip. 100 MB-class synthetic XML has been exercised.
-- `pnpm --filter @genoffice/parse-server stress:docx -- --url ... --blocks 100000`
+- `pnpm --filter @genoffice/parse-server fixture:docx-large -- --mb 100 --out /tmp/docx-large-real.docx`
+- `pnpm --filter @genoffice/parse-server stress:docx -- --url ... --file /tmp/docx-large-real.docx`
   generates a synthetic DOCX and reports open time / memory
 - DOCX parse runs in a per-session worker with parse/unit timeouts and a worker memory limit; a worker OOM returns 422 without taking down the server
 

@@ -132,11 +132,12 @@ describe('parse-server', () => {
       const session = (await opened.json()) as { sessionId: string }
       const chunkFiles = await readdir(join(dir, 'chunks', session.sessionId))
       expect(chunkFiles).toContain('manifest.json')
-      expect(chunkFiles.some((name) => name.endsWith('.json.gz'))).toBe(true)
+      expect(chunkFiles).toContain('chunks.bin')
       const manifest = JSON.parse(
         await readFile(join(dir, 'chunks', session.sessionId, 'manifest.json'), 'utf8'),
-      ) as { chunkHashes?: string[] }
-      expect(manifest.chunkHashes?.length).toBeGreaterThan(0)
+      ) as { chunks?: Array<{ hash: string }> }
+      expect(manifest.chunks?.length).toBeGreaterThan(0)
+      expect(manifest.chunks?.[0]?.hash).toMatch(/^[0-9a-f]{64}$/)
       await first.close()
       const second = await createParseServer({ dataDir: dir })
       try {

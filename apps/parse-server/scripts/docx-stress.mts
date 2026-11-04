@@ -8,23 +8,32 @@ const value = (name: string, fallback: string) => {
 }
 const url = value('--url', 'http://127.0.0.1:8787')
 const blocks = Number(value('--blocks', '20000'))
+const inputFile = value('--file', '')
 const template = 'apps/viewer/src/web/public/docx-spike-behavior.docx'
 
-const zip = await JSZip.loadAsync(await readFile(template))
-const xml = await zip.file('word/document.xml')!.async('string')
-const start = xml.indexOf('<w:body>') + '<w:body>'.length
-const end = xml.lastIndexOf('</w:body>')
-const body = xml.slice(start, end)
-const sect = /<w:sectPr[\s\S]*?<\/w:sectPr>/.exec(body)?.[0] ?? ''
-const paragraphs: string[] = []
-for (let index = 0; index < blocks; index++) {
-  paragraphs.push(
-    `<w:p><w:r><w:t xml:space="preserve">DOCX stress paragraph ${index} lorem ipsum dolor sit amet consectetur adipiscing elit.</w:t></w:r></w:p>`,
-  )
+let bytes: Uint8Array
+if (inputFile) {
+  bytes = await readFile(inputFile)
+} else {
+  const zip = await JSZip.loadAsync(await readFile(template))
+  const xml = await zip.file('word/document.xml')!.async('string')
+  const start = xml.indexOf('<w:body>') + '<w:body>'.length
+  const end = xml.lastIndexOf('</w:body>')
+  const body = xml.slice(start, end)
+  const sect = /<w:sectPr[\s\S]*?<\/w:sectPr>/.exec(body)?.[0] ?? ''
+  const paragraphs: string[] = []
+  for (let index = 0; index < blocks; index++) {
+    paragraphs.push(
+      `<w:p><w:r><w:t xml:space="preserve">DOCX stress paragraph ${index} lorem ipsum dolor sit amet consectetur adipiscing elit.</w:t></w:r></w:p>`,
+    )
+  }
+  zip.file('word/document.xml', xml.slice(0, start) + paragraphs.join('') + sect + xml.slice(end))
+  bytes = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
 }
-zip.file('word/document.xml', xml.slice(0, start) + paragraphs.join('') + sect + xml.slice(end))
-const bytes = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
-console.log('[docx-stress] generated', { blocks, compressedBytes: bytes.length })
+console.log('[docx-stress] generated', {
+  blocks: inputFile ? 'file' : blocks,
+  compressedBytes: bytes.length,
+})
 
 const health = async () => (await (await fetch(`${url}/v1/health`)).json()) as any
 const before = await health()

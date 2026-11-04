@@ -635,6 +635,57 @@ GC：
 - 字体缓存只有浏览器侧，没有 CDN/共享缓存
 - 表格内图片/浮动对象仍不在 lazy 范围
 
+### 2.24 Gate A.14：真实 100MB fixture（图片 + 表格 + 修订）
+
+新增 `apps/parse-server/scripts/docx-large-fixture.mts`：
+
+- 以 `docx-spike-table.docx` 为模板（含修订、脚注、表格）
+- 注入 `word/media/image1.png` 与正文图片段落
+- 重复 body 到目标 XML 大小
+- 100MB XML：9604 次重复
+
+实测：
+
+| 指标       | 结果       |
+| ---------- | ---------- |
+| XML        | 100MiB     |
+| compressed | 1.09MB     |
+| openMs     | ~9.8s      |
+| chunkCount | 145        |
+| unit0      | 200 blocks |
+| RSS after  | ~439MB     |
+
+结论：
+
+- 100MB 级真实结构 fixture 可以解析
+- 图片、表格、修订都在
+- worker 512MB 内存限制下仍可打开
+- 1GB XML 生成受 JS 字符串长度限制（`Invalid string length`），需要流式 fixture 生成器；这不是服务端限制
+
+### 2.25 Gate A.15：单文件 chunk 索引
+
+`docx-chunks` 从“每 chunk 一个 `.json.gz`”改为：
+
+```text
+<sessionId>/
+  manifest.json   (chunkFile, chunks[{offset,length,hash}])
+  chunks.bin      (gzip frames concatenated)
+```
+
+- 写入时一次顺序写 `chunks.bin`
+- manifest 记录每个 chunk 的 offset/length/SHA-256
+- 读取时按 offset 读 gzip frame，校验 hash
+- 删除/TTL/GC 仍按目录清理
+
+实测 500k blocks：
+
+| 指标       | 结果                                  |
+| ---------- | ------------------------------------- |
+| openMs     | ~2.4s                                 |
+| unit0      | 200 blocks                            |
+| RSS after  | ~389MB                                |
+| chunk 文件 | 1 个 `chunks.bin`（不再 2500 个文件） |
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -663,6 +714,8 @@ GC：
 - **Gate A.11 已通过 chunk 压缩/hash**：`.json.gz` + manifest chunkHashes，读取校验
 - **Gate A.12 已通过图片懒加载**：正文图片改写为 parts URL，浏览器按需加载
 - **Gate A.13 已通过字体接口**：embedded fonts 经 `/fonts/:id` 返回，Viewer FontFace 加载成功
+- **Gate A.14 已通过真实 100MB fixture**：图片+表格+修订，open ~9.8s，145 chunks，RSS ~439MB
+- **Gate A.15 已通过单文件 chunk 索引**：500k blocks 写 1 个 `chunks.bin`，open ~2.4s
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

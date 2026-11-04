@@ -100,3 +100,30 @@ body {
   border: 1px solid var(--border);
   box-shadow: var(--shadow-modal-strong);
 }
+
+.docx-page-spike-fixture {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.docx-page-spike-fixture select {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.docx-page-spike-stats .is-ok {
+  color: var(--success);
+}
+
+.docx-page-spike-stats .is-bad {
+  color: var(--danger);
+}

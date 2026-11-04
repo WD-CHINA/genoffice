@@ -147,16 +147,46 @@ node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 - 测量后页数会变化，说明估算高度不能替代真实分页
 - 但只测了前 500 块，不能证明全量 2700 页的分页正确性
 
+### 2.6 Gate B.3：行为 fixture 与 parity
+
+新增 behavior fixture：`apps/viewer/src/web/public/docx-spike-behavior.docx`
+
+内容：
+
+- 修订：`w:ins` + `w:del`
+- 脚注：`word/footnotes.xml` + `footnoteReference`
+- 60 行长表格（跨页场景）
+
+页面 fixture 选择器可切换 `large` / `behavior`。
+
+实测：
+
+| 检查        | 结果                                                   |
+| ----------- | ------------------------------------------------------ |
+| 修订渲染    | 通过（inserted / deleted 可见）                        |
+| 脚注引用    | 通过（上标 1）                                         |
+| 长表格渲染  | 通过，但整张表作为一个 block                           |
+| 文本 parity | `ok`（1514/1514 字符）                                 |
+| 长表格分页  | **失败**：表格被当成超高 block，独占一页并溢出页面高度 |
+
+这是 Gate B.3 的关键发现：
+
+- 文本层面，按页 editor 与整篇 editor 一致
+- 但当前分页只按 block 边界切，**不会在表格内部断页**
+- 60 行表格在页面里被裁切，不能直接用于生产
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
 
-行为 parity：**未验证**。
+行为 parity：**部分通过，长表格未通过**。
 
 具体来说：
 
 - 通过：每页独立 Tiptap editor 可行，2700 页时只挂载 3–6 页，DOM 115–205，heap 138–158 MiB
 - 部分通过：真实 DOM 高度可增量测量（前 500 blocks），页数从 2700 变为 2698
+- 部分通过：behavior fixture 的修订/脚注/文本 parity 通过（1514/1514 字符）
+- **未通过：长表格跨页**，当前 block 级分页无法在表格内部断页
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 修订、脚注、浮动对象、跨页表格

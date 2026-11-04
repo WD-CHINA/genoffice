@@ -112,6 +112,8 @@ first version:
 - session metadata persists in `sessions.json`; a restart lazily reopens the session
 - DOCX parse is bounded by `maxParseBytes` (256 MiB default); it still reads the
   full package/document XML in this version, so it is not the 1 GB path yet
+- `pnpm --filter @genoffice/parse-server stress:docx -- --url ... --blocks 100000`
+  generates a synthetic DOCX and reports open time / memory
 - DOCX parse currently runs on the main thread; worker isolation is a follow-up
 
 ### Media streaming and storage lifecycle

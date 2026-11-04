@@ -451,6 +451,29 @@ session 行为：
 - 没有离线/网络切换提示
 - 媒体/字体/搜索仍未接
 
+### 2.16 Gate A.7：DOCX 大块压力
+
+新增 `apps/parse-server/scripts/docx-stress.mts` / `stress:docx`：
+
+- 用真实 DOCX 模板生成指定 block 数的 `document.xml`
+- 上传、创建 DOCX session、读取 unit 0
+- 记录上传/打开耗时和 health 内存
+
+实测（本机，服务端主线程解析）：
+
+| blocks  | XML 规模 | compressed | openMs | heapUsed after | RSS after |
+| ------- | -------- | ---------- | ------ | -------------- | --------- |
+| 20,000  | ~4MB     | 62KB       | 357    | ~105MB         | ~205MB    |
+| 100,000 | ~20MB    | 298KB      | 1,813  | ~366MB         | ~486MB    |
+| 300,000 | ~60MB    | 887KB      | 5,761  | ~1.09GB        | ~860MB    |
+
+结论：
+
+- 当前实现可以处理 300k blocks，但 heap 已超过 1GB
+- 100MB 级 `document.xml` 会明显超过当前主线程/单进程预算
+- 必须做 worker 隔离 + 流式 metadata + chunk 持久化，才能谈 1GB
+- compressed 文件大小不能作为解析内存的安全指标（XML 压缩率很高）
+
 ## 4. Gate B 结论
 
 内存信号：**通过**。
@@ -472,6 +495,7 @@ session 行为：
 - **Gate A.4 第一版通过**：Viewer 可远程打开 DOCX
 - **Gate A.5 已通过**：远程 DOCX 支持 chunk 懒加载、按页虚拟化、表格行级分页、普通 block 真实高度测量
 - **Gate A.6 已通过**：chunk/session 请求支持 abort、卸载清理、错误重试
+- **Gate A.7 已做压力基线**：300k blocks / ~60MB XML 可打开，但 heap 1.09GB；100MB 级需要 worker + 流式 metadata
 - 未通过/未验证：
   - 全量 2700 页的真实 DOM 分页（只测了前 500 blocks）
   - 拆分行里的合并单元格/嵌套表格跨页

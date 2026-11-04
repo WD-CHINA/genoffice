@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "stress": "node --import tsx scripts/stress-smoke.mts"
+    "stress": "node --import tsx scripts/stress-smoke.mts",
+    "stress:docx": "node --import tsx scripts/docx-stress.mts"
   },
   "dependencies": {
     "@genoffice/parse-contract": "*",

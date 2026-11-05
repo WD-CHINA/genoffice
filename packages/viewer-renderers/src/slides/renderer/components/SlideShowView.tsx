@@ -160,6 +160,11 @@ export function SlideShowView({
   }, [slides])
 
   const slide = slides[order[pos]!]
+  // The next page may still be fetching and laying out; keep the last rendered slide
+  // on screen instead of painting its empty placeholder (a blank page).
+  const heldSlide = useRef<any>(null)
+  if (slide && !(slide as any).placeholder) heldSlide.current = slide
+  const stageSlide = (slide as any)?.placeholder && heldSlide.current ? heldSlide.current : slide
   const player = useAnimPlayer(slide?.heightPx ?? 540, slide?.widthPx ?? 960)
 
   // ── Rehearsal timing: start timing the first page on entry; accumulate the previous page's dwell on turn; redraw the timer bar every 500ms ──
@@ -542,22 +547,29 @@ export function SlideShowView({
                 }}
               >
                 <AnimatedSlideStage
-                  slide={slide}
+                  slide={stageSlide}
                   images={images}
                   width={fitW}
                   states={player.states}
                 />
-                <GifOverlay slide={slide} images={images} width={fitW} states={player.states} />
-                <ShowMediaLayer
-                  key={order[pos]!}
-                  slide={slide}
-                  dataSource={dataSource}
-                  slideIndex={order[pos]!}
+                <GifOverlay
+                  slide={stageSlide}
+                  images={images}
                   width={fitW}
-                  commands={player.mediaCmds}
-                  epoch={player.epoch}
-                  mediaBase={player.mediaBase}
+                  states={player.states}
                 />
+                {!(slide as any)?.placeholder && (
+                  <ShowMediaLayer
+                    key={order[pos]!}
+                    slide={slide}
+                    dataSource={dataSource}
+                    slideIndex={order[pos]!}
+                    width={fitW}
+                    commands={player.mediaCmds}
+                    epoch={player.epoch}
+                    mediaBase={player.mediaBase}
+                  />
+                )}
               </div>
             </div>
           )}

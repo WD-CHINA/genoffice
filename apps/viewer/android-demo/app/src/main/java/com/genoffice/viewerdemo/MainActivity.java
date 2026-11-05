@@ -7,6 +7,7 @@ import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.text.InputType;
 import android.util.Log;
 import android.util.TypedValue;
@@ -21,7 +22,9 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -246,7 +249,16 @@ public class MainActivity extends Activity {
             return;
         }
         if (webView == null) webView = createWebView();
-        setContentView(webView);
+        FrameLayout container = new FrameLayout(this);
+        container.setBackgroundColor(VIEWER_BACKGROUND);
+        container.addView(webView, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        ProgressBar spinner = new ProgressBar(this);
+        FrameLayout.LayoutParams spinnerParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.view.Gravity.CENTER);
+        container.addView(spinner, spinnerParams);
+        setContentView(container);
         // Load the preview document directly: the host shell (header + iframe) would add a
         // second document load and a blank frame before the deck appears.
         String base = "http://127.0.0.1:" + port;
@@ -254,10 +266,38 @@ public class MainActivity extends Activity {
                 + Uri.encode(fileId)
                 + "&server=" + Uri.encode(base)
                 + "&fileId=" + Uri.encode(fileId)
-                + "&layout=client";
+                + "&layout=client&theme=dark";
         Log.i(TAG, "open " + url);
-        webView.setAlpha(0f);
         webView.loadUrl(url);
+        revealWhenReady(webView, spinner);
+    }
+
+    /** Viewer page background (dark); the app forces the same theme on the WebView. */
+    private static final int VIEWER_BACKGROUND = 0xFF16181A;
+
+    /**
+     * Keep the native loading screen up until the viewer has actually rendered its first
+     * slide (or reported an error). A blank WebView document would otherwise flash
+     * between the activity window and the first paint.
+     */
+    private void revealWhenReady(WebView view, ProgressBar spinner) {
+        final long deadline = SystemClock.uptimeMillis() + 15000;
+        final Runnable[] poll = new Runnable[1];
+        poll[0] = () -> {
+            if (view != webView) return;
+            if (SystemClock.uptimeMillis() > deadline) {
+                spinner.setVisibility(View.GONE);
+                return;
+            }
+            view.evaluateJavascript(
+                    "!!document.querySelector('.viewer-slide-stage')"
+                            + " || !!document.querySelector('.viewer-error')",
+                    value -> {
+                        if ("true".equals(value)) spinner.setVisibility(View.GONE);
+                        else view.postDelayed(poll[0], 120);
+                    });
+        };
+        view.postDelayed(poll[0], 150);
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -268,23 +308,10 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setAllowFileAccess(false);
-        view.setAlpha(0f);
         view.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest request) {
                 return false;
-            }
-
-            // Hide the blank document the WebView paints before the viewer has anything
-            // on screen; fade in as soon as the first content is committed.
-            @Override
-            public void onPageCommitVisible(WebView v, String url) {
-                v.setAlpha(1f);
-            }
-
-            @Override
-            public void onPageFinished(WebView v, String url) {
-                v.setAlpha(1f);
             }
         });
         view.setWebChromeClient(new WebChromeClient() {

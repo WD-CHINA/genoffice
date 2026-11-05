@@ -20,6 +20,12 @@ const remoteSrc =
   server && fileId
     ? `${server.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(fileId)}/content`
     : ''
+// The embedding host can pin the theme (an Android app matching its own chrome)
+// instead of relying on the WebView's force-dark / prefers-color-scheme.
+const forcedTheme = params.get('theme')
+if (forcedTheme === 'dark' || forcedTheme === 'light') {
+  document.documentElement.dataset.theme = forcedTheme
+}
 applyViewerUi(readViewerUi(params))
 class Boundary extends React.Component<{ children: React.ReactNode }, { error: string }> {
   state = { error: '' }

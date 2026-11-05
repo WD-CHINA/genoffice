@@ -1,5 +1,6 @@
 import React, { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { SlideThumb } from '@genoffice/viewer-renderers/slides/renderer/SlideThumb'
+import { GifOverlay } from '@genoffice/viewer-renderers/slides/renderer/components/GifOverlay'
 import { PreviewMediaLayer } from '@genoffice/viewer-renderers/slides/renderer/components/PreviewMediaLayer'
 import {
   createImageLoader,
@@ -325,6 +326,9 @@ export function Slides({
       const full: Array<readonly [string, HTMLImageElement]> = []
       for (const [url, img] of entries) {
         const key = keyOf.current.get(url) ?? url
+        if (thumbsMime.current.get(key) === 'image/gif' || key.startsWith('data:image/gif'))
+          (img as HTMLImageElement & { __genofficeAnimatedGif?: boolean }).__genofficeAnimatedGif =
+            true
         if (demand.current.has(key)) full.push([key, img])
       }
       if (full.length) setImages((old) => new Map([...old, ...full]))
@@ -721,6 +725,7 @@ export function Slides({
               }}
             >
               <SlideThumb slide={deck.slides[page]} images={images} width={width} />
+              <GifOverlay slide={deck.slides[page]} images={images} width={width} />
               {!show && (
                 <PreviewMediaLayer
                   key={`${src}-${page}`}

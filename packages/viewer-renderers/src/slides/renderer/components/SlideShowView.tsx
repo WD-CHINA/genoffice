@@ -21,6 +21,7 @@ import { useI18n } from '../i18n/locale'
 import { MorphStage } from './MorphStage'
 import { ContextMenu } from './ContextMenu'
 import { SlideThumb } from '../SlideThumb'
+import { GifOverlay } from './GifOverlay'
 import {
   gotoPosition,
   INITIAL_SHOW_KEYS,
@@ -546,6 +547,7 @@ export function SlideShowView({
                   width={fitW}
                   states={player.states}
                 />
+                <GifOverlay slide={slide} images={images} width={fitW} />
                 <ShowMediaLayer
                   key={order[pos]!}
                   slide={slide}

@@ -1,16 +1,11 @@
 /**
- * Offline-friendly PPTX session: the parse server exports the parsed slide models and
- * the viewer lays them out here, in the browser, with the bundled metric fonts plus the
- * browser's own text-width measurements. Nothing in the layout loop talks to the server,
- * so a cached bundle renders with the same wrapping as the online viewer while offline.
- *
- * The session surface matches createPptxSession / createRemotePptxSession.
+ * Offline-capable PPTX session: the parse server exports parsed slide models and a
+ * Worker lays them out here with the bundled metric fonts plus the browser's own
+ * text-width measurements. The main thread only fetches models and moves render trees
+ * into the deck; all layout work happens in pptx-model-worker.
  */
-import { parse as parseFont } from 'opentype.js'
-import { buildRenderSlide } from '@genoffice/pptx-render'
-import { createBundledMetrics, type ParsedFace } from './bundled-metrics'
-import { METRIC_FONTS } from './metric-fonts'
 import type { PptxDeck } from './pptx-session'
+import { METRIC_FONTS } from './metric-fonts'
 
 export interface ModelTarget {
   server: string
@@ -31,13 +26,16 @@ interface LayoutMediaRef {
   url: string
 }
 
-interface LayoutSlide {
+interface Unit {
   slide: any
   playback: any
-  /** media ref → part URL (or inline data URL) */
-  media: Array<[string, string]>
   mediaRefs: LayoutMediaRef[]
-  size: { cx: number; cy: number }
+}
+
+interface UnitState {
+  unit: Unit
+  measurements: WidthItem[]
+  fallbacks: string[]
 }
 
 interface WidthItem {
@@ -57,43 +55,22 @@ async function readError(response: Response): Promise<string> {
   }
 }
 
-/** Carlito's Win metrics keep Office line heights; same adjustment the parse worker makes. */
-function tuneCarlito(font: {
-  ascender: number
-  descender: number
-  lineGap?: number
-  tables?: { os2?: { usWinAscent?: number; usWinDescent?: number } }
-}) {
-  const os2 = font.tables?.os2
-  if (os2?.usWinAscent && os2.usWinDescent != null) {
-    font.ascender = os2.usWinAscent
-    font.descender = -Math.abs(os2.usWinDescent)
-    font.lineGap = 0
+function placeholder(slide: { widthPx: number; heightPx: number }) {
+  return {
+    widthPx: slide.widthPx,
+    heightPx: slide.heightPx,
+    nodes: [],
+    background: { kind: 'solid', color: '#ffffff' },
+    placeholder: true,
   }
 }
 
-async function metricFaces(): Promise<ParsedFace[]> {
-  const faces: ParsedFace[] = []
-  await Promise.all(
-    METRIC_FONTS.map(async (metric) => {
-      try {
-        const response = await fetch(metric.url)
-        if (!response.ok) return
-        const font = parseFont(await response.arrayBuffer())
-        if (metric.tuneWin) tuneCarlito(font)
-        faces.push({
-          family: metric.family,
-          bold: metric.bold,
-          italic: metric.italic,
-          names: metric.names,
-          font,
-        })
-      } catch {
-        /* the face is simply unavailable for measuring */
-      }
-    }),
-  )
-  return faces
+const EMPTY_PLAYBACK = {
+  transition: 'none',
+  animations: [],
+  keys: [],
+  links: [],
+  runLinks: [],
 }
 
 export function createModelPptxSession(target: ModelTarget) {
@@ -101,11 +78,16 @@ export function createModelPptxSession(target: ModelTarget) {
   let sessionId: string | null = null
   let deck: PptxDeck | undefined
   let info: LayoutInfo | undefined
-  let metrics: ReturnType<typeof createBundledMetrics> | undefined
   let widthPx = 960
   let closed = false
-  const sources = new Map<number, LayoutSlide>()
-  const rendered = new Map<number, { slide: any; playback: any }>()
+  let worker: Worker | null = null
+  let nextId = 0
+  const requests = new Map<
+    number,
+    { resolve: (value: any) => void; reject: (error: Error) => void }
+  >()
+  const mediaRefs = new Map<number, LayoutMediaRef[]>()
+  const loaded = new Set<number>()
 
   const authHeaders = (init?: HeadersInit): Headers => {
     const headers = new Headers(init)
@@ -119,45 +101,43 @@ export function createModelPptxSession(target: ModelTarget) {
     return (await response.json()) as T
   }
 
-  const fetchSource = async (index: number): Promise<LayoutSlide> => {
-    const cached = sources.get(index)
-    if (cached) return cached
-    if (!sessionId) throw new Error('Presentation is not open')
-    const source = await json<LayoutSlide>(
-      `/v1/sessions/${encodeURIComponent(sessionId)}/layout/slides/${index}`,
-    )
-    sources.set(index, source)
-    return source
+  const spawn = () => {
+    worker = new Worker(new URL('./pptx-model-worker.ts', import.meta.url), { type: 'module' })
+    worker.onmessage = (
+      event: MessageEvent<{ id: number; ok?: boolean; result?: unknown; error?: string }>,
+    ) => {
+      const task = requests.get(event.data.id)
+      if (!task) return
+      requests.delete(event.data.id)
+      if (event.data.ok) task.resolve(event.data.result)
+      else task.reject(new Error(event.data.error || 'layout worker failed'))
+    }
+    worker.onerror = (event) => {
+      const error = new Error(event.message || 'layout worker crashed')
+      for (const task of requests.values()) task.reject(error)
+      requests.clear()
+    }
   }
 
-  const build = async (index: number): Promise<{ slide: any; playback: any }> => {
-    if (!metrics) throw new Error('Presentation is not open')
-    const source = await fetchSource(index)
-    const media = new Map(source.media)
-    const slide = buildRenderSlide(source.slide, source.size as never, {
-      fitWidthPx: widthPx,
-      metrics: metrics.provider,
-      media: (ref: string) => media.get(ref),
-      slideNo: index + 1,
+  const call = <T>(op: string, input: unknown): Promise<T> =>
+    new Promise<T>((resolve, reject) => {
+      if (!worker || closed) return reject(new Error('Presentation closed'))
+      const id = ++nextId
+      requests.set(id, { resolve, reject })
+      worker.postMessage({ id, op, input })
     })
-    const unit = { slide, playback: source.playback }
-    rendered.set(index, unit)
-    if (deck) {
-      deck.slides[index] = slide
-      deck.playback[index] = source.playback
-    }
-    return unit
+
+  const applyUnit = (index: number, unit: Unit) => {
+    if (!deck) return
+    deck.slides[index] = unit.slide
+    deck.playback[index] = unit.playback
+    mediaRefs.set(index, unit.mediaRefs ?? [])
+    loaded.add(index)
   }
 
   const snapshot = (): PptxDeck => {
-    if (!deck || !metrics) throw new Error('Presentation is not open')
-    return {
-      ...deck,
-      slides: deck.slides.slice(),
-      playback: deck.playback.slice(),
-      measurements: metrics.pendingWidthMeasurements(),
-      fallbacks: metrics.fallbacks(),
-    }
+    if (!deck) throw new Error('Presentation is not open')
+    return { ...deck, slides: deck.slides.slice(), playback: deck.playback.slice() }
   }
 
   return {
@@ -177,55 +157,22 @@ export function createModelPptxSession(target: ModelTarget) {
       info = await json<LayoutInfo>(`/v1/sessions/${encodeURIComponent(sessionId)}/layout`)
       if (!info.slideCount) throw new Error('演示文稿没有幻灯片')
 
-      const faces = await metricFaces()
-      const embedded = info.fonts ?? created.fonts ?? []
-      await Promise.all(
-        embedded.map(async (font) => {
-          try {
-            const response = await fetch(
-              `${base}/v1/sessions/${encodeURIComponent(sessionId!)}/fonts/${encodeURIComponent(font.id)}`,
-              { headers: authHeaders() },
-            )
-            if (!response.ok) return
-            faces.push({
-              family: font.family,
-              bold: font.bold,
-              italic: font.italic,
-              names: font.also ?? [],
-              font: parseFont(await response.arrayBuffer()),
-            })
-          } catch {
-            /* the page still registers the face for drawing; measuring falls back */
-          }
-        }),
-      )
-      metrics = createBundledMetrics(faces)
-
-      const first = await build(0)
+      spawn()
+      const opened = await call<UnitState>('open', {
+        sessionBase: `${base}/v1/sessions/${encodeURIComponent(sessionId)}`,
+        token: target.token,
+        width: widthPx,
+        fonts: info.fonts ?? created.fonts ?? [],
+      })
+      const first = opened.unit
       deck = {
         slides: Array.from({ length: info.slideCount }, (_, index) =>
-          index === 0
-            ? first.slide
-            : {
-                widthPx: first.slide.widthPx,
-                heightPx: first.slide.heightPx,
-                nodes: [],
-                background: { kind: 'solid', color: '#ffffff' },
-                placeholder: true,
-              },
+          index === 0 ? first.slide : { ...placeholder(first.slide), placeholder: true },
         ),
         playback: Array.from({ length: info.slideCount }, (_, index) =>
-          index === 0
-            ? first.playback
-            : {
-                transition: 'none',
-                animations: [],
-                keys: [],
-                links: [],
-                runLinks: [],
-              },
+          index === 0 ? first.playback : EMPTY_PLAYBACK,
         ),
-        measurements: [],
+        measurements: opened.measurements,
         fonts: [
           ...METRIC_FONTS.map((font) => ({
             id: font.url,
@@ -235,7 +182,7 @@ export function createModelPptxSession(target: ModelTarget) {
             url: font.url,
             also: font.names.filter((name) => name !== font.family),
           })),
-          ...embedded.map((font) => ({
+          ...(info.fonts ?? created.fonts ?? []).map((font) => ({
             id: font.id,
             family: font.family,
             bold: font.bold,
@@ -243,10 +190,12 @@ export function createModelPptxSession(target: ModelTarget) {
             also: font.also ?? [],
           })),
         ],
-        fallbacks: [],
+        fallbacks: opened.fallbacks,
         media: [],
         timings: {},
       }
+      mediaRefs.set(0, first.mediaRefs ?? [])
+      loaded.add(0)
       return snapshot()
     },
 
@@ -256,16 +205,46 @@ export function createModelPptxSession(target: ModelTarget) {
       measurements: WidthItem[]
     }> {
       if (!info || index < 0 || index >= info.slideCount) throw new Error('幻灯片不存在')
-      const unit = await build(index)
-      return { slide: unit.slide, playback: unit.playback, measurements: [] }
+      const state = await call<UnitState>('unit', { index })
+      applyUnit(index, state.unit)
+      return {
+        slide: state.unit.slide,
+        playback: state.unit.playback,
+        measurements: state.measurements,
+      }
     },
 
-    /** Re-layout the loaded slides with real widths; no round trip. */
+    /** Re-lay out only the slides whose width keys changed; all in the worker. */
     async measure(widths: Record<string, number>): Promise<PptxDeck> {
-      if (!metrics) throw new Error('Presentation is not open')
-      metrics.acceptWidthMeasurements(widths)
-      for (const index of [...rendered.keys()]) await build(index)
+      const result = await call<{
+        updates: Array<[number, Unit]>
+        measurements: WidthItem[]
+        fallbacks: string[]
+      }>('measure', { widths })
+      for (const [index, unit] of result.updates) applyUnit(index, unit)
+      if (deck) {
+        deck.measurements = result.measurements
+        deck.fallbacks = result.fallbacks
+      }
       return snapshot()
+    },
+
+    /**
+     * Drop render trees and parsed models for slides outside `keep`. Returns the
+     * indexes that were dropped so the page can turn them back into placeholders.
+     */
+    async release(keep: number[]): Promise<number[]> {
+      if (!worker || closed) return []
+      const keepSet = new Set(keep)
+      const drop = [...loaded].filter((index) => !keepSet.has(index))
+      if (!drop.length) return []
+      const result = await call<{ dropped: number[] }>('release', { indexes: drop })
+      for (const index of result.dropped) {
+        mediaRefs.delete(index)
+        loaded.delete(index)
+        if (deck) deck.slides[index] = { ...placeholder(deck.slides[index]), placeholder: true }
+      }
+      return result.dropped
     },
 
     async font(id: string): Promise<ArrayBuffer | null> {
@@ -286,14 +265,29 @@ export function createModelPptxSession(target: ModelTarget) {
       index: number,
       sourceId: string,
     ): Promise<{ kind: string; dataUrl: string } | null> {
-      if (!info) return null
-      const source = await fetchSource(index)
-      const ref = source.mediaRefs.find((item) => item.sourceId === sourceId)
+      let refs = mediaRefs.get(index)
+      if (!refs) {
+        const state = await call<UnitState>('unit', { index })
+        applyUnit(index, state.unit)
+        refs = state.unit.mediaRefs ?? []
+      }
+      const ref = refs.find((item) => item.sourceId === sourceId)
       return ref ? { kind: ref.kind, dataUrl: ref.url } : null
     },
 
     close(): void {
       closed = true
+      for (const task of requests.values()) task.reject(new Error('Presentation closed'))
+      requests.clear()
+      if (worker) {
+        try {
+          worker.postMessage({ id: ++nextId, op: 'close', input: {} })
+        } catch {
+          /* already gone */
+        }
+        worker.terminate()
+        worker = null
+      }
       if (sessionId) {
         void fetch(`${base}/v1/sessions/${encodeURIComponent(sessionId)}`, {
           method: 'DELETE',
@@ -301,8 +295,8 @@ export function createModelPptxSession(target: ModelTarget) {
         }).catch(() => undefined)
         sessionId = null
       }
-      sources.clear()
-      rendered.clear()
+      mediaRefs.clear()
+      loaded.clear()
       deck = undefined
     },
   }

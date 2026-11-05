@@ -560,6 +560,43 @@ export function Slides({
     if (!deck || !thumbsOpen) return
     for (const index of visibleThumbs) void loadSlideRef.current(index)
   }, [deck, visibleThumbs, thumbsOpen])
+  // Client-layout sessions lay slides out in a Worker; drop render trees well outside
+  // the current page so long decks keep a bounded resident set. Evicted slides become
+  // placeholders again and reload through loadSlide when revisited.
+  useEffect(() => {
+    const session = pptx.current as
+      (typeof pptx.current & { release?: (keep: number[]) => Promise<number[]> }) | null
+    if (!session?.release || !deck) return
+    const keep = new Set<number>([page])
+    if (page > 0) keep.add(page - 1)
+    if (page < deck.slides.length - 1) keep.add(page + 1)
+    for (const index of visibleThumbs) keep.add(index)
+    let cancelled = false
+    void session.release([...keep]).then((dropped) => {
+      if (cancelled || !dropped.length) return
+      setDeck((old: any) => {
+        if (!old) return old
+        const slides = old.slides.slice()
+        let changed = false
+        for (const index of dropped) {
+          const current = slides[index]
+          if (!current || current.placeholder || keep.has(index)) continue
+          slides[index] = {
+            widthPx: current.widthPx,
+            heightPx: current.heightPx,
+            nodes: [],
+            background: { kind: 'solid', color: '#ffffff' },
+            placeholder: true,
+          }
+          changed = true
+        }
+        return changed ? { ...old, slides } : old
+      })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [deck, page, visibleThumbs])
   if (!deck)
     return (
       <p className="viewer-status" role={error ? 'alert' : undefined}>

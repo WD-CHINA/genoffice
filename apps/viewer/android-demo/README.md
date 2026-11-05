@@ -9,9 +9,10 @@
    播放信息 + 媒体引用）、模型引用的媒体分片（图片 / 音频 / 视频）和嵌入字体拉取到
    `files/bundles/<fileId>/`，并把模型里的绝对 `.../v1/files/<id>/parts/...` URL 改写为
    同源相对路径；最后写 `manifest.json` 和 `complete` 标记。
-2. **离线排版**：viewer 用 `?layout=client` 走 `pptx-model-session`：在 WebView 里调用
-   `buildRenderSlide` 把解析模型排成渲染树，字宽由浏览器 canvas 实测回填（`measure` 循环），
-   整个排版过程不联网，布局与在线预览一致。
+2. **离线排版**：viewer 走 `pptx-model-session` + `pptx-model-worker`：排版引擎在 Worker 里
+   把解析模型排成渲染树，字宽由浏览器 canvas 实测回填。宽度回传只重建**依赖这些 key 的页**；
+   离屏页（保留当前页 ±1 和可见缩略图）连同模型一起淘汰，回访时按需重新拉取。
+   Web 端同样默认走这条路径，`?layout=server` 可回退到服务端渲染树。
 3. **离线渲染**：`LocalAssetServer` 在 `127.0.0.1` 上同时提供
    - `/viewer/*`：打进 APK assets 的 Web Viewer 静态资源；
    - `/v1/*`：按解析服务契约回放本地离线包（sessions / layout / fonts / parts）。媒体分片
@@ -58,7 +59,7 @@ adb shell am start -n com.genoffice.viewerdemo/.MainActivity \
 
 ## 已知限制
 
-- 排版在 WebView 主线程执行（`pptx-model-session`），页数很多的文档翻页时会有一小段布局
-  时间；后续可以把 `buildRenderSlide` 挪进 Worker。
+- 放映过程中不触发淘汰（预览页不变），长时间放映超大文档时内存会随已放映页增长。
+- 淘汰后回访需要重新拉取该页模型（本地/局域网很快，公网有明显延迟）。
 - 会话/离线包按 `fileId` 存放，没有做空间回收与多包管理。
 - 演示用途：允许对 `127.0.0.1` 的明文 HTTP；正式产品应使用 HTTPS 服务端。

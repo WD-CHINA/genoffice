@@ -14,7 +14,7 @@ const params = new URLSearchParams(location.search),
   server = params.get('server') || '',
   fileId = params.get('fileId') || '',
   token = params.get('token') || '',
-  layout = params.get('layout') === 'client',
+  layout = params.get('layout') !== 'server',
   contentUrl = params.get('contentUrl') || ''
 const remoteSrc =
   server && fileId

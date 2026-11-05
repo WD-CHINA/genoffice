@@ -1,6 +1,5 @@
 import React, { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { SlideThumb } from '@genoffice/viewer-renderers/slides/renderer/SlideThumb'
-import { GifOverlay } from '@genoffice/viewer-renderers/slides/renderer/components/GifOverlay'
 import { PreviewMediaLayer } from '@genoffice/viewer-renderers/slides/renderer/components/PreviewMediaLayer'
 import {
   createImageLoader,
@@ -725,7 +724,6 @@ export function Slides({
               }}
             >
               <SlideThumb slide={deck.slides[page]} images={images} width={width} />
-              <GifOverlay slide={deck.slides[page]} images={images} width={width} />
               {!show && (
                 <PreviewMediaLayer
                   key={`${src}-${page}`}

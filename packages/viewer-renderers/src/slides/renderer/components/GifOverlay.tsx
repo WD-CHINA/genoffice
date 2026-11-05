@@ -11,7 +11,9 @@ import { isAnimatedGif } from '../gif-animation'
 /**
  * Native <img> overlay for animated GIF pictures. Canvas drawImage only paints the
  * first GIF frame reliably, so the animated picture is composited above the Konva
- * canvas at the same slide coordinates. Mirrors the canvas node tree: group wrappers
+ * canvas at the same slide coordinates. The show view is the only caller: preview and
+ * editing keep the canvas first frame, so GIFs stay still until the slide is presented.
+ * Mirrors the canvas node tree: group wrappers
  * nest (children are in group-local coordinates and inherit the group transform), and
  * each frame carries the node's own rotation/flip/crop/picture-style clip.
  *

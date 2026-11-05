@@ -32,7 +32,8 @@ const SlideShowView = lazy(() =>
   })),
 )
 
-const PART_URL = /^https?:\/\/[^\s"']+\/v1\/files\/[^/]+\/parts\//
+// Absolute on a live parse server, relative in an offline bundle served from the app.
+const PART_URL = /^(?:https?:\/\/[^\s"']+)?\/v1\/files\/[^/]+\/parts\//
 function isMediaUrl(value: string) {
   return value.startsWith('data:image/') || PART_URL.test(value)
 }

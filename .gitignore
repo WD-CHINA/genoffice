@@ -44,3 +44,6 @@ _scratch-*
 
 # Local parse-server content store (uploads, cache, temp)
 /apps/parse-server/.parse-server-data/
+
+# Playwright CLI artifacts
+.playwright-cli/

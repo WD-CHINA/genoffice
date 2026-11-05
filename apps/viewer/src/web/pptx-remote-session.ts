@@ -12,6 +12,14 @@ interface RemoteUnit {
   slide: any
   playback: any
   measurements?: WidthItem[]
+  media?: RemoteMediaRef[]
+}
+
+/** Audio/video element on the slide: the media layer plays `url` directly. */
+export interface RemoteMediaRef {
+  sourceId: string
+  kind: 'video' | 'audio'
+  url: string
 }
 
 export interface WidthItem {
@@ -182,8 +190,15 @@ export function createRemotePptxSession(target: RemoteTarget) {
     async bytes(): Promise<ArrayBuffer | null> {
       return null
     },
-    async media(): Promise<{ kind: string; dataUrl: string } | null> {
-      return null
+    /** Audio/video for a slide element; the URL is the part route (Range-capable). */
+    async media(
+      index: number,
+      sourceId: string,
+    ): Promise<{ kind: string; dataUrl: string } | null> {
+      if (index < 0 || index >= unitCount) return null
+      const unit = await fetchUnit(index)
+      const ref = unit.media?.find((item) => item.sourceId === sourceId)
+      return ref ? { kind: ref.kind, dataUrl: ref.url } : null
     },
     close(): void {
       closed = true

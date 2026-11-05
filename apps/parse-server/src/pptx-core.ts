@@ -37,6 +37,18 @@ export interface PptxSlideUnit {
   playback: unknown
   /** Text widths the browser should measure to refine the next render. */
   measurements: WidthItem[]
+  /**
+   * Audio/video elements on this slide. The media layer streams the URL directly
+   * (the part route supports Range), so a cached offline bundle can serve the same
+   * unit with local URLs.
+   */
+  media: PptxMediaRef[]
+}
+
+export interface PptxMediaRef {
+  sourceId: string
+  kind: 'video' | 'audio'
+  url: string
 }
 
 function partUrl(baseUrl: string, fileId: string, part: string, secret?: string): string {
@@ -75,6 +87,30 @@ function createMediaResolver(
   }
 }
 
+interface MediaElement {
+  id: string
+  children?: MediaElement[]
+  media?: { kind: 'video' | 'audio'; target?: string; external?: boolean }
+}
+
+/** Audio/video refs on a slide (groups included); external targets stay as given. */
+function collectMediaRefs(
+  elements: MediaElement[],
+  resolve: (ref: string) => string | undefined,
+): PptxMediaRef[] {
+  const out: PptxMediaRef[] = []
+  for (const element of elements) {
+    const media = element.media
+    const target = media?.target
+    if (media && target) {
+      const url = media.external ? target : resolve(target)
+      if (url) out.push({ sourceId: element.id, kind: media.kind, url })
+    }
+    if (element.children?.length) out.push(...collectMediaRefs(element.children, resolve))
+  }
+  return out
+}
+
 function buildSlideUnit(
   opened: Awaited<ReturnType<typeof openPptx>>,
   index: number,
@@ -87,10 +123,11 @@ function buildSlideUnit(
 ): PptxSlideUnit {
   const slide = opened.deck.slides[index]
   if (!slide) throw new Error(`pptx: slide ${index} does not exist`)
+  const resolve = createMediaResolver(opened, mediaParts, baseUrl, fileId, secret)
   const built = buildRenderSlide(slide, opened.deck.size, {
     fitWidthPx: width,
     metrics,
-    media: createMediaResolver(opened, mediaParts, baseUrl, fileId, secret),
+    media: resolve,
     slideNo: index + 1,
   })
   const ids = new Map(slide.elements.map((element) => [elementSpid(element), element]))
@@ -116,7 +153,12 @@ function buildSlideUnit(
       ...rest,
     })),
   }
-  return { slide: built, playback, measurements: metrics.pendingWidthMeasurements() }
+  return {
+    slide: built,
+    playback,
+    measurements: metrics.pendingWidthMeasurements(),
+    media: collectMediaRefs(slide.elements as MediaElement[], resolve),
+  }
 }
 
 /**

@@ -195,6 +195,26 @@ test('applies show-mode animation state to the overlay', () => {
   assert.match(html, /clip-path:inset\(50% 0 0 0\)/)
 })
 
+test('lifts a later overlapping picture above the GIF instead of freezing it', () => {
+  const gif = picture('p1', box(100, 100, 200, 100), GIF)
+  const sticker = picture('p2', box(250, 120, 100, 100), PNG)
+  const images = new Map([
+    [GIF, image(GIF)],
+    [PNG, image(PNG)],
+  ])
+  // Both paint, the sticker after the GIF (above it)
+  const html = render(slide([gif, sticker]), images, 500)
+  assert.ok(html.indexOf(GIF) >= 0)
+  assert.ok(html.indexOf(PNG) > html.indexOf(GIF))
+  // A later shape over that sticker can't be lifted, so the GIF goes back to the canvas
+  assert.equal(render(slide([gif, sticker, shape('s1', box(250, 120, 20, 20))]), images, 500), '')
+  // A picture that doesn't overlap the GIF is not lifted
+  const far = picture('p3', box(700, 400, 50, 50), PNG)
+  const farHtml = render(slide([gif, far]), images, 500)
+  assert.ok(farHtml.indexOf(GIF) >= 0)
+  assert.equal(farHtml.includes(PNG), false)
+})
+
 test('a GIF hidden by an entrance animation renders no overlay', () => {
   const gif = picture('p1', box(100, 100, 200, 100), GIF)
   const states = new Map([

@@ -15,9 +15,11 @@ import { isAnimatedGif } from '../gif-animation'
  * nest (children are in group-local coordinates and inherit the group transform), and
  * each frame carries the node's own rotation/flip/crop/picture-style clip.
  *
- * A GIF whose frame is covered by anything later in the paint order falls back to the
- * canvas first frame: the overlay paints above the whole canvas, so leaving it in would
- * draw the animation over the covering content.
+ * The overlay paints above the whole canvas, so paint order is reconstructed here:
+ * a picture painted later than a GIF and overlapping it (a sticker/logo in front) is
+ * lifted into the overlay above that GIF, which keeps both the animation and the
+ * picture's front position. Anything else painted later over a GIF (shape, text,
+ * table, chart) can't be lifted, so that GIF falls back to the canvas first frame.
  *
  * During a show `states` carries the animation player's per-node state; entrance/exit
  * effects on a GIF's node (or its group) map to CSS opacity/translate/scale/rotation and
@@ -42,7 +44,7 @@ export function GifOverlay({
   const plan = useMemo(() => planOverlay(slide.nodes, images), [slide.nodes, images])
   if (!plan) return null
   const children = renderBranches(slide.nodes, plan, scale, states)
-  // Every kept picture can still be hidden by an entrance animation
+  // Every overlaid picture can still be hidden by an entrance animation
   if (!children.some(Boolean)) return null
   return (
     <div
@@ -54,30 +56,40 @@ export function GifOverlay({
   )
 }
 
-interface GifPicture {
+/** A picture drawn in the overlay (animated GIF, or a later picture lifted above one). */
+export interface PictureLayer {
   node: PictureRenderNode
   img: HTMLImageElement
 }
 
-interface OverlayPlan {
-  /** GIF pictures that keep their overlay, by node id */
-  pictures: Map<string, GifPicture>
-  /** Nodes whose subtree still carries a picture (ancestors of the kept ones) */
+export interface OverlayPlan {
+  /** Animated GIFs that keep their overlay, by node id */
+  gifs: Map<string, PictureLayer>
+  /** Later pictures lifted above a GIF, by node id */
+  raised: Map<string, PictureLayer>
+  /** Nodes whose subtree holds an overlaid picture (kept branches) */
   keep: Set<string>
 }
 
-function gifPicture(node: RenderNode, images: Map<string, HTMLImageElement>): GifPicture | null {
+function pictureLayer(
+  node: RenderNode,
+  images: Map<string, HTMLImageElement>,
+): PictureLayer | null {
   if (node.type !== 'picture') return null
   const pic = node as PictureRenderNode
-  // Video/audio poster frames are stills, never animated GIFs
+  // Video/audio poster frames have their own player layers
   if (pic.media) return null
   const img = pic.dataUrl ? images.get(pic.dataUrl) : undefined
-  if (!img || !isAnimatedGif(img)) return null
-  // ≤2×2 pictures stretch to one flat color on the canvas; an overlay would blow it up
-  const w = img.naturalWidth || img.width
-  const h = img.naturalHeight || img.height
-  if (w > 0 && h > 0 && w <= 2 && h <= 2) return null
+  if (!img) return null
   return { node: pic, img }
+}
+
+function isOverlayGif(layer: PictureLayer): boolean {
+  if (!isAnimatedGif(layer.img)) return false
+  // ≤2×2 pictures stretch to one flat color on the canvas; an overlay would blow it up
+  const w = layer.img.naturalWidth || layer.img.width
+  const h = layer.img.naturalHeight || layer.img.height
+  return !(w > 0 && h > 0 && w <= 2 && h <= 2)
 }
 
 // ── Paint-order analysis ────────────────────────────────────────────────────────────
@@ -161,52 +173,96 @@ function flattenPaintOrder(nodes: RenderNode[], parent: Mat, out: FlatNode[]): v
   }
 }
 
-function planOverlay(
+/** Exposed for tests: which pictures the overlay shows, and which later pictures ride above them. */
+export function planOverlay(
   nodes: RenderNode[],
   images: Map<string, HTMLImageElement>,
 ): OverlayPlan | null {
   const flat: FlatNode[] = []
   flattenPaintOrder(nodes, IDENTITY, flat)
-  const pictures = new Map<string, GifPicture>()
-  for (const entry of flat) {
-    const pic = gifPicture(entry.node, images)
-    if (pic) pictures.set(entry.node.id, pic)
-  }
-  if (!pictures.size) return null
-  // Anything painted later that overlaps the GIF's frame would have drawn over it on
-  // the canvas; the overlay can't be occluded, so that GIF keeps the canvas first frame.
-  const covered = new Set<string>()
-  for (let i = 0; i < flat.length; i++) {
-    const entry = flat[i]!
-    if (!pictures.has(entry.node.id)) continue
+  const at = new Map<string, number>()
+  const layers = new Map<string, PictureLayer>()
+  flat.forEach((entry, i) => {
+    at.set(entry.node.id, i)
+    const layer = pictureLayer(entry.node, images)
+    if (layer) layers.set(entry.node.id, layer)
+  })
+  const gifIds = new Set<string>()
+  for (const [id, layer] of layers) if (isOverlayGif(layer)) gifIds.add(id)
+  if (!gifIds.size) return null
+
+  // Later pictures overlapping a GIF can ride in the overlay above it; media and
+  // undecoded pictures can't, so they force the GIF back to the canvas.
+  const candidates = new Set<string>(gifIds)
+  for (const gifId of gifIds) {
+    const i = at.get(gifId)!
+    const gifRect = flat[i]!.rect
     for (let j = i + 1; j < flat.length; j++) {
       const later = flat[j]!
-      // A group paints only through its children (already in the list)
-      if (later.node.type === 'group') continue
-      if (overlaps(entry.rect, later.rect)) {
-        covered.add(entry.node.id)
+      if (later.node.type !== 'picture') continue
+      if (!layers.has(later.node.id)) continue
+      if (overlaps(gifRect, later.rect)) candidates.add(later.node.id)
+    }
+  }
+
+  // A lifted picture must itself stay above everything painted after it that it
+  // overlaps: any later node we cannot lift (shape/text/table/chart) takes the picture
+  // (and through it the GIF) back to the canvas. Iterate until the set is stable.
+  for (let changed = true; changed;) {
+    changed = false
+    for (const id of [...candidates]) {
+      const i = at.get(id)!
+      for (let j = i + 1; j < flat.length; j++) {
+        const later = flat[j]!
+        // A group paints only through its children (already in the list)
+        if (later.node.type === 'group') continue
+        if (!overlaps(flat[i]!.rect, later.rect)) continue
+        if (!candidates.has(later.node.id)) {
+          candidates.delete(id)
+          changed = true
+          break
+        }
+      }
+    }
+  }
+
+  const gifs = new Map<string, PictureLayer>()
+  for (const id of gifIds) if (candidates.has(id)) gifs.set(id, layers.get(id)!)
+  if (!gifs.size) return null
+
+  // Lift only pictures that still sit above a surviving GIF
+  const raised = new Map<string, PictureLayer>()
+  for (const id of candidates) {
+    if (gifIds.has(id)) continue
+    const entry = flat[at.get(id)!]!
+    for (const gifId of gifs.keys()) {
+      const gif = flat[at.get(gifId)!]!
+      if (at.get(gifId)! < at.get(id)! && overlaps(gif.rect, entry.rect)) {
+        raised.set(id, layers.get(id)!)
         break
       }
     }
   }
-  for (const id of covered) pictures.delete(id)
-  if (!pictures.size) return null
+
   const keep = new Set<string>()
-  markKeep(nodes, pictures, keep)
-  return { pictures, keep }
+  markKeep(nodes, gifs, raised, keep)
+  return { gifs, raised, keep }
 }
 
-/** Keep every node whose subtree holds a kept picture, so groups can be pruned. */
+/** Keep every node whose subtree holds an overlaid picture, so groups can be pruned. */
 function markKeep(
   nodes: RenderNode[],
-  pictures: Map<string, GifPicture>,
+  gifs: Map<string, PictureLayer>,
+  raised: Map<string, PictureLayer>,
   keep: Set<string>,
 ): boolean {
   let any = false
   for (const node of nodes) {
     const child =
-      node.type === 'group' ? markKeep((node as GroupRenderNode).children, pictures, keep) : false
-    if (child || pictures.has(node.id)) {
+      node.type === 'group'
+        ? markKeep((node as GroupRenderNode).children, gifs, raised, keep)
+        : false
+    if (child || gifs.has(node.id) || raised.has(node.id)) {
       keep.add(node.id)
       any = true
     }
@@ -235,15 +291,15 @@ function renderBranches(
           </div>
         )
       }
-      const pic = plan.pictures.get(node.id)
-      if (!pic) return null
+      const layer = plan.gifs.get(node.id) ?? plan.raised.get(node.id)
+      if (!layer) return null
       return (
-        <GifPictureFrame
+        <PictureFrame
           key={node.id}
           frame={frame}
-          opacity={(st?.opacity ?? 1) * (pic.node.opacity ?? 1)}
-          pic={pic.node}
-          img={pic.img}
+          opacity={(st?.opacity ?? 1) * (layer.node.opacity ?? 1)}
+          pic={layer.node}
+          img={layer.img}
           scale={scale}
         />
       )
@@ -290,7 +346,7 @@ function wipeClip(clip: NonNullable<NodeAnimState['clip']>): string {
   return `inset(${hiddenPct}% 0 0 0)`
 }
 
-function GifPictureFrame({
+function PictureFrame({
   frame,
   opacity,
   pic,

@@ -3,7 +3,16 @@ import { PptxCore } from './pptx-core'
 
 interface Request {
   id: number
-  op: 'open' | 'unit' | 'units' | 'widths' | 'measurements' | 'font' | 'close'
+  op:
+    | 'open'
+    | 'unit'
+    | 'units'
+    | 'layoutInfo'
+    | 'layoutModel'
+    | 'widths'
+    | 'measurements'
+    | 'font'
+    | 'close'
   input?: unknown
 }
 
@@ -31,6 +40,17 @@ port.on('message', (request: Request) => {
           if (!core) throw new Error('presentation is not open')
           const { cursor, limit } = request.input as { cursor?: string; limit?: number }
           result = core.units(cursor, limit)
+          break
+        }
+        case 'layoutInfo': {
+          if (!core) throw new Error('presentation is not open')
+          result = core.layoutInfo()
+          break
+        }
+        case 'layoutModel': {
+          if (!core) throw new Error('presentation is not open')
+          const { unitId } = request.input as { unitId: string }
+          result = core.layoutModel(unitId)
           break
         }
         case 'widths': {

@@ -242,6 +242,32 @@ final class LocalAssetServer extends Thread {
                     "HEAD".equals(method), null);
             return;
         }
+        if (raw.length == 5 && "layout".equals(raw[4]) && "GET".equals(method)) {
+            File file = store.layoutInfoFile();
+            if (!file.isFile()) {
+                sendText(out, 404, "Not Found");
+                return;
+            }
+            sendBytes(out, 200, "application/json; charset=utf-8", readFile(file), false, null);
+            return;
+        }
+        if (raw.length == 7 && "layout".equals(raw[4]) && "slides".equals(raw[5])
+                && "GET".equals(method)) {
+            int index;
+            try {
+                index = Integer.parseInt(decode(raw[6]));
+            } catch (NumberFormatException e) {
+                sendText(out, 400, "Bad Request");
+                return;
+            }
+            File file = store.layoutSlideFile(index);
+            if (!file.isFile()) {
+                sendText(out, 404, "Not Found");
+                return;
+            }
+            sendBytes(out, 200, "application/json; charset=utf-8", readFile(file), false, null);
+            return;
+        }
         if (raw.length == 5 && "text-widths".equals(raw[4]) && "POST".equals(method)) {
             // Offline units keep the server's heuristic layout; no re-render to do.
             sendJson(out, 200, "{}");

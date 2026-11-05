@@ -485,6 +485,37 @@ async function handleSession(
     sendJson(res, 200, { measurements })
     return
   }
+  if (req.method === 'GET' && rest.length === 1 && rest[0] === 'layout') {
+    const session = await ensureSession(entry, req, ctx)
+    if (!(session instanceof PptxSession)) {
+      sendError(res, 404, 'not_found', 'layout is only available for PPTX', false, requestId)
+      return
+    }
+    sendJson(res, 200, await session.layoutInfo())
+    return
+  }
+  if (req.method === 'GET' && rest.length === 3 && rest[0] === 'layout' && rest[1] === 'slides') {
+    try {
+      const session = await ensureSession(entry, req, ctx)
+      if (!(session instanceof PptxSession)) {
+        sendError(res, 404, 'not_found', 'layout is only available for PPTX', false, requestId)
+        return
+      }
+      sendJson(res, 200, await session.layoutModel(decodeURIComponent(rest[2])))
+    } catch (error) {
+      if (error instanceof HttpError) throw error
+      const code = (error as { code?: string })?.code
+      if (code === 'parse_timeout') {
+        throw new HttpError(504, 'parse_timeout', 'slide layout timed out')
+      }
+      throw new HttpError(
+        404,
+        'not_found',
+        error instanceof Error ? error.message : 'unknown slide',
+      )
+    }
+    return
+  }
   if (req.method === 'GET' && rest.length === 2 && rest[0] === 'units') {
     try {
       const session = await ensureSession(entry, req, ctx)

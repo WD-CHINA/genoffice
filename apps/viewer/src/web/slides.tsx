@@ -13,6 +13,7 @@ import { ToolbarIcon } from './toolbar-icon'
 import { ViewerBar } from './viewer-bar'
 import { createPptxSession, type PptxDeck } from './pptx-session'
 import { createRemotePptxSession } from './pptx-remote-session'
+import { createModelPptxSession } from './pptx-model-session'
 import { METRIC_FONTS } from './metric-fonts'
 import { readViewerUi } from './ui-options'
 import { createViewerTiming } from './performance'
@@ -146,11 +147,14 @@ export function Slides({
   server,
   fileId,
   token,
+  layout,
 }: {
   src: string
   server?: string
   fileId?: string
   token?: string
+  /** Lay the exported slide models out here instead of fetching server render trees. */
+  layout?: boolean
 }) {
   const [deck, setDeck] = useState<any>(null),
     /** full-resolution pictures, kept only for the slide on screen (its +/-) */
@@ -352,7 +356,9 @@ export function Slides({
     loaderRef.current = loader
     const session =
       server && fileId
-        ? createRemotePptxSession({ server, fileId, token, fonts: REMOTE_FONTS })
+        ? layout
+          ? createModelPptxSession({ server, fileId, token })
+          : createRemotePptxSession({ server, fileId, token, fonts: REMOTE_FONTS })
         : createPptxSession()
     pptx.current = session
     const parts = partsRef.current
@@ -494,7 +500,7 @@ export function Slides({
       // and are rebuilt by the next run (the effect re-runs on retry, unmount drops them)
       for (const url of revoked) URL.revokeObjectURL(url)
     }
-  }, [src, retry, server, fileId, token])
+  }, [src, retry, server, fileId, token, layout])
   useEffect(() => {
     deckRef.current = deck
   }, [deck])

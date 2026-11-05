@@ -27,6 +27,7 @@ const serverUrl = (
   .trim()
   .replace(/\/+$/, '')
 const serverToken = (linkParams.get('token') || '').trim()
+const layoutParam = (linkParams.get('layout') || '').trim()
 const PARSE_MODE_KEY = 'genoffice-viewer-parse-mode'
 function initialParseMode(): ParseMode {
   const requested = linkParams.get('parse')
@@ -348,6 +349,7 @@ function Host() {
               ? {
                   server: opened.remote.server,
                   fileId: opened.remote.fileId,
+                  ...(layoutParam ? { layout: layoutParam } : {}),
                   ...(opened.remote.token ? { token: opened.remote.token } : {}),
                   ...(opened.remote.contentUrl ? { contentUrl: opened.remote.contentUrl } : {}),
                 }

@@ -2,9 +2,9 @@ import { Worker } from 'node:worker_threads'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
 import type { WidthItem } from './metrics'
-import type { PptxFontSummary, PptxSlideUnit } from './pptx-core'
+import type { PptxFontSummary, PptxLayoutInfo, PptxLayoutSlide, PptxSlideUnit } from './pptx-core'
 
-export type { PptxFontSummary, PptxSlideUnit } from './pptx-core'
+export type { PptxFontSummary, PptxLayoutInfo, PptxLayoutSlide, PptxSlideUnit } from './pptx-core'
 
 /** A parse job exceeded its budget; the worker was terminated. */
 export class ParseTimeoutError extends Error {
@@ -129,6 +129,16 @@ export class PptxSession {
 
   fontBytes(fontId: string): Promise<Uint8Array | null> {
     return this.call('font', { fontId }, this.unitTimeoutMs)
+  }
+
+  /** Deck-level input for client-side layout. */
+  layoutInfo(): Promise<PptxLayoutInfo> {
+    return this.call('layoutInfo', {}, this.unitTimeoutMs)
+  }
+
+  /** Parsed slide model the viewer lays out itself. */
+  layoutModel(unitId: string): Promise<PptxLayoutSlide> {
+    return this.call('layoutModel', { unitId }, this.unitTimeoutMs)
   }
 
   /** Accept browser text widths; returns the remaining measurements. */

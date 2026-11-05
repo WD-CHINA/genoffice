@@ -7,7 +7,7 @@ import {
   getSlideTransition,
   openPptx,
 } from '@genoffice/pptx-engine'
-import { buildRenderSlide } from '@genoffice/pptx-render'
+import { buildRenderSlide, HeuristicMetrics } from '@genoffice/pptx-render'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
 import { FeedbackMetrics, type WidthItem } from './metrics'
@@ -111,27 +111,10 @@ function collectMediaRefs(
   return out
 }
 
-function buildSlideUnit(
-  opened: Awaited<ReturnType<typeof openPptx>>,
-  index: number,
-  width: number,
-  mediaParts: ReadonlySet<string>,
-  baseUrl: string,
-  fileId: string,
-  metrics: FeedbackMetrics,
-  secret?: string,
-): PptxSlideUnit {
-  const slide = opened.deck.slides[index]
-  if (!slide) throw new Error(`pptx: slide ${index} does not exist`)
-  const resolve = createMediaResolver(opened, mediaParts, baseUrl, fileId, secret)
-  const built = buildRenderSlide(slide, opened.deck.size, {
-    fitWidthPx: width,
-    metrics,
-    media: resolve,
-    slideNo: index + 1,
-  })
+function slidePlayback(opened: Awaited<ReturnType<typeof openPptx>>, index: number) {
+  const slide = opened.deck.slides[index]!
   const ids = new Map(slide.elements.map((element) => [elementSpid(element), element]))
-  const playback = {
+  return {
     transition: getSlideTransition(slide),
     animations: getSlideAnimations(slide).flatMap((item) => {
       const element = ids.get(item.spid)
@@ -153,6 +136,28 @@ function buildSlideUnit(
       ...rest,
     })),
   }
+}
+
+function buildSlideUnit(
+  opened: Awaited<ReturnType<typeof openPptx>>,
+  index: number,
+  width: number,
+  mediaParts: ReadonlySet<string>,
+  baseUrl: string,
+  fileId: string,
+  metrics: FeedbackMetrics,
+  secret?: string,
+): PptxSlideUnit {
+  const slide = opened.deck.slides[index]
+  if (!slide) throw new Error(`pptx: slide ${index} does not exist`)
+  const resolve = createMediaResolver(opened, mediaParts, baseUrl, fileId, secret)
+  const built = buildRenderSlide(slide, opened.deck.size, {
+    fitWidthPx: width,
+    metrics,
+    media: resolve,
+    slideNo: index + 1,
+  })
+  const playback = slidePlayback(opened, index)
   return {
     slide: built,
     playback,
@@ -166,6 +171,38 @@ function buildSlideUnit(
  * stripped), so opening a 1 GB deck costs the XML parts rather than the whole
  * package; slides are laid out lazily and cached.
  */
+/** Client-side layout input: the parsed slide model plus what building a render tree needs. */
+export interface PptxLayoutSlide {
+  slide: unknown
+  playback: unknown
+  /** Media refs this slide's render tree uses → part URL (or inline data URL). */
+  media: Array<[string, string]>
+  /** Audio/video elements, for the viewer's media layer. */
+  mediaRefs: PptxMediaRef[]
+  size: { cx: number; cy: number }
+}
+
+export interface PptxLayoutInfo {
+  size: { cx: number; cy: number }
+  slideCount: number
+  fonts: PptxFontSummary[]
+  parserVersion: string
+}
+
+/** Save-only XML and dirty flags never reach the client; bodyPrefix stays (hidden-slide check). */
+function layoutSafe(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(layoutSafe)
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'originalXml' || key === 'bodySuffix' || key.startsWith('dirty')) continue
+      out[key] = layoutSafe(child)
+    }
+    return out
+  }
+  return value
+}
+
 export class PptxCore {
   readonly model: DocModel
   private readonly cache = new Map<number, PptxSlideUnit>()
@@ -280,6 +317,57 @@ export class PptxCore {
     }
     this.touch()
     return unit
+  }
+
+  /** Deck-level input for client-side layout (see layoutModel). */
+  layoutInfo(): PptxLayoutInfo {
+    this.touch()
+    return {
+      size: this.opened.deck.size,
+      slideCount: this.opened.deck.slides.length,
+      fonts: this.fonts,
+      parserVersion: this.model.parserVersion,
+    }
+  }
+
+  /**
+   * Parsed slide model for the viewer's own layout pass. One throwaway render with a
+   * recording media resolver collects exactly the refs the client's render will ask
+   * for, so every one resolves to a part URL or inline data URL offline too.
+   */
+  layoutModel(unitId: string): PptxLayoutSlide {
+    this.touch()
+    const index = Number.parseInt(unitId, 10)
+    if (!Number.isInteger(index) || index < 0 || index >= this.opened.deck.slides.length) {
+      throw new Error(`pptx: unknown slide ${unitId}`)
+    }
+    const slide = this.opened.deck.slides[index]!
+    const resolve = createMediaResolver(
+      this.opened,
+      this.mediaParts,
+      this.baseUrl,
+      this.fileId,
+      this.secret,
+    )
+    const media = new Map<string, string>()
+    const record = (ref: string): string | undefined => {
+      const url = resolve(ref)
+      if (url) media.set(ref, url)
+      return url
+    }
+    buildRenderSlide(slide, this.opened.deck.size, {
+      fitWidthPx: this.width,
+      metrics: new HeuristicMetrics(),
+      media: record,
+      slideNo: index + 1,
+    })
+    return {
+      slide: layoutSafe(slide),
+      playback: slidePlayback(this.opened, index),
+      media: [...media],
+      mediaRefs: collectMediaRefs(slide.elements as MediaElement[], resolve),
+      size: this.opened.deck.size,
+    }
   }
 
   fontBytes(fontId: string): Uint8Array | null {

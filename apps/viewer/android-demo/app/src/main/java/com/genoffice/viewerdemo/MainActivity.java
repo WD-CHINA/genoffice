@@ -247,7 +247,8 @@ public class MainActivity extends Activity {
         }
         if (webView == null) webView = createWebView();
         setContentView(webView);
-        String url = "http://127.0.0.1:" + port + "/index.html?parse=server&fileId=" + Uri.encode(fileId);
+        String url = "http://127.0.0.1:" + port + "/index.html?parse=server&layout=client&fileId="
+                + Uri.encode(fileId);
         Log.i(TAG, "open " + url);
         webView.loadUrl(url);
     }

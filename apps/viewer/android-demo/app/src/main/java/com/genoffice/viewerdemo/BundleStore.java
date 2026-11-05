@@ -45,6 +45,16 @@ final class BundleStore {
         return new File(new File(dir, "units"), index + ".json");
     }
 
+    /** Deck-level layout input (size, slide count, fonts). */
+    File layoutInfoFile() {
+        return new File(dir, "layout.json");
+    }
+
+    /** Parsed slide model the viewer lays out itself. */
+    File layoutSlideFile(int index) {
+        return new File(new File(dir, "layout"), index + ".json");
+    }
+
     /** Media part path (relative to the package, e.g. ppt/media/media1.mp4). */
     File partFile(String partPath) throws IOException {
         File parts = new File(dir, "parts");

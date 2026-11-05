@@ -58,18 +58,17 @@ final class BundleDownloader {
         store.dir().mkdirs();
         JSONObject created = openSession();
         JSONArray fonts = created.optJSONArray("fonts");
-        int count = created.optJSONObject("model") == null
-                ? 0
-                : created.optJSONObject("model").optInt("unitCount");
+        String sessionPath = server + "/v1/sessions/" + encode(sessionId);
+        JSONObject layout = requestJson(sessionPath + "/layout", "GET", null);
+        int count = layout.optInt("slideCount");
         if (count <= 0) throw new IOException("演示文稿没有幻灯片");
+        writeFile(store.layoutInfoFile(), layout.toString().getBytes(StandardCharsets.UTF_8));
         for (int i = 0; i < count; i++) {
-            listener.stage("下载第 " + (i + 1) + " / " + count + " 页（媒体 " + partsDownloaded + " 个）…");
-            JSONObject unit = fetchUnit(i);
-            rewrite(unit);
-            // Nothing will re-measure offline: keep the heuristic layout and drop the
-            // pending-measurement list so the viewer does not wait on a refinement.
-            unit.remove("measurements");
-            writeFile(store.unitFile(i), unit.toString().getBytes(StandardCharsets.UTF_8));
+            listener.stage("下载第 " + (i + 1) + " / " + count + " 页模型（媒体 "
+                    + partsDownloaded + " 个）…");
+            JSONObject slide = requestJson(sessionPath + "/layout/slides/" + i, "GET", null);
+            rewrite(slide);
+            writeFile(store.layoutSlideFile(i), slide.toString().getBytes(StandardCharsets.UTF_8));
         }
         if (fonts != null) {
             for (int i = 0; i < fonts.length(); i++) {

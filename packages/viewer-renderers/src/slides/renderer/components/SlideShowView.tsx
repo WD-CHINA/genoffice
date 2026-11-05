@@ -547,7 +547,7 @@ export function SlideShowView({
                   width={fitW}
                   states={player.states}
                 />
-                <GifOverlay slide={slide} images={images} width={fitW} />
+                <GifOverlay slide={slide} images={images} width={fitW} states={player.states} />
                 <ShowMediaLayer
                   key={order[pos]!}
                   slide={slide}

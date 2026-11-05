@@ -53,8 +53,24 @@ function slide(nodes: RenderNode[]): RenderSlide {
   return { widthPx: 1000, heightPx: 500, scale: 1, background: { kind: 'none' }, nodes }
 }
 
-function render(node: RenderSlide, images: Map<string, HTMLImageElement>, width: number): string {
-  return renderToStaticMarkup(createElement(GifOverlay, { slide: node, images, width }))
+function shape(id: string, b: RenderNode['box']): RenderNode {
+  return {
+    id,
+    type: 'shape',
+    sourceId: id,
+    box: b,
+    fill: { kind: 'solid', color: '#ff0000' },
+    presetGeometry: 'rect',
+  } as RenderNode
+}
+
+function render(
+  node: RenderSlide,
+  images: Map<string, HTMLImageElement>,
+  width: number,
+  states?: Parameters<typeof GifOverlay>[0]['states'],
+): string {
+  return renderToStaticMarkup(createElement(GifOverlay, { slide: node, images, width, states }))
 }
 
 test('renders animated GIF pictures recursively through groups with their transforms', () => {
@@ -76,7 +92,7 @@ test('renders animated GIF pictures recursively through groups with their transf
     id: 'g2',
     type: 'group',
     sourceId: 'g2',
-    box: box(700, 400, 100, 100, { rotationDeg: 45 }),
+    box: box(700, 20, 100, 100, { rotationDeg: 45 }),
     children: [picture('p4', box(0, 0, 10, 10), PNG)],
   } as RenderNode
   const html = render(
@@ -112,4 +128,89 @@ test('renders nothing when the slide holds no animated GIF', () => {
     500,
   )
   assert.equal(html, '')
+})
+
+test('keeps the overlay only while nothing later paints over the GIF', () => {
+  const gif = picture('p1', box(100, 100, 200, 100), GIF)
+  const behind = shape('s0', box(0, 0, 1000, 500))
+  const images = new Map([[GIF, image(GIF)]])
+  // Painted earlier → the GIF still owns the top layer
+  assert.match(render(slide([behind, gif]), images, 500), /slides-gif-overlay/)
+  // A later shape overlapping the frame → fall back to the canvas first frame
+  assert.equal(render(slide([gif, shape('s1', box(250, 120, 50, 50))]), images, 500), '')
+  // The group container alone doesn't paint; an overlapping child does
+  const farGroup: RenderNode = {
+    id: 'g1',
+    type: 'group',
+    sourceId: 'g1',
+    box: box(0, 0, 500, 500),
+    children: [shape('s2', box(400, 400, 10, 10))],
+  } as RenderNode
+  assert.match(render(slide([gif, farGroup]), images, 500), /slides-gif-overlay/)
+  const nearGroup: RenderNode = {
+    id: 'g2',
+    type: 'group',
+    sourceId: 'g2',
+    box: box(0, 0, 500, 400),
+    children: [shape('s3', box(260, 130, 10, 10))],
+  } as RenderNode
+  assert.equal(render(slide([gif, nearGroup]), images, 500), '')
+  // A rotated group's child is tested in absolute slide coordinates: unrotated it sits
+  // below the GIF, and the 90° group rotation carries it up over the frame
+  const rotatedGroup: RenderNode = {
+    id: 'g3',
+    type: 'group',
+    sourceId: 'g3',
+    box: box(0, 200, 400, 200, { rotationDeg: 90 }),
+    children: [shape('s4', box(40, 90, 20, 20))],
+  } as RenderNode
+  assert.equal(render(slide([gif, rotatedGroup]), images, 500), '')
+})
+
+test('applies show-mode animation state to the overlay', () => {
+  const gif = picture('p1', box(100, 100, 200, 100), GIF)
+  const images = new Map([[GIF, image(GIF)]])
+  const states = new Map([
+    [
+      'p1',
+      {
+        hidden: false,
+        opacity: 0.5,
+        scale: 1.5,
+        scaleX: 1,
+        rotationDeg: 45,
+        dx: 20,
+        dy: -10,
+        clip: { t: 0.5, mode: 'btm' as const },
+      },
+    ],
+  ])
+  const html = render(slide([gif]), images, 500, states)
+  // Canvas-space offsets scale with the slide; animation transform wraps the node transform
+  assert.match(
+    html,
+    /transform:translate\(10px, -5px\) rotate\(45deg\) scale\(1\.5, 1\.5\) rotate\(0deg\) scale\(1, 1\)/,
+  )
+  assert.match(html, /opacity:0\.5/)
+  assert.match(html, /clip-path:inset\(50% 0 0 0\)/)
+})
+
+test('a GIF hidden by an entrance animation renders no overlay', () => {
+  const gif = picture('p1', box(100, 100, 200, 100), GIF)
+  const states = new Map([
+    [
+      'p1',
+      {
+        hidden: true,
+        opacity: 0,
+        scale: 1,
+        scaleX: 1,
+        rotationDeg: 0,
+        dx: 0,
+        dy: 0,
+        clip: null,
+      },
+    ],
+  ])
+  assert.equal(render(slide([gif]), new Map([[GIF, image(GIF)]]), 500, states), '')
 })

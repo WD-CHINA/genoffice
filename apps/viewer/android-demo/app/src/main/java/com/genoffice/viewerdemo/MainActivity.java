@@ -247,9 +247,16 @@ public class MainActivity extends Activity {
         }
         if (webView == null) webView = createWebView();
         setContentView(webView);
-        String url = "http://127.0.0.1:" + port + "/index.html?parse=server&layout=client&fileId="
-                + Uri.encode(fileId);
+        // Load the preview document directly: the host shell (header + iframe) would add a
+        // second document load and a blank frame before the deck appears.
+        String base = "http://127.0.0.1:" + port;
+        String url = base + "/viewer/preview.html?src=bundle&format=pptx&name="
+                + Uri.encode(fileId)
+                + "&server=" + Uri.encode(base)
+                + "&fileId=" + Uri.encode(fileId)
+                + "&layout=client";
         Log.i(TAG, "open " + url);
+        webView.setAlpha(0f);
         webView.loadUrl(url);
     }
 
@@ -261,10 +268,23 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setAllowFileAccess(false);
+        view.setAlpha(0f);
         view.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest request) {
                 return false;
+            }
+
+            // Hide the blank document the WebView paints before the viewer has anything
+            // on screen; fade in as soon as the first content is committed.
+            @Override
+            public void onPageCommitVisible(WebView v, String url) {
+                v.setAlpha(1f);
+            }
+
+            @Override
+            public void onPageFinished(WebView v, String url) {
+                v.setAlpha(1f);
             }
         });
         view.setWebChromeClient(new WebChromeClient() {

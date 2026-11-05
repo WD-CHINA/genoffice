@@ -156,7 +156,10 @@ export function Slides({
   /** Lay the exported slide models out here instead of fetching server render trees. */
   layout?: boolean
 }) {
-  const [deck, setDeck] = useState<any>(null),
+  const recentPages = useRef<number[]>([]),
+    [deck, setDeck] = useState<any>(null),
+    /** Last non-placeholder slide: held on screen while the next page loads. */
+    [heldSlide, setHeldSlide] = useState<any>(null),
     /** full-resolution pictures, kept only for the slide on screen (its +/-) */
     [images, setImages] = useState(new Map<string, HTMLImageElement>()),
     /** thumbnail strip: still rasters keyed by the picture's data url */
@@ -556,10 +559,31 @@ export function Slides({
     if (!deck) return
     void loadSlideRef.current(page)
   }, [deck, page])
+  // Keep the previous page's frame up while the next one is fetched and laid out,
+  // instead of swapping in a blank placeholder slide.
+  useEffect(() => {
+    if (!deck) {
+      setHeldSlide(null)
+      return
+    }
+    const slide = deck.slides[page]
+    if (slide && !slide.placeholder) setHeldSlide(slide)
+  }, [deck, page])
+  // Prefetch the neighbours so a normal page turn never shows a placeholder.
+  useEffect(() => {
+    if (!deck) return
+    if (page + 1 < deck.slides.length) void loadSlideRef.current(page + 1)
+    if (page > 0) void loadSlideRef.current(page - 1)
+  }, [deck, page])
   useEffect(() => {
     if (!deck || !thumbsOpen) return
     for (const index of visibleThumbs) void loadSlideRef.current(index)
   }, [deck, visibleThumbs, thumbsOpen])
+  useEffect(() => {
+    const list = recentPages.current.filter((index) => index !== page)
+    list.unshift(page)
+    recentPages.current = list.slice(0, 8)
+  }, [page])
   // Client-layout sessions lay slides out in a Worker; drop render trees well outside
   // the current page so long decks keep a bounded resident set. Evicted slides become
   // placeholders again and reload through loadSlide when revisited.
@@ -570,6 +594,7 @@ export function Slides({
     const keep = new Set<number>([page])
     if (page > 0) keep.add(page - 1)
     if (page < deck.slides.length - 1) keep.add(page + 1)
+    for (const index of recentPages.current) keep.add(index)
     for (const index of visibleThumbs) keep.add(index)
     let cancelled = false
     void session.release([...keep]).then((dropped) => {
@@ -767,7 +792,11 @@ export function Slides({
                 height: (deck.slides[page].heightPx * width) / deck.slides[page].widthPx,
               }}
             >
-              <SlideThumb slide={deck.slides[page]} images={images} width={width} />
+              <SlideThumb
+                slide={deck.slides[page]?.placeholder && heldSlide ? heldSlide : deck.slides[page]}
+                images={images}
+                width={width}
+              />
               {!show && (
                 <PreviewMediaLayer
                   key={`${src}-${page}`}

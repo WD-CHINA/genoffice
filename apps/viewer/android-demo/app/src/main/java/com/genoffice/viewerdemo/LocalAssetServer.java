@@ -221,6 +221,10 @@ final class LocalAssetServer extends Thread {
             sendText(out, 404, "Not Found");
             return;
         }
+        if (raw.length == 4 && "GET".equals(method)) {
+            sendJson(out, 200, "{\"state\":\"ready\"}");
+            return;
+        }
         if (raw.length == 4 && "DELETE".equals(method)) {
             sendEmpty(out, 204, "No Content");
             return;

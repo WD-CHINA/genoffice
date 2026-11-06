@@ -253,11 +253,15 @@ public class MainActivity extends Activity {
         container.setBackgroundColor(VIEWER_BACKGROUND);
         container.addView(webView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+        FrameLayout loading = new FrameLayout(this);
+        loading.setBackgroundColor(VIEWER_BACKGROUND);
+        container.addView(loading, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         ProgressBar spinner = new ProgressBar(this);
         FrameLayout.LayoutParams spinnerParams = new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
                 android.view.Gravity.CENTER);
-        container.addView(spinner, spinnerParams);
+        loading.addView(spinner, spinnerParams);
         setContentView(container);
         // Load the preview document directly: the host shell (header + iframe) would add a
         // second document load and a blank frame before the deck appears.
@@ -269,7 +273,7 @@ public class MainActivity extends Activity {
                 + "&layout=client&theme=dark";
         Log.i(TAG, "open " + url);
         webView.loadUrl(url);
-        revealWhenReady(webView, spinner);
+        revealWhenReady(webView, loading);
     }
 
     /** Viewer page background (dark); the app forces the same theme on the WebView. */
@@ -280,20 +284,26 @@ public class MainActivity extends Activity {
      * slide (or reported an error). A blank WebView document would otherwise flash
      * between the activity window and the first paint.
      */
-    private void revealWhenReady(WebView view, ProgressBar spinner) {
+    private void revealWhenReady(WebView view, View loading) {
         final long deadline = SystemClock.uptimeMillis() + 15000;
         final Runnable[] poll = new Runnable[1];
         poll[0] = () -> {
             if (view != webView) return;
             if (SystemClock.uptimeMillis() > deadline) {
-                spinner.setVisibility(View.GONE);
+                loading.setVisibility(View.GONE);
                 return;
             }
             view.evaluateJavascript(
-                    "!!document.querySelector('.viewer-slide-stage')"
-                            + " || !!document.querySelector('.viewer-error')",
+                    "!!document.querySelector('.viewer-slide-stage canvas')"
+                            + " || !!document.querySelector('[role=alert]')",
                     value -> {
-                        if ("true".equals(value)) spinner.setVisibility(View.GONE);
+                        if ("true".equals(value)) {
+                            view.postVisualStateCallback(0, new WebView.VisualStateCallback() {
+                                @Override public void onComplete(long requestId) {
+                                    if (view == webView) loading.setVisibility(View.GONE);
+                                }
+                            });
+                        }
                         else view.postDelayed(poll[0], 120);
                     });
         };
@@ -303,6 +313,9 @@ public class MainActivity extends Activity {
     @SuppressLint("SetJavaScriptEnabled")
     private WebView createWebView() {
         WebView view = new WebView(this);
+        view.setBackgroundColor(VIEWER_BACKGROUND);
+        // A foreground presentation must not be interrupted by the screen timeout.
+        view.setKeepScreenOn(true);
         WebSettings settings = view.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);

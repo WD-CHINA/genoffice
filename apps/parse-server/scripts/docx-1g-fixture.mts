@@ -9,7 +9,7 @@ const value = (name: string, fallback: string) => {
 }
 const mb = Number(value('--mb', '1024'))
 const output = value('--out', '/tmp/docx-1g-media.docx')
-const template = 'apps/viewer/src/web/public/docx-spike-font.docx'
+const template = new URL('../tests/fixtures/docx/font.docx', import.meta.url)
 const bigName = 'word/media/big.bin'
 const bigSize = mb * 1024 * 1024
 

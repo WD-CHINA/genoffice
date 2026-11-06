@@ -266,7 +266,10 @@ async function ensureSession(
   req: IncomingMessage,
   ctx: Context,
 ): Promise<SessionHandle> {
-  if (entry.session) return entry.session
+  if (entry.session) {
+    touchEntry(entry, ctx)
+    return entry.session
+  }
   const path = await ctx.store.pathOf(entry.record.fileId)
   if (!path) throw new HttpError(404, 'not_found', 'file content is missing')
   const baseUrl = baseUrlOf(req, ctx)

@@ -65,6 +65,7 @@ export function createRemotePptxSession(target: RemoteTarget) {
   let deck: PptxDeck | undefined
   let unitCount = 0
   let closed = false
+  let heartbeat: ReturnType<typeof setInterval> | undefined
   const units = new Map<number, RemoteUnit>()
 
   const authHeaders = (init?: HeadersInit): Headers => {
@@ -107,6 +108,11 @@ export function createRemotePptxSession(target: RemoteTarget) {
         body: JSON.stringify({ fileId: target.fileId }),
       })
       sessionId = created.sessionId
+      heartbeat = setInterval(() => {
+        if (sessionId && !closed) {
+          void json(`/v1/sessions/${encodeURIComponent(sessionId)}`).catch(() => undefined)
+        }
+      }, 60_000)
       unitCount = created.model.unitCount
       if (!unitCount) throw new Error('演示文稿没有幻灯片')
       const first = await fetchUnit(0)
@@ -202,6 +208,7 @@ export function createRemotePptxSession(target: RemoteTarget) {
     },
     close(): void {
       closed = true
+      if (heartbeat !== undefined) clearInterval(heartbeat)
       if (sessionId) {
         void fetch(`${base}/v1/sessions/${encodeURIComponent(sessionId)}`, {
           method: 'DELETE',

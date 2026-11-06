@@ -21,6 +21,9 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Downloads a parse-server session into a local bundle: every slide unit, every media
@@ -37,14 +40,14 @@ final class BundleDownloader {
     private final String server;
     private final String token;
     private final String fileId;
-    private final BundleStore store;
+    private BundleStore store;
     private final Listener listener;
     private final Set<String> partsSeen = new HashSet<>();
     private String sessionId;
     private int partsDownloaded;
 
     BundleDownloader(String server, String token, String fileId, BundleStore store, Listener listener) {
-        this.server = server.replaceAll("/+$", "");
+        this.server = normalizeServerUrl(server);
         this.token = token == null ? "" : token.trim();
         this.fileId = fileId;
         this.store = store;
@@ -53,46 +56,63 @@ final class BundleDownloader {
 
     void run() throws Exception {
         listener.stage("准备离线包…");
+        BundleStore destination = store;
+        store = destination.staging();
         store.reset();
-        //noinspection ResultOfMethodCallIgnored
-        store.dir().mkdirs();
-        JSONObject created = openSession();
-        JSONArray fonts = created.optJSONArray("fonts");
-        String sessionPath = server + "/v1/sessions/" + encode(sessionId);
-        JSONObject layout = requestJson(sessionPath + "/layout", "GET", null);
-        int count = layout.optInt("slideCount");
-        if (count <= 0) throw new IOException("演示文稿没有幻灯片");
-        writeFile(store.layoutInfoFile(), layout.toString().getBytes(StandardCharsets.UTF_8));
-        for (int i = 0; i < count; i++) {
-            listener.stage("下载第 " + (i + 1) + " / " + count + " 页模型（媒体 "
-                    + partsDownloaded + " 个）…");
-            JSONObject slide = requestJson(sessionPath + "/layout/slides/" + i, "GET", null);
-            rewrite(slide);
-            writeFile(store.layoutSlideFile(i), slide.toString().getBytes(StandardCharsets.UTF_8));
-        }
-        if (fonts != null) {
-            for (int i = 0; i < fonts.length(); i++) {
-                JSONObject font = fonts.optJSONObject(i);
-                if (font == null) continue;
-                String id = font.optString("id", "");
-                if (id.isEmpty()) continue;
-                listener.stage("下载字体 " + (i + 1) + " / " + fonts.length() + "…");
-                byte[] bytes = readBytes(server + "/v1/sessions/" + encode(sessionId)
-                        + "/fonts/" + encode(id));
-                writeFile(store.fontFile(id), bytes);
+        ScheduledExecutorService heartbeat = Executors.newSingleThreadScheduledExecutor(task -> {
+            Thread thread = new Thread(task, "bundle-heartbeat");
+            thread.setDaemon(true);
+            return thread;
+        });
+        try {
+            //noinspection ResultOfMethodCallIgnored
+            store.dir().mkdirs();
+            JSONObject created = openSession();
+            heartbeat.scheduleWithFixedDelay(() -> {
+                try { requestJson(server + "/v1/sessions/" + encode(sessionId), "GET", null); }
+                catch (Exception ignored) { /* the active download reports connection failures */ }
+            }, 60, 60, TimeUnit.SECONDS);
+            JSONArray fonts = created.optJSONArray("fonts");
+            String sessionPath = server + "/v1/sessions/" + encode(sessionId);
+            JSONObject layout = requestJson(sessionPath + "/layout", "GET", null);
+            int count = layout.optInt("slideCount");
+            if (count <= 0) throw new IOException("演示文稿没有幻灯片");
+            writeFile(store.layoutInfoFile(), layout.toString().getBytes(StandardCharsets.UTF_8));
+            for (int i = 0; i < count; i++) {
+                listener.stage("下载第 " + (i + 1) + " / " + count + " 页模型（媒体 "
+                        + partsDownloaded + " 个）…");
+                JSONObject slide = requestJson(sessionPath + "/layout/slides/" + i, "GET", null);
+                rewrite(slide);
+                writeFile(store.layoutSlideFile(i), slide.toString().getBytes(StandardCharsets.UTF_8));
             }
+            if (fonts != null) {
+                for (int i = 0; i < fonts.length(); i++) {
+                    JSONObject font = fonts.optJSONObject(i);
+                    if (font == null) continue;
+                    String id = font.optString("id", "");
+                    if (id.isEmpty()) continue;
+                    listener.stage("下载字体 " + (i + 1) + " / " + fonts.length() + "…");
+                    downloadFile(server + "/v1/sessions/" + encode(sessionId)
+                            + "/fonts/" + encode(id), store.fontFile(id));
+                }
+            }
+            JSONObject manifest = new JSONObject();
+            manifest.put("fileId", fileId);
+            manifest.put("format", "pptx");
+            manifest.put("unitCount", count);
+            manifest.put("fonts", fonts == null ? new JSONArray() : fonts);
+            manifest.put("createdAt", System.currentTimeMillis());
+            manifest.put("parts", partsDownloaded);
+            writeFile(store.manifestFile(), manifest.toString().getBytes(StandardCharsets.UTF_8));
+            store.markComplete();
+            store.publishTo(destination);
+            listener.stage("离线包完成：共 " + count + " 页、" + partsDownloaded + " 个媒体文件");
+        } finally {
+            heartbeat.shutdownNow();
+            closeSession();
+            store.reset();
+            store = destination;
         }
-        JSONObject manifest = new JSONObject();
-        manifest.put("fileId", fileId);
-        manifest.put("format", "pptx");
-        manifest.put("unitCount", count);
-        manifest.put("fonts", fonts == null ? new JSONArray() : fonts);
-        manifest.put("createdAt", System.currentTimeMillis());
-        manifest.put("parts", partsDownloaded);
-        writeFile(store.manifestFile(), manifest.toString().getBytes(StandardCharsets.UTF_8));
-        store.markComplete();
-        closeSession();
-        listener.stage("离线包完成：共 " + count + " 页、" + partsDownloaded + " 个媒体文件");
     }
 
     // ── session / units ──────────────────────────────────────────────────────
@@ -104,24 +124,6 @@ final class BundleDownloader {
         sessionId = created.optString("sessionId", "");
         if (sessionId.isEmpty()) throw new IOException("解析服务未返回会话");
         return created;
-    }
-
-    private JSONObject fetchUnit(int index) throws IOException, JSONException {
-        String url = server + "/v1/sessions/" + encode(sessionId) + "/units/" + index;
-        HttpURLConnection connection = open(url, "GET");
-        try {
-            int code = connection.getResponseCode();
-            if (code == 404 || code == 410) {
-                // Session expired while downloading a large deck: reopen and retry once.
-                connection.disconnect();
-                openSession();
-                return fetchUnit(index);
-            }
-            if (code != 200) throw httpError(connection, url);
-            return new JSONObject(readText(connection.getInputStream()));
-        } finally {
-            connection.disconnect();
-        }
     }
 
     private void closeSession() {
@@ -176,7 +178,7 @@ final class BundleDownloader {
         if (!partsSeen.add(partPath)) return;
         File file = store.partFile(partPath);
         if (file.isFile() && file.length() > 0) return;
-        writeFile(file, readBytes(url));
+        downloadFile(url, file);
         partsDownloaded++;
     }
 
@@ -223,14 +225,32 @@ final class BundleDownloader {
         }
     }
 
-    private byte[] readBytes(String url) throws IOException {
+    private void downloadFile(String url, File file) throws IOException {
+        File parent = file.getParentFile();
+        if (parent != null && !parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory()) {
+            throw new IOException("cannot create " + parent);
+        }
+        File temp = new File(file.getPath() + ".tmp");
         HttpURLConnection connection = open(url, "GET");
         try {
-            int code = connection.getResponseCode();
-            if (code < 200 || code >= 300) throw httpError(connection, url);
-            return readAll(connection.getInputStream());
+            if (connection.getResponseCode() != 200) throw httpError(connection, url);
+            long expected = connection.getContentLengthLong();
+            long received = 0;
+            try (InputStream in = new BufferedInputStream(connection.getInputStream());
+                 FileOutputStream out = new FileOutputStream(temp)) {
+                byte[] buffer = new byte[65536];
+                int n;
+                while ((n = in.read(buffer)) != -1) {
+                    out.write(buffer, 0, n);
+                    received += n;
+                }
+                if (expected >= 0 && received != expected) throw new IOException("incomplete download");
+                out.getFD().sync();
+            }
+            if (!temp.renameTo(file)) throw new IOException("cannot write " + file);
         } finally {
             connection.disconnect();
+            if (temp.exists()) temp.delete();
         }
     }
 
@@ -275,6 +295,17 @@ final class BundleDownloader {
             file.delete();
             if (!temp.renameTo(file)) throw new IOException("cannot write " + file);
         }
+    }
+
+    /** Host must include a scheme; bare `127.0.0.1:8790` becomes `http://127.0.0.1:8790`. */
+    static String normalizeServerUrl(String server) {
+        String s = server == null ? "" : server.trim();
+        if (s.endsWith("/")) s = s.replaceAll("/+$", "");
+        if (s.isEmpty()) return s;
+        if (s.startsWith("http:/") && !s.startsWith("http://")) s = "http://" + s.substring(6);
+        else if (s.startsWith("https:/") && !s.startsWith("https://")) s = "https://" + s.substring(7);
+        else if (!s.contains("://")) s = "http://" + s;
+        return s;
     }
 
     private static String encode(String value) {

@@ -57,7 +57,7 @@ describe('parse-server', () => {
   it('opens a DOCX block-chunk session', async () => {
     const { server } = await start()
     const bytes = await readFile(
-      join(process.cwd(), '..', 'viewer', 'src', 'web', 'public', 'docx-spike-table.docx'),
+      join(process.cwd(), 'tests', 'fixtures', 'docx', 'table.docx'),
     )
     const uploaded = await upload(server.url, bytes)
     expect(uploaded.status).toBe(201)
@@ -92,7 +92,7 @@ describe('parse-server', () => {
   it('serves DOCX embedded fonts', async () => {
     const { server } = await start()
     const bytes = await readFile(
-      join(process.cwd(), '..', 'viewer', 'src', 'web', 'public', 'docx-spike-font.docx'),
+      join(process.cwd(), 'tests', 'fixtures', 'docx', 'font.docx'),
     )
     const uploaded = await upload(server.url, bytes)
     const file = (await uploaded.json()) as { fileId: string }
@@ -123,7 +123,7 @@ describe('parse-server', () => {
     const first = await createParseServer({ dataDir: dir })
     try {
       const bytes = await readFile(
-        join(process.cwd(), '..', 'viewer', 'src', 'web', 'public', 'docx-spike-table.docx'),
+        join(process.cwd(), 'tests', 'fixtures', 'docx', 'table.docx'),
       )
       const uploaded = await upload(first.url, bytes)
       const file = (await uploaded.json()) as { fileId: string }

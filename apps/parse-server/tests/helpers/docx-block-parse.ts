@@ -1,5 +1,5 @@
 import { createDocxBlockParser } from '@genoffice/docx-engine'
-import type { DocxBlockSlice } from './docx-stream'
+import type { DocxBlockSlice } from '../../src/docx-stream'
 
 /**
  * Gate A.2: parse streamed block slices with one reusable docx parser context.

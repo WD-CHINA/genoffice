@@ -10,10 +10,10 @@ const targetMb = Number(value('--mb', '100'))
 const output = value('--out', '/tmp/docx-large-real.docx')
 
 const tableZip = await JSZip.loadAsync(
-  await readFile('apps/viewer/src/web/public/docx-spike-table.docx'),
+  await readFile(new URL('../tests/fixtures/docx/table.docx', import.meta.url)),
 )
 const imageZip = await JSZip.loadAsync(
-  await readFile('apps/viewer/src/web/public/docx-spike-image.docx'),
+  await readFile(new URL('../tests/fixtures/docx/image.docx', import.meta.url)),
 )
 const documentXml = await tableZip.file('word/document.xml')!.async('string')
 const bodyStart = documentXml.indexOf('<w:body>') + '<w:body>'.length

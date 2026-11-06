@@ -13,12 +13,15 @@ val syncViewerWeb = tasks.register<Sync>("syncViewerWeb") {
 android {
     namespace = "com.genoffice.viewerdemo"
     compileSdk = 35
+    useLibrary("android.test.runner")
+    useLibrary("android.test.base")
     defaultConfig {
         applicationId = "com.genoffice.viewerdemo"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+        testInstrumentationRunner = "android.test.InstrumentationTestRunner"
     }
     buildTypes {
         release {

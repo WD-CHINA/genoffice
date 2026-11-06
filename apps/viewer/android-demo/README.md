@@ -59,7 +59,26 @@ adb shell am start -n com.genoffice.viewerdemo/.MainActivity \
 
 ## 已知限制
 
-- 放映过程中不触发淘汰（预览页不变），长时间放映超大文档时内存会随已放映页增长。
+- 放映按当前放映页保留相邻页，淘汰离屏模型、渲染树和无引用的文字测量缓存；高清图片也按当前页窗口回收。
+- 在线会话每分钟续期，下载大媒体期间也会续期；媒体签名默认有效期为 12 小时，超时需要重新打开。
 - 淘汰后回访需要重新拉取该页模型（本地/局域网很快，公网有明显延迟）。
 - 会话/离线包按 `fileId` 存放，没有做空间回收与多包管理。
 - 演示用途：允许对 `127.0.0.1` 的明文 HTTP；正式产品应使用 HTTPS 服务端。
+
+## 稳定性回归
+
+完整步骤和验收边界见 [resilience-validation.md](../docs/resilience-validation.md)。
+
+```bash
+# 仓库根目录：50 页、40 次快速跳页、动画执行期间下一页返回
+npm run test:resilience -w @genoffice/viewer
+# 125 分钟真实运行（不是模拟时钟）
+npm run test:soak -w @genoffice/viewer
+# Android 真机：1 GiB 媒体数据流式下载、截断响应、更新失败保留旧包
+cd apps/viewer/android-demo
+ANDROID_HOME=/path/to/android-sdk ./gradlew assembleDebug assembleDebugAndroidTest
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb shell am instrument -w -e class com.genoffice.viewerdemo.BundleDownloaderTest \
+  com.genoffice.viewerdemo.test/android.test.InstrumentationTestRunner
+```

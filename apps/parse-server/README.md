@@ -171,3 +171,7 @@ The server creates these tables on startup when `MYSQL_DATABASE` is set:
 `GET /v1/health` reports `storage: "mysql"` and `mysql: true` when connected.
 The Viewer never connects to MySQL directly; it keeps using the parse-server
 HTTP API.
+
+### Test fixtures
+
+DOCX regression documents live in `tests/fixtures/docx/`, rather than the Viewer public directory. Fixture and stress scripts resolve these files relative to the script so they work from both the repository root and workspace commands. The old DOCX spike pages have been retired.

@@ -18,6 +18,36 @@ function command(key: string) {
 export function ViewerSlideShow(props: Props) {
   const { onPage, startAt } = props
   const host = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    let active = true
+    let pending = false
+    let lock: WakeLockSentinel | undefined
+    const acquire = async () => {
+      if (!active || pending || lock || document.visibilityState !== 'visible') return
+      pending = true
+      try {
+        const next = await navigator.wakeLock?.request('screen')
+        if (!active) await next?.release()
+        else {
+          lock = next
+          next?.addEventListener('release', () => {
+            if (lock === next) lock = undefined
+          })
+        }
+      } catch {
+        /* Unsupported or denied by the browser; playback remains available. */
+      } finally {
+        pending = false
+      }
+    }
+    void acquire()
+    document.addEventListener('visibilitychange', acquire)
+    return () => {
+      active = false
+      document.removeEventListener('visibilitychange', acquire)
+      void lock?.release().catch(() => undefined)
+    }
+  }, [])
   const order = useMemo(
     () => computePlayOrder(props.slides, props.startAt, props.customOrder),
     [props.slides, props.startAt, props.customOrder],
@@ -60,9 +90,12 @@ export function ViewerSlideShow(props: Props) {
       if (previousFocus?.isConnected) previousFocus.focus()
     }
   }, [])
+  const onPageRef = useRef(onPage)
+  onPageRef.current = onPage
+  const currentPage = order[position] ?? startAt
   useEffect(() => {
-    onPage?.(order[position] ?? startAt)
-  }, [position, order, onPage, startAt])
+    onPageRef.current?.(currentPage)
+  }, [currentPage])
   useEffect(() => {
     const original = host.current?.querySelector('.slideshow')
     if (!original) return

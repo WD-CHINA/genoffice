@@ -166,6 +166,7 @@ export function Slides({
     [thumbs, setThumbs] = useState(new Map<string, HTMLImageElement>()),
     [page, setPage] = useState(0),
     [show, setShow] = useState(false),
+    [showPage, setShowPage] = useState(0),
     [error, setError] = useState(''),
     [width, setWidth] = useState(960)
   const [zoom, setZoom] = useState(1),
@@ -183,7 +184,7 @@ export function Slides({
     faces = useRef(new Map<string, FontFace>()),
     pptx = useRef<ReturnType<typeof createPptxSession> | null>(null),
     deckRef = useRef<any>(null),
-    loadingSlides = useRef(new Set<number>()),
+    loadingSlides = useRef(new Map<number, Promise<void>>()),
     loadSlideRef = useRef<(index: number) => Promise<void>>(async () => {}),
     partsRef = useRef(new Map<string, string>()),
     /** per-slide picture keys, so navigation can ask for just that slide's images */
@@ -197,6 +198,7 @@ export function Slides({
     keyOf = useRef(new Map<string, string>()),
     thumbsMime = useRef(new Map<string, string>()),
     loaderRef = useRef<ReturnType<typeof createImageLoader> | null>(null)
+  const activePage = show ? showPage : page
   useEffect(() => {
     if (!deck || !pane.current) return
     const element = pane.current
@@ -225,10 +227,9 @@ export function Slides({
     const loader = loaderRef.current
     const slides = slideUrls.current
     if (!loader || !slides.length) return
-    const wanted = new Set<string>(show ? allUrls.current : [])
-    if (!show)
-      for (const index of [page, page + 1, page - 1])
-        for (const url of slides[index] || []) wanted.add(url)
+    const wanted = new Set<string>()
+    for (const index of [activePage, activePage + 1, activePage - 1])
+      for (const url of slides[index] || []) wanted.add(url)
     demand.current = wanted
     requestImages.current(wanted)
     loader.release(
@@ -248,7 +249,7 @@ export function Slides({
         next = new Map([...next].filter(([key]) => wanted.has(key)))
       return next
     })
-  }, [deck, page, show])
+  }, [deck, activePage])
   useEffect(() => {
     const root = thumbPane.current
     if (!deck || !root || !showSidebar || !thumbsOpen) {
@@ -302,7 +303,7 @@ export function Slides({
           if (!thumbsStarted.current.has(key)) wanted.add(key)
     thumbnailDemand.current = wanted
     requestImages.current(wanted)
-  }, [deck, visibleThumbs, thumbsOpen])
+  }, [deck, visibleThumbs, thumbsOpen, show])
   useEffect(() => {
     if (!deck) return
     timing.current?.onceAfterPaint('firstCanvas')
@@ -526,39 +527,50 @@ export function Slides({
       (typeof pptx.current & { loadUnit?: (i: number) => Promise<any> }) | null
     const current = deckRef.current
     const slide = current?.slides[index]
-    if (!session?.loadUnit || !slide?.placeholder || loadingSlides.current.has(index)) return
-    loadingSlides.current.add(index)
-    try {
-      const unit = await session.loadUnit(index)
-      indexSlide(index, unit.slide)
-      const old = deckRef.current
-      if (!old) return
-      const slides = old.slides.slice()
-      slides[index] = unit.slide
-      const playback = old.playback.slice()
-      playback[index] = unit.playback
-      const measurements = new Map<string, any>(
-        (old.measurements || []).map((item: any) => [item.key, item]),
-      )
-      for (const item of unit.measurements || []) measurements.set(item.key, item)
-      const next = { ...old, slides, playback, measurements: [...measurements.values()] }
-      // Measure before replacing the placeholder so the first visible frame of a
-      // lazily loaded slide is already laid out with browser widths.
-      const settled = next.measurements.length
-        ? await measureWidths(next, session as any, () => false)
-        : next
-      setDeck(settled)
-    } catch (error) {
-      setError(error instanceof Error ? error.message : String(error))
-    } finally {
-      loadingSlides.current.delete(index)
-    }
+    const pending = loadingSlides.current.get(index)
+    if (pending) return pending
+    if (!session?.loadUnit || !slide?.placeholder) return
+    const loadUnit = session.loadUnit.bind(session)
+    let job!: Promise<void>
+    job = (async () => {
+      try {
+        const unit = await loadUnit(index)
+        if (pptx.current !== session) return
+        indexSlide(index, unit.slide)
+        const old = deckRef.current
+        if (!old) return
+        const slides = old.slides.slice()
+        slides[index] = unit.slide
+        const playback = old.playback.slice()
+        playback[index] = unit.playback
+        const measurements = new Map<string, any>(
+          (old.measurements || []).map((item: any) => [item.key, item]),
+        )
+        for (const item of unit.measurements || []) measurements.set(item.key, item)
+        const next = { ...old, slides, playback, measurements: [...measurements.values()] }
+        // Measure before replacing the placeholder so the first visible frame of a
+        // lazily loaded slide is already laid out with browser widths.
+        const settled = next.measurements.length
+          ? await measureWidths(next, session as any, () => false)
+          : next
+        if (pptx.current !== session) return
+        deckRef.current = settled
+        setDeck(settled)
+      } catch (error) {
+        if (pptx.current === session)
+          setError(error instanceof Error ? error.message : String(error))
+      } finally {
+        if (loadingSlides.current.get(index) === job) loadingSlides.current.delete(index)
+      }
+    })()
+    loadingSlides.current.set(index, job)
+    return job
   }
   loadSlideRef.current = loadSlide
   useEffect(() => {
     if (!deck) return
-    void loadSlideRef.current(page)
-  }, [deck, page])
+    void loadSlideRef.current(activePage)
+  }, [deck, activePage])
   // Keep the previous page's frame up while the next one is fetched and laid out,
   // instead of swapping in a blank placeholder slide.
   useEffect(() => {
@@ -572,13 +584,13 @@ export function Slides({
   // Prefetch the neighbours so a normal page turn never shows a placeholder.
   useEffect(() => {
     if (!deck) return
-    if (page + 1 < deck.slides.length) void loadSlideRef.current(page + 1)
-    if (page > 0) void loadSlideRef.current(page - 1)
-  }, [deck, page])
+    if (activePage + 1 < deck.slides.length) void loadSlideRef.current(activePage + 1)
+    if (activePage > 0) void loadSlideRef.current(activePage - 1)
+  }, [deck, activePage])
   useEffect(() => {
-    if (!deck || !thumbsOpen) return
+    if (!deck || !thumbsOpen || show) return
     for (const index of visibleThumbs) void loadSlideRef.current(index)
-  }, [deck, visibleThumbs, thumbsOpen])
+  }, [deck, visibleThumbs, thumbsOpen, show])
   useEffect(() => {
     const list = recentPages.current.filter((index) => index !== page)
     list.unshift(page)
@@ -591,11 +603,13 @@ export function Slides({
     const session = pptx.current as
       (typeof pptx.current & { release?: (keep: number[]) => Promise<number[]> }) | null
     if (!session?.release || !deck) return
-    const keep = new Set<number>([page])
-    if (page > 0) keep.add(page - 1)
-    if (page < deck.slides.length - 1) keep.add(page + 1)
-    for (const index of recentPages.current) keep.add(index)
-    for (const index of visibleThumbs) keep.add(index)
+    const keep = new Set<number>([activePage])
+    if (activePage > 0) keep.add(activePage - 1)
+    if (activePage < deck.slides.length - 1) keep.add(activePage + 1)
+    if (!show) {
+      for (const index of recentPages.current) keep.add(index)
+      if (thumbsOpen) for (const index of visibleThumbs) keep.add(index)
+    }
     let cancelled = false
     void session.release([...keep]).then((dropped) => {
       if (cancelled || !dropped.length) return
@@ -621,7 +635,7 @@ export function Slides({
     return () => {
       cancelled = true
     }
-  }, [deck, page, visibleThumbs])
+  }, [deck, activePage, show, thumbsOpen, visibleThumbs])
   if (!deck)
     return (
       <p className="viewer-status" role={error ? 'alert' : undefined}>
@@ -686,6 +700,7 @@ export function Slides({
     await loadSlideRef.current(page)
     await loadSlideRef.current(page + 1)
     void document.documentElement.requestFullscreen?.().catch(() => {})
+    setShowPage(page)
     setShow(true)
   }
   const changeZoom = (direction: number) => {
@@ -823,6 +838,7 @@ export function Slides({
               images={images}
               startAt={page}
               onPage={(index) => {
+                setShowPage(index)
                 void loadSlideRef.current(index)
                 void loadSlideRef.current(index + 1)
               }}

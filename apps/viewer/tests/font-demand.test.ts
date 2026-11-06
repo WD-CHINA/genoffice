@@ -68,3 +68,18 @@ test('selected faces keep original metrics and record dependencies even after ca
   assert.equal(selected.provider.measure('Hello', style), 123 / 100 * 18)
   assert.equal(keys.size, 1, 'cached widths still count as slide dependencies')
 })
+
+
+test('eviction discards orphaned measured and pending text widths', () => {
+  const metrics = createBundledMetrics([])
+  metrics.provider.measure('kept', style)
+  metrics.provider.measure('evicted', style)
+  const [kept, evicted] = metrics.pendingWidthMeasurements()
+  metrics.acceptWidthMeasurements({ [kept.key]: 123, [evicted.key]: 456 })
+  metrics.provider.measure('pending orphan', style)
+  metrics.retainWidthMeasurements(new Set([kept.key]))
+  assert.deepEqual(metrics.pendingWidthMeasurements(), [])
+  assert.equal(metrics.provider.measure('kept', style), 123 / 100 * style.fontSizePx)
+  metrics.provider.measure('evicted', style)
+  assert.deepEqual(metrics.pendingWidthMeasurements().map(item => item.key), [evicted.key])
+})

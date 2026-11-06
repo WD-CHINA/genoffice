@@ -29,6 +29,31 @@ final class BundleStore {
         this.dir = new File(new File(filesDir, "bundles"), safe(fileId));
     }
 
+    private BundleStore(File dir, String fileId, boolean staging) {
+        this.dir = dir;
+        this.fileId = fileId;
+    }
+
+    BundleStore staging() {
+        return new BundleStore(new File(dir.getPath() + ".download"), fileId, true);
+    }
+
+    void publishTo(BundleStore destination) throws IOException {
+        File backup = new File(destination.dir.getPath() + ".previous");
+        delete(backup);
+        boolean hadPrevious = destination.dir.exists();
+        if (hadPrevious && !destination.dir.renameTo(backup)) {
+            throw new IOException("cannot preserve previous bundle");
+        }
+        if (!dir.renameTo(destination.dir)) {
+            if (hadPrevious && !backup.renameTo(destination.dir)) {
+                throw new IOException("cannot restore bundle: " + backup);
+            }
+            throw new IOException("cannot publish bundle");
+        }
+        delete(backup);
+    }
+
     String fileId() {
         return fileId;
     }

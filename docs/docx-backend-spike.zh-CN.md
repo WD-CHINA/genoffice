@@ -4,6 +4,8 @@
 > 范围：只验证可行性，不接入生产 Viewer，不承诺 1GB。
 > 结论：服务端流式切 block 通过；Tiptap 按页挂载的内存信号通过，但行为 parity 和真实 DOM 分页尚未验证，因此暂不启动 1GB DOCX。
 
+> 归档说明（2026-11-06）：旧可视化实验页面已删除，不再构建或提供访问。下文页面与源码路径是历史记录；保留的 DOCX 样本已移至 `apps/parse-server/tests/fixtures/docx/`。正式预览使用 Viewer 主入口。
+
 ## 1. 目标
 
 在投入 1GB DOCX 之前，先回答两个问题：
@@ -876,9 +878,6 @@ npm run test -w @genoffice/viewer
 # 扫描吞吐
 node --import tsx apps/parse-server/scripts/docx-stream-bench.mts 100000
 
-# 可视化 spike（需 Viewer dev server）
-open http://localhost:11001/docx-spike.html
-open http://localhost:11001/docx-page-spike.html
-open http://localhost:11001/docx-table-spike.html
-open http://localhost:11001/docx-page-spike.html
+# 正式 Viewer（旧 spike 页面已移除）
+open http://localhost:11001/
 ```

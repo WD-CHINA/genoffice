@@ -9,7 +9,7 @@ const value = (name: string, fallback: string) => {
 const url = value('--url', 'http://127.0.0.1:8787')
 const blocks = Number(value('--blocks', '20000'))
 const inputFile = value('--file', '')
-const template = 'apps/viewer/src/web/public/docx-spike-behavior.docx'
+const template = new URL('../tests/fixtures/docx/behavior.docx', import.meta.url)
 
 let bytes: Uint8Array
 if (inputFile) {

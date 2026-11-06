@@ -5,10 +5,10 @@ import JSZip from 'jszip'
 import { parseDocx } from '@genoffice/docx-engine'
 import { describe, expect, it } from 'vitest'
 import { streamDocxBlocks } from '../src/docx-stream'
-import { parseDocxBlockSlices } from '../src/docx-block-parse'
+import { parseDocxBlockSlices } from './helpers/docx-block-parse'
 
 const FIXTURES = ['table-style-ppr-spacing', 'render-hf-inline-picture']
-const VIEWER_FIXTURE = ['..', 'viewer', 'src', 'web', 'public', 'docx-spike-table.docx']
+const DOCX_FIXTURE = ['tests', 'fixtures', 'docx', 'table.docx']
 
 function textOf(block: any): string {
   return (block.runs || []).map((run: any) => run.text || '').join('')
@@ -33,7 +33,7 @@ describe('parseDocxBlockSlices', () => {
     })),
     {
       name: 'docx-spike-table (revisions/footnotes/table)',
-      path: join(process.cwd(), ...VIEWER_FIXTURE),
+      path: join(process.cwd(), ...DOCX_FIXTURE),
     },
   ]
   for (const { name, path } of paths) {

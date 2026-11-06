@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createBlankPptx } from '@genoffice/pptx-engine'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createParseServer, type ParseServer, type ParseServerOptions } from '../src/server'
 
 interface Harness {
@@ -313,4 +313,46 @@ describe('content GC protection', () => {
       (await fetch(`${server.url}/v1/files/${file.fileId}`, { method: 'DELETE' })).status,
     ).toBe(204)
   })
+})
+
+// Advance wall time, but keep real sockets and worker timers running.
+it('renews layout sessions throughout a simulated 125-minute presentation', async () => {
+  const sweepers: Array<() => void> = []
+  const originalInterval = globalThis.setInterval
+  const intervalSpy = vi.spyOn(globalThis, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
+    if (ms === 60_000) sweepers.push(fn)
+    return originalInterval(fn, ms)
+  }) as typeof setInterval)
+  const { server } = await start({ token: 'long-show' })
+  intervalSpy.mockRestore()
+  const headers = { Authorization: 'Bearer long-show' }
+  const uploaded = await fetch(`${server.url}/v1/files`, {
+    method: 'POST', headers, body: Buffer.from(await createBlankPptx()),
+  })
+  const { fileId } = await uploaded.json() as { fileId: string }
+  const opened = await fetch(`${server.url}/v1/sessions`, {
+    method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileId }),
+  })
+  const { sessionId } = await opened.json() as { sessionId: string }
+  const baseTime = Date.now()
+  const nowSpy = vi.spyOn(Date, 'now')
+  try {
+    for (let minute = 1; minute <= 125; minute++) {
+      nowSpy.mockReturnValue(baseTime + minute * 60_000)
+      const slide = await fetch(`${server.url}/v1/sessions/${sessionId}/layout/slides/0`, { headers })
+      expect(slide.status, `minute ${minute}`).toBe(200)
+      await slide.json()
+      for (const sweep of sweepers) sweep()
+    }
+    const alive = await fetch(`${server.url}/v1/sessions/${sessionId}`, { headers })
+    expect(alive.status).toBe(200)
+    await alive.json()
+    nowSpy.mockReturnValue(baseTime + 145 * 60_000)
+    for (const sweep of sweepers) sweep()
+    const expired = await fetch(`${server.url}/v1/sessions/${sessionId}`, { headers })
+    expect(expired.status).toBe(404)
+  } finally {
+    nowSpy.mockRestore()
+  }
 })

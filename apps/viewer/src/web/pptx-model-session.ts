@@ -82,6 +82,9 @@ export function createModelPptxSession(target: ModelTarget) {
   let closed = false
   let worker: Worker | null = null
   let nextId = 0
+  let heartbeat: ReturnType<typeof setInterval> | undefined
+  const abort = new AbortController()
+  const loading = new Map<number, Promise<UnitState>>()
   const requests = new Map<
     number,
     { resolve: (value: any) => void; reject: (error: Error) => void }
@@ -96,7 +99,11 @@ export function createModelPptxSession(target: ModelTarget) {
   }
 
   const json = async <T>(path: string, init?: RequestInit): Promise<T> => {
-    const response = await fetch(`${base}${path}`, { ...init, headers: authHeaders(init?.headers) })
+    const response = await fetch(`${base}${path}`, {
+      ...init,
+      signal: abort.signal,
+      headers: authHeaders(init?.headers),
+    })
     if (!response.ok) throw new Error(await readError(response))
     return (await response.json()) as T
   }
@@ -154,6 +161,19 @@ export function createModelPptxSession(target: ModelTarget) {
         body: JSON.stringify({ fileId: target.fileId }),
       })
       sessionId = created.sessionId
+      if (closed) {
+        void fetch(`${base}/v1/sessions/${encodeURIComponent(sessionId)}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+        }).catch(() => undefined)
+        throw new Error('Presentation closed')
+      }
+      // Keep an idle slide alive too: a lecture can stay on one page for hours.
+      heartbeat = setInterval(() => {
+        if (sessionId && !closed) {
+          void json(`/v1/sessions/${encodeURIComponent(sessionId)}`).catch(() => undefined)
+        }
+      }, 60_000)
       info = await json<LayoutInfo>(`/v1/sessions/${encodeURIComponent(sessionId)}/layout`)
       if (!info.slideCount) throw new Error('演示文稿没有幻灯片')
 
@@ -205,7 +225,17 @@ export function createModelPptxSession(target: ModelTarget) {
       measurements: WidthItem[]
     }> {
       if (!info || index < 0 || index >= info.slideCount) throw new Error('幻灯片不存在')
-      const state = await call<UnitState>('unit', { index })
+      let pending = loading.get(index)
+      if (!pending) {
+        pending = call<UnitState>('unit', { index })
+        loading.set(index, pending)
+      }
+      let state: UnitState
+      try {
+        state = await pending
+      } finally {
+        if (loading.get(index) === pending) loading.delete(index)
+      }
       applyUnit(index, state.unit)
       return {
         slide: state.unit.slide,
@@ -236,7 +266,7 @@ export function createModelPptxSession(target: ModelTarget) {
     async release(keep: number[]): Promise<number[]> {
       if (!worker || closed) return []
       const keepSet = new Set(keep)
-      const drop = [...loaded].filter((index) => !keepSet.has(index))
+      const drop = [...loaded].filter((index) => !keepSet.has(index) && !loading.has(index))
       if (!drop.length) return []
       const result = await call<{ dropped: number[] }>('release', { indexes: drop })
       for (const index of result.dropped) {
@@ -277,6 +307,9 @@ export function createModelPptxSession(target: ModelTarget) {
 
     close(): void {
       closed = true
+      abort.abort()
+      if (heartbeat !== undefined) clearInterval(heartbeat)
+      loading.clear()
       for (const task of requests.values()) task.reject(new Error('Presentation closed'))
       requests.clear()
       if (worker) {

@@ -106,6 +106,10 @@ export function createBundledMetrics(
     provider,
     fallbacks: () => [...fallbacks],
     pendingWidthMeasurements: () => [...pending.values()],
+    retainWidthMeasurements(keys: ReadonlySet<string>) {
+      for (const key of cache.keys()) if (!keys.has(key)) cache.delete(key)
+      for (const key of pending.keys()) if (!keys.has(key)) pending.delete(key)
+    },
     acceptWidthMeasurements(widths: Record<string, number>) {
       for (const [key, width] of Object.entries(widths)) {
         if (!pending.has(key) || !Number.isFinite(width) || width < 0)

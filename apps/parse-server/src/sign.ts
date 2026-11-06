@@ -14,7 +14,8 @@ export function signResource(
   secret: string,
   fileId: string,
   resource: string,
-  ttlSeconds = 60 * 60,
+  // Cached media URLs must outlive a full working-day presentation.
+  ttlSeconds = 12 * 60 * 60,
 ): SignedResource {
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds
   return { exp, sig: signature(secret, fileId, resource, exp) }

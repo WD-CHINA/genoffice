@@ -164,7 +164,13 @@ function state(unit: Unit) {
   return { unit, measurements: measurements(), fallbacks: metrics?.fallbacks() ?? [] }
 }
 
-self.onmessage = async (event: MessageEvent) => {
+// Serialize asynchronous fetches with release/measure to prevent late fetches from
+// resurrecting an evicted page or overwriting a newer layout.
+let queue = Promise.resolve()
+self.onmessage = (event: MessageEvent) => {
+  queue = queue.then(() => handleMessage(event))
+}
+async function handleMessage(event: MessageEvent) {
   const { id, op, input } = event.data as { id: number; op: string; input: any }
   try {
     let result: unknown
@@ -187,7 +193,14 @@ self.onmessage = async (event: MessageEvent) => {
       result = state(await ensureUnit(input.index as number))
     } else if (op === 'measure') {
       if (!metrics) throw new Error('layout worker is not open')
-      const widths = (input.widths ?? {}) as Record<string, number>
+      // Concurrent page loads may return the same measurement batch. Ignore keys
+      // already settled or evicted while the browser was measuring them.
+      const pendingKeys = new Set(measurements().map((item) => item.key))
+      const widths = Object.fromEntries(
+        Object.entries((input.widths ?? {}) as Record<string, number>).filter(([key]) =>
+          pendingKeys.has(key),
+        ),
+      )
       metrics.acceptWidthMeasurements(widths)
       const keys = new Set(Object.keys(widths))
       const updates: Array<[number, Unit]> = []
@@ -207,6 +220,9 @@ self.onmessage = async (event: MessageEvent) => {
         dependencies.delete(index)
         dropped.push(index)
       }
+      const retainedKeys = new Set<string>()
+      for (const keys of dependencies.values()) for (const key of keys) retainedKeys.add(key)
+      metrics?.retainWidthMeasurements(retainedKeys)
       result = { dropped }
     } else if (op === 'close') {
       sources.clear()

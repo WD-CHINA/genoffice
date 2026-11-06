@@ -186,9 +186,10 @@ export function SlideShowView({
   }, [curIdx])
 
   // Load the page's animations when the page changes/prefetch completes (forward = initial state, back/jump = finished state)
+  const currentAnimations = allAnims?.[curIdx!]
   useEffect(() => {
-    player.load(allAnims?.[order[pos]!] ?? [], navModeRef.current)
-  }, [allAnims, pos, order, player.load]) // eslint-disable-line react-hooks/exhaustive-deps
+    player.load(currentAnimations ?? [], navModeRef.current)
+  }, [currentAnimations, curIdx, player.load]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const exitRef = useRef(() => {})
   exitRef.current = () => {

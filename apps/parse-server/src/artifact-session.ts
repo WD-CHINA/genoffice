@@ -185,6 +185,61 @@ export class ArtifactSession {
     signal?.throwIfAborted()
   }
 
+  /**
+   * Import a pre-generation flat artifact only when every record verifies.
+   * Two passes keep a damaged frame from leaving a half-written generation;
+   * the caller falls back to a real source parse on any confirmed corruption.
+   */
+  static async importLegacy(
+    store: ArtifactStore,
+    identity: ArtifactIdentity,
+    input: ArtifactSessionInput,
+    writer: ArtifactWriter,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    let legacy: ArtifactReader | null
+    try { legacy = await store.find(artifactKey(identity)) }
+    catch (error) {
+      if (error instanceof ArtifactCorruptionError) return false
+      throw error
+    }
+    if (!legacy) return false
+    // The flat reader validates artifactKey(manifest.identity) === key already;
+    // compare the full identity so a changed option/schema can never be imported.
+    if (canonicalJson(legacy.manifest.identity) !== canonicalJson(identity)) return false
+    const records = legacy.manifest.records
+    const ids = new Set(records.map((record) => record.id))
+    if (!records.length || !ids.has('document')) return false
+    if (input.format === 'pptx' && !ids.has('external-media')) return false
+    let document: StoredDocument
+    try { document = (await legacy.read('document')) as unknown as StoredDocument }
+    catch (error) {
+      if (error instanceof ArtifactCorruptionError) return false
+      throw error
+    }
+    if (!document?.model || document.model.format !== input.format ||
+        !Array.isArray(document.fonts)) return false
+    for (let index = 0; index < (document.model.unitCount ?? 0); index++)
+      if (!ids.has(`unit:${index}`)) return false
+    for (const font of document.fonts)
+      if (!ids.has(`font:${font.id}`)) return false
+    // Verify every frame BEFORE publishing anything into the immutable generation.
+    for (const entry of records) {
+      signal?.throwIfAborted()
+      try { await legacy.read(entry.id) }
+      catch (error) {
+        if (error instanceof ArtifactCorruptionError) return false
+        throw error
+      }
+    }
+    for (const entry of records) {
+      signal?.throwIfAborted()
+      const value = await legacy.read(entry.id)
+      await writer.append(entry.id, value as JsonValue | Uint8Array)
+    }
+    return true
+  }
+
   static async open(
     store: ArtifactStore,
     input: ArtifactSessionInput,
@@ -227,8 +282,16 @@ export class ArtifactSession {
       }> => {
         for (let attempt = 0; ; attempt++) {
           await backend.coordinator.getOrBuild(identity,
-            (writer, signal) => {
+            async (writer, signal) => {
               store.stats.buildsStarted++
+              // A verified old-layout cache becomes generation N without re-parsing
+              // the source. Damage or version mismatch falls back to a real build.
+              if (await this.importLegacy(store, identity, input, writer, signal)) {
+                store.stats.legacyImports++
+                store.markAdmitted(key)
+                notify?.()
+                return
+              }
               return this.build(store, input, writer, queue, signal, notify)
             }, undefined, notify)
           const handle = await ArtifactReadHandle.open(backend.catalog, backend.disk, key, `view:${randomUUID()}`)

@@ -1,14 +1,15 @@
+import { numberEnv } from './runtime-options'
 import { resolve } from 'node:path'
 import { createParseServer } from './server'
 import { mysqlConfigFromEnv } from './mysql'
 
-const port = Number(process.env.PARSE_SERVER_PORT ?? 8787)
+const port = numberEnv('PARSE_SERVER_PORT', 0, 65535) ?? 8787
 const host = process.env.PARSE_SERVER_HOST ?? '127.0.0.1'
 const dataDir = resolve(process.env.PARSE_SERVER_DATA_DIR ?? '.parse-server-data')
 
 const server = await createParseServer({
   dataDir,
-  port: Number.isFinite(port) ? port : 8787,
+  port,
   host,
   token: process.env.PARSE_SERVER_TOKEN || undefined,
   allowedOrigins: (process.env.PARSE_SERVER_ALLOWED_ORIGINS ?? '')
@@ -16,18 +17,29 @@ const server = await createParseServer({
     .map((origin) => origin.trim())
     .filter(Boolean),
   parserVersion: process.env.PARSE_SERVER_PARSER_VERSION || undefined,
+  parserFingerprint: process.env.PARSE_SERVER_BUILD_FINGERPRINT || undefined,
   fontSetHash: process.env.PARSE_SERVER_FONT_SET_HASH || undefined,
   limits: {
-    maxUploadBytes: Number(process.env.PARSE_SERVER_MAX_UPLOAD_BYTES) || undefined,
-    maxParseBytes: Number(process.env.PARSE_SERVER_MAX_PARSE_BYTES) || undefined,
+    maxUploadBytes: numberEnv('PARSE_SERVER_MAX_UPLOAD_BYTES'),
+    maxParseBytes: numberEnv('PARSE_SERVER_MAX_PARSE_BYTES'),
   },
-  parseTimeoutMs: Number(process.env.PARSE_SERVER_PARSE_TIMEOUT_MS) || undefined,
-  unitTimeoutMs: Number(process.env.PARSE_SERVER_UNIT_TIMEOUT_MS) || undefined,
-  workerMemoryMb: Number(process.env.PARSE_SERVER_WORKER_MEMORY_MB) || undefined,
-  maxSessions: Number(process.env.PARSE_SERVER_MAX_SESSIONS) || undefined,
-  contentTtlMs: Number(process.env.PARSE_SERVER_CONTENT_TTL_MS) || undefined,
-  maxStoreBytes: Number(process.env.PARSE_SERVER_MAX_STORE_BYTES) || undefined,
-  gcIntervalMs: Number(process.env.PARSE_SERVER_GC_INTERVAL_MS) || undefined,
+  parseTimeoutMs: numberEnv('PARSE_SERVER_PARSE_TIMEOUT_MS'),
+  unitTimeoutMs: numberEnv('PARSE_SERVER_UNIT_TIMEOUT_MS'),
+  workerMemoryMb: numberEnv('PARSE_SERVER_WORKER_MEMORY_MB'),
+  maxSessions: numberEnv('PARSE_SERVER_MAX_SESSIONS'),
+  maxParseJobs: numberEnv('PARSE_SERVER_MAX_PARSE_JOBS'),
+  maxQueuedParseJobs: numberEnv('PARSE_SERVER_MAX_QUEUED_PARSE_JOBS', 0),
+  workerRssMb: numberEnv('PARSE_SERVER_WORKER_RSS_MB'),
+  parseMemoryMb: numberEnv('PARSE_SERVER_PARSE_MEMORY_MB'),
+  rssSampleMs: numberEnv('PARSE_SERVER_RSS_SAMPLE_MS'),
+  workerLifetimeMs: numberEnv('PARSE_SERVER_WORKER_LIFETIME_MS'),
+  cgroupRoot: process.env.PARSE_SERVER_CGROUP_ROOT?.trim() || undefined,
+  sessionTtlMs: numberEnv('PARSE_SERVER_SESSION_TTL_MS', 0),
+  contentTtlMs: numberEnv('PARSE_SERVER_CONTENT_TTL_MS', 0),
+  maxStoreBytes: numberEnv('PARSE_SERVER_MAX_STORE_BYTES', 0),
+  storageHighWaterPercent: numberEnv('PARSE_SERVER_STORAGE_HIGH_WATER_PERCENT', 2, 100),
+  storageLowWaterPercent: numberEnv('PARSE_SERVER_STORAGE_LOW_WATER_PERCENT', 1, 99),
+  gcIntervalMs: numberEnv('PARSE_SERVER_GC_INTERVAL_MS'),
   mysql: mysqlConfigFromEnv() ?? undefined,
 })
 

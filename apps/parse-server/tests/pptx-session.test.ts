@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { PptxSession } from '../src/pptx'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createParseServer, type ParseServer, type ParseServerOptions } from '../src/server'
@@ -196,6 +197,17 @@ describe('pptx text width feedback', () => {
       await fetch(`${server.url}/v1/sessions/${opened.sessionId}/units/0`)
     ).json()) as { measurements: unknown[] }
     expect(rebuilt.measurements).toEqual([])
+    const other = (await (await openSession(server.url, file.fileId)).json()) as {
+      sessionId: string
+    }
+    const independent = (await (
+      await fetch(`${server.url}/v1/sessions/${other.sessionId}/units/0`)
+    ).json()) as { measurements: unknown[] }
+    expect(independent.measurements.length).toBeGreaterThan(0)
+    const health = (await (await fetch(`${server.url}/v1/health`)).json()) as {
+      activeWorkers: number
+    }
+    expect(health.activeWorkers).toBe(0)
   })
 })
 
@@ -248,6 +260,18 @@ describe('pptx worker isolation', () => {
     ).toBe(204)
   })
 
+  it('reserves capacity before concurrent workers open and releases it after deletion', async () => {
+    const { server } = await start({ maxSessions: 1 })
+    const file = await upload(server.url, Buffer.from(await createBlankPptx()))
+    const responses = await Promise.all(
+      Array.from({ length: 3 }, () => openSession(server.url, file.fileId)),
+    )
+    expect(responses.map((r) => r.status).sort()).toEqual([201, 429, 429])
+    const opened = (await responses.find((r) => r.status === 201)!.json()) as { sessionId: string }
+    await fetch(`${server.url}/v1/sessions/${opened.sessionId}`, { method: 'DELETE' })
+    expect((await openSession(server.url, file.fileId)).status).toBe(201)
+  })
+
   it('kills a timed-out parse and keeps the server healthy', async () => {
     const { server } = await start({ parseTimeoutMs: 1 })
     const file = await upload(server.url, Buffer.from(await createBlankPptx()))
@@ -259,7 +283,7 @@ describe('pptx worker isolation', () => {
 })
 
 describe('pptx session persistence', () => {
-  it('restores session metadata and lazily reopens the worker after restart', async () => {
+  it('restores persisted models without reopening the parser after restart', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'parse-server-restart-'))
     const first = await createParseServer({ dataDir: dir })
     try {
@@ -279,7 +303,16 @@ describe('pptx session persistence', () => {
         const units = await fetch(`${second.url}/v1/sessions/${opened.sessionId}/units`)
         expect(units.status).toBe(200)
 
-        const unit = await fetch(`${second.url}/v1/sessions/${opened.sessionId}/units/0`)
+        const reopen = vi.spyOn(PptxSession, 'open')
+        const requests = await Promise.all([
+          fetch(`${second.url}/v1/sessions/${opened.sessionId}/units/0`),
+          fetch(`${second.url}/v1/sessions/${opened.sessionId}/layout`),
+          fetch(`${second.url}/v1/sessions/${opened.sessionId}/layout/slides/0`),
+        ])
+        expect(requests.map((response) => response.status)).toEqual([200, 200, 200])
+        expect(reopen).not.toHaveBeenCalled()
+        reopen.mockRestore()
+        const unit = requests[0]
         expect(unit.status).toBe(200)
         const payload = (await unit.json()) as { slide: { widthPx: number } }
         expect(payload.slide.widthPx).toBeGreaterThan(0)
@@ -319,7 +352,10 @@ describe('content GC protection', () => {
 it('renews layout sessions throughout a simulated 125-minute presentation', async () => {
   const sweepers: Array<() => void> = []
   const originalInterval = globalThis.setInterval
-  const intervalSpy = vi.spyOn(globalThis, 'setInterval').mockImplementation(((fn: () => void, ms: number) => {
+  const intervalSpy = vi.spyOn(globalThis, 'setInterval').mockImplementation(((
+    fn: () => void,
+    ms: number,
+  ) => {
     if (ms === 60_000) sweepers.push(fn)
     return originalInterval(fn, ms)
   }) as typeof setInterval)
@@ -327,20 +363,25 @@ it('renews layout sessions throughout a simulated 125-minute presentation', asyn
   intervalSpy.mockRestore()
   const headers = { Authorization: 'Bearer long-show' }
   const uploaded = await fetch(`${server.url}/v1/files`, {
-    method: 'POST', headers, body: Buffer.from(await createBlankPptx()),
+    method: 'POST',
+    headers,
+    body: Buffer.from(await createBlankPptx()),
   })
-  const { fileId } = await uploaded.json() as { fileId: string }
+  const { fileId } = (await uploaded.json()) as { fileId: string }
   const opened = await fetch(`${server.url}/v1/sessions`, {
-    method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' },
+    method: 'POST',
+    headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify({ fileId }),
   })
-  const { sessionId } = await opened.json() as { sessionId: string }
+  const { sessionId } = (await opened.json()) as { sessionId: string }
   const baseTime = Date.now()
   const nowSpy = vi.spyOn(Date, 'now')
   try {
     for (let minute = 1; minute <= 125; minute++) {
       nowSpy.mockReturnValue(baseTime + minute * 60_000)
-      const slide = await fetch(`${server.url}/v1/sessions/${sessionId}/layout/slides/0`, { headers })
+      const slide = await fetch(`${server.url}/v1/sessions/${sessionId}/layout/slides/0`, {
+        headers,
+      })
       expect(slide.status, `minute ${minute}`).toBe(200)
       await slide.json()
       for (const sweep of sweepers) sweep()

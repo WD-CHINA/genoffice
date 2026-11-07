@@ -70,3 +70,34 @@ describe('streamDocxBlocks', () => {
     expect(blocks[0].xml).toContain('hello')
   })
 })
+
+it('rejects oversized individual blocks and incomplete XML instead of publishing partial content', async () => {
+  const consume = async (xml: string, limit = 1000) => {
+    for await (const _block of streamDocxBlocks(Readable.from([xml]), limit)) {
+      /* consume */
+    }
+  }
+  await expect(
+    consume('<w:document><w:body><w:p>' + 'x'.repeat(200) + '</w:p></w:body></w:document>', 100),
+  ).rejects.toMatchObject({ code: 'parse_limit' })
+  await expect(consume('<w:document><w:body><w:p>unfinished')).rejects.toThrow('incomplete element')
+})
+
+it('preserves every Unicode block and absolute offsets after compacting the 64 KiB buffer', async () => {
+  const paragraphs = Array.from(
+    { length: 400 },
+    (_, index) => `<w:p><w:r><w:t>${index}:${'中文'.repeat(180)}</w:t></w:r></w:p>`,
+  )
+  const xml = '<w:document><w:body>' + paragraphs.join('') + '</w:body></w:document>'
+  const bytes = Buffer.from(xml)
+  async function* chunks() {
+    for (let offset = 0; offset < bytes.length; offset += 4093)
+      yield bytes.subarray(offset, offset + 4093)
+  }
+  let index = 0
+  for await (const block of streamDocxBlocks(chunks())) {
+    expect(block.xml).toBe(paragraphs[index++])
+    expect(xml.slice(block.start, block.end)).toBe(block.xml)
+  }
+  expect(index).toBe(paragraphs.length)
+})

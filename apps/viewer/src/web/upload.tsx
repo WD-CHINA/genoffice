@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { createLibraryClient, type SavedResource } from './server-library'
 import '@genoffice/ui/tokens.css'
 import './upload.css'
 
@@ -15,6 +16,9 @@ interface Uploaded {
 const HISTORY_KEY = 'genoffice-upload-history'
 const params = new URLSearchParams(location.search)
 const token = (params.get('token') || '').trim()
+const apiBase = (params.get('server') || '').trim().replace(/\/+$/, '')
+const library = createLibraryClient(apiBase, token)
+const homeUrl = `${import.meta.env.BASE_URL}?${new URLSearchParams({ parse: 'server', ...(apiBase ? { server: apiBase } : {}), ...(token ? { token } : {}) })}`
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`
@@ -23,14 +27,15 @@ function formatBytes(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(2)} GiB`
 }
 
-function viewerUrl(item: Uploaded): string {
+function viewerUrl(item: Pick<Uploaded, 'fileId' | 'name'>): string {
   const query = new URLSearchParams({ parse: 'server', fileId: item.fileId, name: item.name })
   if (token) query.set('token', token)
-  return `/?${query}`
+  if (apiBase) query.set('server', apiBase)
+  return `${import.meta.env.BASE_URL}?${query}`
 }
 
 function contentUrl(fileId: string): string {
-  return `/v1/files/${encodeURIComponent(fileId)}/content`
+  return `${apiBase}/v1/files/${encodeURIComponent(fileId)}/content`
 }
 
 function loadHistory(): Uploaded[] {
@@ -58,6 +63,87 @@ function UploadPage() {
   const [recent, setRecent] = useState<Uploaded[]>(loadHistory)
   const [dragging, setDragging] = useState(false)
   const input = useRef<HTMLInputElement>(null)
+  const [saved, setSaved] = useState<SavedResource[]>([])
+  const removedSaved = useRef(new Set<string>())
+  const [savedCursor, setSavedCursor] = useState<string>()
+  const [libraryBusy, setLibraryBusy] = useState(false)
+  const [savingId, setSavingId] = useState<string | null>(null)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setLibraryBusy(true)
+    void library
+      .list(undefined, controller.signal)
+      .then((page) => {
+        setSaved((old) => [
+          ...old,
+          ...page.items.filter(
+            (entry) =>
+              !removedSaved.current.has(entry.id) &&
+              !old.some((resource) => resource.id === entry.id),
+          ),
+        ])
+        setSavedCursor(page.next)
+      })
+      .catch((caught: Error) => {
+        if (caught.name !== 'AbortError') setError(`读取历史资源失败：${caught.message}`)
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLibraryBusy(false)
+      })
+    return () => controller.abort()
+  }, [])
+
+  const saveResource = async (item: Pick<Uploaded, 'fileId' | 'name'>) => {
+    if (savingId) return
+    setSavingId(item.fileId)
+    setError('')
+    try {
+      const entry = await library.save(item.fileId, item.name)
+      removedSaved.current.delete(entry.id)
+      setSaved((old) => [entry, ...old.filter((resource) => resource.id !== entry.id)])
+    } catch (caught) {
+      setError(`保存历史资源失败：${(caught as Error).message}`)
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  const removeResource = async (entry: SavedResource) => {
+    if (savingId) return
+    setSavingId(entry.fileId)
+    setError('')
+    try {
+      await library.remove(entry.id)
+      removedSaved.current.add(entry.id)
+      setSaved((old) => old.filter((resource) => resource.id !== entry.id))
+    } catch (caught) {
+      setError(`移除历史资源失败：${(caught as Error).message}`)
+    } finally {
+      setSavingId(null)
+    }
+  }
+
+  const loadMoreSaved = async () => {
+    if (!savedCursor || libraryBusy) return
+    setLibraryBusy(true)
+    try {
+      const page = await library.list(savedCursor)
+      setSaved((old) => [
+        ...old,
+        ...page.items.filter(
+          (entry) =>
+            !removedSaved.current.has(entry.id) &&
+            !old.some((resource) => resource.id === entry.id),
+        ),
+      ])
+      setSavedCursor(page.next)
+    } catch (caught) {
+      setError(`读取历史资源失败：${(caught as Error).message}`)
+    } finally {
+      setLibraryBusy(false)
+    }
+  }
 
   useEffect(() => {
     if (!result) return
@@ -80,7 +166,7 @@ function UploadPage() {
     setResult(null)
     setProgress(0)
     const request = new XMLHttpRequest()
-    request.open('POST', '/v1/files')
+    request.open('POST', `${apiBase}/v1/files`)
     if (token) request.setRequestHeader('Authorization', `Bearer ${token}`)
     request.upload.onprogress = (event) => {
       if (event.lengthComputable) setProgress(Math.round((event.loaded / event.total) * 100))
@@ -116,19 +202,18 @@ function UploadPage() {
   return (
     <main className="upload-page">
       <header className="upload-header">
-        <a className="upload-brand" href="/">
+        <a className="upload-brand" href={homeUrl}>
           <span className="upload-brand-dot" />
           Office Viewer
         </a>
-        <a className="upload-back" href="/">
+        <a className="upload-back" href={homeUrl}>
           返回预览
         </a>
       </header>
       <section className="upload-card">
         <h1>上传到解析服务</h1>
         <p className="upload-hint">
-          文件会流式上传到 parse-server，返回 <code>fileId</code> 后可直接在 Viewer
-          里用服务端模式打开。
+          上传后可直接预览。需要长期保留的文件，请点击“保存到历史资源”。
           {token ? ' 当前已附带 token。' : ''}
         </p>
         <div
@@ -160,7 +245,7 @@ function UploadPage() {
             }}
           />
           <strong>{busy ? `正在上传… ${progress}%` : '点击选择，或把文件拖到这里'}</strong>
-          <span>支持 PPTX / PDF，单文件上限 2 GiB</span>
+          <span>支持 PPTX / PDF / DOCX，单文件上限 2 GiB</span>
           {busy && (
             <div className="upload-progress" aria-hidden="true">
               <div style={{ width: `${progress}%` }} />
@@ -191,6 +276,17 @@ function UploadPage() {
               <dd className="upload-mono upload-ellipsis">{contentUrl(result.fileId)}</dd>
             </dl>
             <div className="upload-actions">
+              <button
+                type="button"
+                disabled={!!savingId || saved.some((entry) => entry.fileId === result.fileId)}
+                onClick={() => void saveResource(result)}
+              >
+                {saved.some((entry) => entry.fileId === result.fileId)
+                  ? '已保存到历史资源'
+                  : savingId === result.fileId
+                    ? '正在保存…'
+                    : '保存到历史资源'}
+              </button>
               <a
                 className="upload-primary"
                 href={viewerUrl(result)}
@@ -218,10 +314,49 @@ function UploadPage() {
         )}
       </section>
 
+      <section className="upload-recent" aria-label="历史资源">
+        <div className="upload-recent-head">
+          <h2>历史资源</h2>
+        </div>
+        <p className="upload-hint">保存的文件不会自动过期。移除后，文件将按临时文件规则清理。</p>
+        {!saved.length && <p>{libraryBusy ? '正在读取…' : '暂无已保存的资源'}</p>}
+        <ul>
+          {saved.map((entry) => (
+            <li key={entry.id}>
+              <div>
+                <strong title={entry.displayName}>{entry.displayName}</strong>
+                <span>{new Date(entry.createdAt).toLocaleDateString()}</span>
+              </div>
+              <div className="upload-recent-actions">
+                <a
+                  href={viewerUrl({ fileId: entry.fileId, name: entry.displayName })}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  打开
+                </a>
+                <button
+                  type="button"
+                  disabled={!!savingId}
+                  onClick={() => void removeResource(entry)}
+                >
+                  从历史资源移除
+                </button>
+              </div>
+            </li>
+          ))}
+        </ul>
+        {savedCursor && (
+          <button type="button" disabled={libraryBusy} onClick={() => void loadMoreSaved()}>
+            加载更多历史资源
+          </button>
+        )}
+      </section>
+
       {recent.length > 0 && (
         <section className="upload-recent">
           <div className="upload-recent-head">
-            <h2>最近上传</h2>
+            <h2>最近上传（本机）</h2>
             <button
               type="button"
               onClick={() => {

@@ -1,9 +1,11 @@
+import { openServerSession, openingStateText } from './server-session'
 import type { PptxDeck } from './pptx-session'
 
 export interface RemoteTarget {
   server: string
   fileId: string
   token?: string
+  onStatus?: (text: string) => void
   /** Metric-compatible faces bundled with the Viewer (loaded by Slides). */
   fonts?: PptxDeck['fonts']
 }
@@ -65,6 +67,7 @@ export function createRemotePptxSession(target: RemoteTarget) {
   let deck: PptxDeck | undefined
   let unitCount = 0
   let closed = false
+  const abort = new AbortController()
   let heartbeat: ReturnType<typeof setInterval> | undefined
   const units = new Map<number, RemoteUnit>()
 
@@ -75,7 +78,11 @@ export function createRemotePptxSession(target: RemoteTarget) {
   }
 
   const json = async <T>(path: string, init?: RequestInit): Promise<T> => {
-    const response = await fetch(`${base}${path}`, { ...init, headers: authHeaders(init?.headers) })
+    const response = await fetch(`${base}${path}`, {
+      ...init,
+      signal: abort.signal,
+      headers: authHeaders(init?.headers),
+    })
     if (!response.ok) throw new Error(await readError(response))
     return (await response.json()) as T
   }
@@ -98,16 +105,25 @@ export function createRemotePptxSession(target: RemoteTarget) {
   return {
     async open(_bytes: ArrayBuffer, _width = 960): Promise<PptxDeck> {
       if (closed) throw new Error('Presentation closed')
-      const created = await json<{
+      const created = await openServerSession<{
         sessionId: string
         model: { unitCount: number }
         fonts?: PptxDeck['fonts']
-      }>('/v1/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileId: target.fileId }),
+      }>({
+        ...target,
+        width: _width,
+        signal: abort.signal,
+        onState: (state) => target.onStatus?.(openingStateText(state)),
       })
       sessionId = created.sessionId
+      if (closed) {
+        void fetch(`${base}/v1/sessions/${encodeURIComponent(sessionId)}`, {
+          method: 'DELETE',
+          headers: authHeaders(),
+        }).catch(() => undefined)
+        sessionId = null
+        throw new Error('Presentation closed')
+      }
       heartbeat = setInterval(() => {
         if (sessionId && !closed) {
           void json(`/v1/sessions/${encodeURIComponent(sessionId)}`).catch(() => undefined)
@@ -208,6 +224,7 @@ export function createRemotePptxSession(target: RemoteTarget) {
     },
     close(): void {
       closed = true
+      abort.abort()
       if (heartbeat !== undefined) clearInterval(heartbeat)
       if (sessionId) {
         void fetch(`${base}/v1/sessions/${encodeURIComponent(sessionId)}`, {

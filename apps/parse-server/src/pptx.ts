@@ -1,4 +1,5 @@
-import { Worker } from 'node:worker_threads'
+import type { ReadyArtifact } from './artifact-catalog'
+import { IsolatedWorker } from './isolated-worker'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
 import type { WidthItem } from './metrics'
@@ -32,6 +33,13 @@ export interface PptxOpenInput {
   parseTimeoutMs: number
   unitTimeoutMs: number
   workerMemoryMb: number
+  workerRssMb?: number
+  rssSampleMs?: number
+  cgroupRoot?: string
+  workerLifetimeMs?: number
+  processGroup?: string
+  /** Lifetime of the owning build; never serialized to the parser process. */
+  signal?: AbortSignal
 }
 
 interface Pending {
@@ -41,7 +49,7 @@ interface Pending {
 }
 
 /**
- * Main-thread handle for a PPTX session that lives in a worker thread.
+ * HTTP-process handle for a PPTX session that lives in an isolated process.
  *
  * The parser and renderer never run on the HTTP event loop: a malformed or
  * huge deck can be killed by timeout/memory limits without taking the server
@@ -50,7 +58,7 @@ interface Pending {
 export class PptxSession {
   model!: DocModel
   fonts!: PptxFontSummary[]
-  private readonly worker: Worker
+  private readonly worker: IsolatedWorker
   private readonly pending = new Map<number, Pending>()
   private readonly onDead?: () => void
   private readonly unitTimeoutMs: number
@@ -59,7 +67,7 @@ export class PptxSession {
   private lastUsed = Date.now()
 
   private constructor(
-    worker: Worker,
+    worker: IsolatedWorker,
     readonly id: string,
     readonly fileId: string,
     readonly width: number,
@@ -77,10 +85,16 @@ export class PptxSession {
   }
 
   static async open(input: PptxOpenInput): Promise<PptxSession> {
-    const { onDead, parseTimeoutMs, unitTimeoutMs, workerMemoryMb, ...workerInput } = input
-    const worker = new Worker(new URL('./pptx-worker.ts', import.meta.url), {
-      execArgv: ['--import', 'tsx'],
-      resourceLimits: { maxOldGenerationSizeMb: workerMemoryMb },
+    const { onDead, parseTimeoutMs, unitTimeoutMs, workerMemoryMb, signal: _signal, ...workerInput } = input
+    const worker = new IsolatedWorker(new URL('./pptx-worker.ts', import.meta.url), {
+      signal: input.signal,
+      heapMb: workerMemoryMb,
+      rssMb: input.workerRssMb,
+      sampleMs: input.rssSampleMs,
+      cgroupRoot: input.cgroupRoot,
+      lifetimeMs: input.workerLifetimeMs,
+      taskId: input.id,
+      groupId: input.processGroup,
     })
     const session = new PptxSession(worker, input.id, input.fileId, input.width, {
       onDead,
@@ -96,7 +110,43 @@ export class PptxSession {
       session.fonts = opened.fonts
       return session
     } catch (error) {
-      session.close()
+      await session.dispose()
+      throw error
+    }
+  }
+
+  /** Render persisted models without reopening or parsing the source package. */
+  static async openCached(
+    input: PptxOpenInput & { measuredWidths?: Record<string, number> },
+    artifactRoot: string,
+    artifactKey: string,
+    generation?: Readonly<ReadyArtifact>,
+  ): Promise<PptxSession> {
+    const worker = new IsolatedWorker(new URL('./pptx-artifact-worker.ts', import.meta.url), {
+      signal: input.signal,
+      heapMb: input.workerMemoryMb,
+      rssMb: input.workerRssMb,
+      sampleMs: input.rssSampleMs,
+      cgroupRoot: input.cgroupRoot,
+      lifetimeMs: input.workerLifetimeMs,
+      taskId: input.id,
+      groupId: input.processGroup,
+    })
+    const session = new PptxSession(worker, input.id, input.fileId, input.width, {
+      onDead: input.onDead,
+      unitTimeoutMs: input.unitTimeoutMs,
+    })
+    try {
+      const opened = await session.call<{ model: DocModel; fonts: PptxFontSummary[] }>(
+        'open',
+        { ...input, signal: undefined, onDead: undefined, artifactRoot, artifactKey, generation },
+        input.parseTimeoutMs,
+      )
+      session.model = opened.model
+      session.fonts = opened.fonts
+      return session
+    } catch (error) {
+      await session.dispose()
       throw error
     }
   }
@@ -148,6 +198,11 @@ export class PptxSession {
     )
   }
 
+  async dispose(): Promise<void> {
+    this.close()
+    await this.worker.terminate()
+  }
+
   close(): void {
     if (this.dead) return
     this.dead = true
@@ -173,7 +228,13 @@ export class PptxSession {
         reject,
         timer,
       })
-      this.worker.postMessage({ id, op, input })
+      try {
+        this.worker.postMessage({ id, op, input })
+      } catch (error) {
+        clearTimeout(timer)
+        this.pending.delete(id)
+        reject(error instanceof Error ? error : new Error(String(error)))
+      }
     })
   }
 

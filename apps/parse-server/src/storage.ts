@@ -47,6 +47,7 @@ interface TempUpload {
  * holds a whole document in memory, which is the point of the service.
  */
 export class ContentStore {
+  private readonly activeTemp = new Set<string>()
   constructor(
     readonly root: string,
     private readonly db?: MysqlDatabase,
@@ -72,8 +73,13 @@ export class ContentStore {
   }
 
   /** Stream `input` into a temp file, hashing as it goes. */
-  async writeTemp(input: Readable, maxBytes: number): Promise<TempUpload> {
+  async writeTemp(
+    input: Readable,
+    maxBytes: number,
+    reserve?: (bytes: number) => Promise<void>,
+  ): Promise<TempUpload> {
     const tempPath = join(this.tmpDir, `${randomUUID()}.part`)
+    this.activeTemp.add(tempPath)
     const hash = createHash('sha256')
     let size = 0
     const meter = new Transform({
@@ -83,21 +89,55 @@ export class ContentStore {
           callback(new UploadTooLargeError(maxBytes))
           return
         }
-        hash.update(chunk)
-        callback(null, chunk)
+        const accept = () => {
+          hash.update(chunk)
+          callback(null, chunk)
+        }
+        if (reserve) void reserve(chunk.length).then(accept, (error: Error) => callback(error))
+        else accept()
       },
     })
+    const fail = (error: Error) => {
+      meter.destroy(error)
+    }
+    const closed = () => {
+      if (!input.readableEnded) fail(new Error('upload stream closed before completion'))
+    }
+    input.once('error', fail)
+    input.once('close', closed)
     try {
-      await pipeline(input, meter, createWriteStream(tempPath))
+      // Keep the HTTP request outside pipeline: rejecting a write must still allow
+      // the caller to send 413/507 instead of destroying the response socket.
+      input.pipe(meter)
+      await pipeline(meter, createWriteStream(tempPath))
     } catch (error) {
-      await rm(tempPath, { force: true })
+      input.unpipe(meter)
+      input.resume()
+      try {
+        await rm(tempPath, { force: true })
+      } finally {
+        this.activeTemp.delete(tempPath)
+      }
       throw error
+    } finally {
+      input.removeListener('error', fail)
+      input.removeListener('close', closed)
     }
     return { tempPath, sha256: hash.digest('hex'), size }
   }
 
   /** Move a finished temp upload into the content-addressed store. */
   async commit(upload: TempUpload, format: DocFormat): Promise<StoredFile> {
+    const existing = await this.stat(upload.sha256)
+    if (
+      existing &&
+      existing.size === upload.size &&
+      existing.format === format &&
+      (await this.pathOf(upload.sha256))
+    ) {
+      await this.abort(upload)
+      return existing
+    }
     const finalPath = this.contentPath(upload.sha256)
     await mkdir(dirname(finalPath), { recursive: true })
     try {
@@ -106,6 +146,7 @@ export class ContentStore {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
       await rm(upload.tempPath, { force: true })
     }
+    this.activeTemp.delete(upload.tempPath)
     const meta: StoredFile = {
       fileId: upload.sha256,
       sha256: upload.sha256,
@@ -125,6 +166,7 @@ export class ContentStore {
 
   async abort(upload: TempUpload): Promise<void> {
     await rm(upload.tempPath, { force: true })
+    this.activeTemp.delete(upload.tempPath)
   }
 
   async stat(fileId: string): Promise<StoredFile | null> {
@@ -227,7 +269,10 @@ export class ContentStore {
     }
     const cutoff = Date.now() - maxAgeMs
     for (const name of names) {
+      if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\.part$/.test(name))
+        continue
       const path = join(this.tmpDir, name)
+      if (this.activeTemp.has(path)) continue
       try {
         const info = await fsStat(path)
         if (info.mtimeMs < cutoff) await unlink(path)

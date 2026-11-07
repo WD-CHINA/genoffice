@@ -88,8 +88,11 @@ export async function openFilePart(
     }
   }
   if (entry.method === 8) {
+    const inflated = createInflateRaw()
+    compressed.once('error', (error) => inflated.destroy(error))
+    inflated.once('close', () => compressed.destroy())
     return {
-      stream: compressed.pipe(createInflateRaw()),
+      stream: compressed.pipe(inflated),
       mime,
       size: entry.usize,
       contentLength: entry.usize,

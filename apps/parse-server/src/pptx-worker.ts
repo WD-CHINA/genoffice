@@ -1,4 +1,4 @@
-import { parentPort } from 'node:worker_threads'
+import { parentPort } from './worker-channel'
 import { PptxCore } from './pptx-core'
 
 interface Request {
@@ -17,7 +17,7 @@ interface Request {
 }
 
 const port = parentPort
-if (!port) throw new Error('pptx-worker must run as a worker thread')
+if (!port) throw new Error('pptx-worker must run as an isolated process')
 
 let core: PptxCore | null = null
 

@@ -172,6 +172,7 @@ function Host() {
         format = extensionOf(source.file.name)!
         file = source.file
       } else if (source.kind === 'file') {
+        if (source.file.size > MAX_BYTES) throw new Error('文件超过 1 GiB')
         const bytes = new Uint8Array(await source.file.arrayBuffer())
         if (!bytes.length) throw new Error('文件是空的')
         if (bytes.length > MAX_BYTES) throw new Error('文件超过 1 GiB')
@@ -197,7 +198,11 @@ function Host() {
         file = new Blob([bytes])
       }
       const resolvedMode: ParseMode =
-        mode === 'auto' ? (serverUrl && file.size > AUTO_REMOTE_BYTES ? 'server' : 'local') : mode
+        mode === 'auto'
+          ? serverUrl && file.size > (format === 'docx' ? DOCX_LOCAL_MAX_BYTES : AUTO_REMOTE_BYTES)
+            ? 'server'
+            : 'local'
+          : mode
       if (format === 'docx' && resolvedMode === 'local' && file.size > DOCX_LOCAL_MAX_BYTES) {
         throw new Error('大 DOCX 本地预览上限 32 MiB；请切换到服务端解析')
       }
@@ -257,7 +262,10 @@ function Host() {
         </span>
         <a
           className="viewer-button"
-          href={`${import.meta.env.BASE_URL}upload.html`}
+          href={`${import.meta.env.BASE_URL}upload.html?${new URLSearchParams({
+            ...(serverUrl ? { server: serverUrl } : {}),
+            ...(serverToken ? { token: serverToken } : {}),
+          })}`}
           target="_blank"
           rel="noreferrer"
           title="上传文件到解析服务"

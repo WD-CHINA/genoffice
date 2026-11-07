@@ -11,10 +11,12 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "test:performance": "node scripts/performance-smoke.mjs",
     "test:ui": "node scripts/ui-smoke.mjs",
+    "test:library": "node --import tsx scripts/library-smoke.mts",
     "test:standalone": "node scripts/standalone-smoke.mjs",
     "package": "cross-env VIEWER_BASE=/viewer/ node scripts/build.mjs && node scripts/package.mjs",
     "test:resilience": "node --import tsx scripts/resilience-smoke.mts",
-    "test:soak": "cross-env SOAK_SECONDS=7500 node --import tsx scripts/resilience-smoke.mts"
+    "test:soak": "cross-env SOAK_SECONDS=7500 node --import tsx scripts/resilience-smoke.mts",
+    "test:android-backend": "node --import tsx scripts/android-backend-smoke.mts"
   },
   "dependencies": {
     "@genoffice/docx-engine": "*",

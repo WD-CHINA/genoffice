@@ -89,6 +89,10 @@ export interface PrometheusSnapshot {
   storageBytes: number
   memory: { rss: number; heapUsed: number }
   parserVersion: string
+  reservedParseMb?: number
+  totalParseMb?: number
+  queuedParseJobs?: number
+  childProcessRssBytes?: number
 }
 
 function escapeLabel(value: string): string {
@@ -165,6 +169,34 @@ export function renderPrometheus(snapshot: PrometheusSnapshot): string {
   lines.push(`genoffice_parse_sessions_active ${snapshot.sessions}`)
   metric(lines, 'genoffice_parse_workers_active', 'gauge', 'Open parse workers.')
   lines.push(`genoffice_parse_workers_active ${snapshot.workers}`)
+  metric(
+    lines,
+    'genoffice_parse_reserved_memory_bytes',
+    'gauge',
+    'Memory reserved by running parse/layout jobs.',
+  )
+  lines.push(`genoffice_parse_reserved_memory_bytes ${(snapshot.reservedParseMb ?? 0) * 1024 ** 2}`)
+  metric(
+    lines,
+    'genoffice_parse_memory_budget_bytes',
+    'gauge',
+    'Configured total parse/layout memory budget.',
+  )
+  lines.push(`genoffice_parse_memory_budget_bytes ${(snapshot.totalParseMb ?? 0) * 1024 ** 2}`)
+  metric(
+    lines,
+    'genoffice_parse_jobs_queued',
+    'gauge',
+    'Unique jobs waiting for CPU or memory capacity.',
+  )
+  lines.push(`genoffice_parse_jobs_queued ${snapshot.queuedParseJobs ?? 0}`)
+  metric(
+    lines,
+    'genoffice_parse_children_resident_memory_bytes',
+    'gauge',
+    "Latest externally sampled RSS of this server's parser/layout child processes.",
+  )
+  lines.push(`genoffice_parse_children_resident_memory_bytes ${snapshot.childProcessRssBytes ?? 0}`)
   metric(lines, 'genoffice_parse_storage_bytes', 'gauge', 'Committed content-store bytes.')
   lines.push(`genoffice_parse_storage_bytes ${snapshot.storageBytes}`)
   metric(lines, 'genoffice_parse_uptime_seconds', 'gauge', 'Process uptime in seconds.')

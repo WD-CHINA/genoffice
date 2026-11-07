@@ -30,6 +30,17 @@ export function DocsServer({ server, fileId, token, name }: Props) {
     setBlobUrl(null)
     void (async () => {
       try {
+        const metadata = await fetch(
+          `${server.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(fileId)}`,
+          { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: controller.signal },
+        )
+        if (!metadata.ok) throw new Error(`读取 DOCX 信息失败（HTTP ${metadata.status}）`)
+        const info = (await metadata.json()) as { size: number }
+        if (!Number.isSafeInteger(info.size) || info.size < 0) throw new Error('DOCX 文件大小无效')
+        if (info.size > FULL_RENDER_LIMIT) {
+          setRemote(true)
+          return
+        }
         const response = await fetch(
           `${server.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(fileId)}/content`,
           {

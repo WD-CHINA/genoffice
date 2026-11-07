@@ -28,6 +28,8 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import java.io.IOException;
+
 /**
  * Offline viewer demo:
  *
@@ -48,12 +50,16 @@ public class MainActivity extends Activity {
     private TextView status;
     private Button downloadButton;
     private Button openButton;
+    private Button cancelButton;
+    private volatile BundleDownloader activeDownload;
 
     private LocalAssetServer server;
     private int port;
     private WebView webView;
     private ValueCallback<Uri[]> fileCallback;
     private volatile boolean destroyed;
+    private int openGeneration;
+    private int downloadGeneration;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -106,6 +112,19 @@ public class MainActivity extends Activity {
             openCached(fileId);
         });
         root.addView(openButton, matchWrapTop(dp(8)));
+
+        cancelButton = new Button(this);
+        cancelButton.setText("取消下载");
+        cancelButton.setEnabled(false);
+        cancelButton.setOnClickListener(v -> {
+            BundleDownloader download = activeDownload;
+            if (download != null) {
+                cancelButton.setEnabled(false);
+                setStatus("正在取消下载…");
+                download.cancel();
+            }
+        });
+        root.addView(cancelButton, matchWrapTop(dp(8)));
 
         status = new TextView(this);
         status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
@@ -184,6 +203,7 @@ public class MainActivity extends Activity {
     // ── download ─────────────────────────────────────────────────────────────
 
     private void startDownload() {
+        if (activeDownload != null) return;
         String serverUrl = serverInput.getText().toString().trim();
         String fileId = fileInput.getText().toString().trim();
         String token = tokenInput.getText().toString().trim();
@@ -196,15 +216,20 @@ public class MainActivity extends Activity {
                 .putString("fileId", fileId)
                 .putString("token", token)
                 .apply();
+        final int generation = ++downloadGeneration;
+        BundleDownloader download = new BundleDownloader(serverUrl, token, fileId,
+                new BundleStore(getFilesDir(), fileId), text -> runOnUiThread(() -> {
+                    if (!destroyed && generation == downloadGeneration && activeDownload != null && !activeDownload.isCancelled()) setStatus(text);
+                }));
+        activeDownload = download;
         setBusy(true);
         setStatus("连接解析服务…");
         new Thread(() -> {
-            BundleStore store = new BundleStore(getFilesDir(), fileId);
             try {
-                new BundleDownloader(serverUrl, token, fileId, store,
-                        text -> runOnUiThread(() -> setStatus(text))).run();
+                download.run();
                 runOnUiThread(() -> {
-                    if (destroyed) return;
+                    if (destroyed || activeDownload != download) return;
+                    activeDownload = null;
                     setBusy(false);
                     updateStatus(fileId);
                     openCached(fileId);
@@ -212,8 +237,10 @@ public class MainActivity extends Activity {
             } catch (Exception e) {
                 Log.e(TAG, "offline bundle failed", e);
                 runOnUiThread(() -> {
-                    if (destroyed) return;
+                    if (destroyed || activeDownload != download) return;
+                    activeDownload = null;
                     setBusy(false);
+                    if (download.isCancelled()) { setStatus("下载已取消"); return; }
                     setStatus("下载失败：" + e.getMessage());
                     Toast.makeText(this, "下载失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
                 });
@@ -224,6 +251,7 @@ public class MainActivity extends Activity {
     private void setBusy(boolean busy) {
         if (downloadButton != null) downloadButton.setEnabled(!busy);
         if (openButton != null) openButton.setEnabled(!busy);
+        if (cancelButton != null) cancelButton.setEnabled(busy && activeDownload != null);
     }
 
     private void setStatus(String text) {
@@ -233,11 +261,30 @@ public class MainActivity extends Activity {
     // ── offline viewer ───────────────────────────────────────────────────────
 
     private void openCached(String fileId) {
-        BundleStore store = new BundleStore(getFilesDir(), fileId);
-        if (!store.isComplete()) {
-            Toast.makeText(this, "还没有下载该文件的离线包", Toast.LENGTH_SHORT).show();
-            return;
-        }
+        final int generation = ++openGeneration;
+        setBusy(true);
+        setStatus("正在校验离线资源…");
+        new Thread(() -> {
+            BundleStore store = new BundleStore(getFilesDir(), fileId);
+            try {
+                store.verifyIntegrity();
+                runOnUiThread(() -> {
+                    if (destroyed || generation != openGeneration) return;
+                    setBusy(false);
+                    showCached(store);
+                });
+            } catch (IOException failure) {
+                runOnUiThread(() -> {
+                    if (destroyed || generation != openGeneration) return;
+                    setBusy(false);
+                    setStatus("离线包校验失败，请重新下载：" + failure.getMessage());
+                });
+            }
+        }, "bundle-verify").start();
+    }
+
+    private void showCached(BundleStore store) {
+        String fileId = store.fileId();
         try {
             if (server == null) {
                 server = new LocalAssetServer(getAssets(), store);
@@ -384,6 +431,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         destroyed = true;
+        if (activeDownload != null) activeDownload.cancel();
         if (fileCallback != null) {
             fileCallback.onReceiveValue(null);
             fileCallback = null;

@@ -1,3 +1,4 @@
+import { openServerSession, openingStateText } from './server-session'
 /**
  * Offline-capable PPTX session: the parse server exports parsed slide models and a
  * Worker lays them out here with the bundled metric fonts plus the browser's own
@@ -11,6 +12,7 @@ export interface ModelTarget {
   server: string
   fileId: string
   token?: string
+  onStatus?: (text: string) => void
 }
 
 interface LayoutInfo {
@@ -151,14 +153,15 @@ export function createModelPptxSession(target: ModelTarget) {
     async open(_bytes: ArrayBuffer, width = 960): Promise<PptxDeck> {
       if (closed) throw new Error('Presentation closed')
       widthPx = width
-      const created = await json<{
+      const created = await openServerSession<{
         sessionId: string
         model: { unitCount: number }
         fonts?: LayoutInfo['fonts']
-      }>('/v1/sessions', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileId: target.fileId }),
+      }>({
+        ...target,
+        width: widthPx,
+        signal: abort.signal,
+        onState: (state) => target.onStatus?.(openingStateText(state)),
       })
       sessionId = created.sessionId
       if (closed) {

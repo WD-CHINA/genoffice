@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GenOffice 三端运行工作流 · 流程图</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230E7A6F'/%3E%3Cpath d='M9 22V10h4.5a3.5 3.5 0 0 1 0 7H12v5H9zm3-8h1.5a1.5 1.5 0 0 0 0-3H12v3z' fill='%23fff'/%3E%3Ccircle cx='22' cy='12' r='2.4' fill='%23fff'/%3E%3Cpath d='M19 22c0-2.2 1.3-4 3-4s3 1.8 3 4' stroke='%23fff' stroke-width='2.2' fill='none' stroke-linecap='round'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --paper:#F7F6F1;
+    --card:#FFFFFF;
+    --ink:#1C211F;
+    --ink-soft:#5A6662;
+    --accent:#0E7A6F;
+    --accent-deep:#0A5A52;
+    --accent-soft:#E3EFEB;
+    --warn:#A25E17;
+    --warn-soft:#F7ECDA;
+    --err:#B3402A;
+    --err-soft:#FBEAE5;
+    --line:#DCDFD8;
+    --mono:"SF Mono",ui-monospace,Menlo,Consolas,"PingFang SC","Microsoft YaHei",monospace;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans SC","Microsoft YaHei",sans-serif;
+    font-size:15px;line-height:1.75;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1060px;margin:0 auto;padding:0 20px}
+
+  /* ===== 头部 ===== */
+  header{border-bottom:1px solid var(--line);background:var(--card)}
+  .head-inner{display:flex;flex-wrap:wrap;align-items:baseline;gap:10px 18px;padding:34px 0 26px}
+  h1{font-size:clamp(22px,3.4vw,30px);font-weight:700;letter-spacing:.5px}
+  h1 .thin{font-weight:400;color:var(--ink-soft)}
+  .head-meta{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:13px;color:var(--ink-soft);width:100%}
+  .chip{
+    font-family:var(--mono);font-size:12px;color:var(--accent-deep);
+    background:var(--accent-soft);border:1px solid #CBE2DB;
+    border-radius:4px;padding:1px 8px;white-space:nowrap;
+  }
+
+  /* ===== 目录 ===== */
+  nav.toc{
+    position:sticky;top:0;z-index:20;background:rgba(247,246,241,.94);
+    backdrop-filter:blur(6px);border-bottom:1px solid var(--line);
+  }
+  .toc-inner{display:flex;gap:4px;overflow-x:auto;padding:10px 0;scrollbar-width:none}
+  .toc-inner::-webkit-scrollbar{display:none}
+  .toc a{
+    flex:none;font-size:13.5px;color:var(--ink-soft);text-decoration:none;
+    padding:4px 12px;border-radius:999px;border:1px solid transparent;
+  }
+  .toc a:hover{color:var(--accent-deep);background:var(--accent-soft)}
+  .toc a.on{color:var(--accent-deep);border-color:#CBE2DB;background:var(--accent-soft)}
+
+  /* ===== 章节 ===== */
+  section{padding:44px 0 8px}
+  .sec-head{display:flex;align-items:baseline;gap:14px;margin-bottom:6px}
+  .sec-no{
+    font-family:var(--mono);font-size:13px;color:var(--accent);
+    border:1px solid #BFDAD3;border-radius:4px;padding:0 7px;flex:none;
+  }
+  h2{font-size:20px;font-weight:700;letter-spacing:.3px}
+  .sec-desc{color:var(--ink-soft);font-size:14px;max-width:72ch;margin-bottom:18px}
+  .sec-desc code, td code, .note code{
+    font-family:var(--mono);font-size:12.5px;background:var(--accent-soft);
+    color:var(--accent-deep);border-radius:3px;padding:0 5px;
+  }
+
+  /* 图卡 */
+  .fig{
+    background:var(--card);border:1px solid var(--line);border-radius:10px;
+    padding:18px 14px 8px;position:relative;
+  }
+  .fig-title{font-size:13px;color:var(--ink-soft);margin:0 6px 10px;display:flex;justify-content:space-between;align-items:center;gap:10px}
+  .copy-btn{
+    font-size:12px;color:var(--ink-soft);background:none;cursor:pointer;
+    border:1px solid var(--line);border-radius:5px;padding:2px 10px;flex:none;
+  }
+  .copy-btn:hover{color:var(--accent-deep);border-color:#BFDAD3;background:var(--accent-soft)}
+  .copy-btn.ok{color:var(--accent-deep);border-color:#BFDAD3;background:var(--accent-soft)}
+  .mermaid{display:flex;justify-content:center;overflow-x:auto;padding-bottom:10px}
+  .mermaid svg{max-width:100%;height:auto}
+  .mermaid-fallback{display:none;color:var(--warn);font-size:13px;padding:12px 6px}
+  pre.src{display:none}
+  .fig-note{font-size:12.5px;color:var(--ink-soft);border-top:1px dashed var(--line);margin:4px 6px 0;padding:10px 2px 8px}
+
+  /* 注解卡 */
+  .notes{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:16px 0 8px}
+  .note{
+    background:var(--card);border:1px solid var(--line);border-radius:8px;
+    padding:12px 14px;font-size:13px;
+  }
+  .note b{display:block;font-size:12px;color:var(--accent-deep);letter-spacing:1px;margin-bottom:4px;font-weight:600}
+  .note.warn b{color:var(--warn)}
+  .note p{color:var(--ink-soft)}
+  .note strong{color:var(--ink);font-weight:600}
+
+  /* 职责表 */
+  table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden;font-size:13.5px;margin:14px 0}
+  th,td{padding:10px 14px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#F1F4F0;font-size:12.5px;color:var(--ink-soft);font-weight:600;letter-spacing:.5px}
+  tr:last-child td{border-bottom:none}
+  td:first-child{white-space:nowrap;font-weight:600}
+
+  footer{border-top:1px solid var(--line);margin-top:56px;padding:26px 0 44px;color:var(--ink-soft);font-size:13px}
+  footer code{font-family:var(--mono);font-size:12px}
+
+  /* mermaid 主题微调：让集群标题轻一些 */
+  .mermaid .cluster-label{font-weight:600}
+
+  @media (max-width:768px){
+    .notes{grid-template-columns:1fr}
+    section{padding:34px 0 4px}
+    .fig{padding:12px 8px 4px}
+    td:first-child{white-space:normal}
+  }
+  @media (prefers-reduced-motion:reduce){
+    html{scroll-behavior:auto}
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap head-inner">
+    <h1>GenOffice 三端运行工作流 <span class="thin">· 流程图</span></h1>
+    <div class="head-meta">
+      <span class="chip">apps/viewer · Web</span>
+      <span class="chip">apps/parse-server · 服务端</span>
+      <span class="chip">apps/viewer/android-demo · 移动端</span>
+      <span>源码审查基线 2026-11-06 · 配套文档 docs/runtime-workflows.zh-CN.md</span>
+    </div>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="wrap toc-inner">
+    <a href="#s1">总览架构</a>
+    <a href="#s2">Web · 打开文件</a>
+    <a href="#s3">Web · 格式路由</a>
+    <a href="#s4">PPTX 字宽闭环</a>
+    <a href="#s5">服务端 · 会话流水线</a>
+    <a href="#s6">服务端 · DOCX</a>
+    <a href="#s7">Android · 离线包</a>
+    <a href="#s8">职责分界</a>
+  </div>
+</nav>
+
+<main class="wrap">
+
+<!-- ===== 01 总览 ===== -->
+<section id="s1">
+  <div class="sec-head"><span class="sec-no">01</span><h2>总览架构</h2></div>
+  <p class="sec-desc">三端围绕同一个 <code>/v1</code> HTTP 契约（<code>packages/parse-contract</code>）协作：Web 静态站可完全本地解析，也可把解析切到服务端；Android 壳把服务端"已解析的模型"整包下载后离线回放给同一份 Web Viewer。</p>
+  <div class="fig">
+    <div class="fig-title"><span>图 1-1 · 三端关系</span><button class="copy-btn" type="button">复制 Mermaid</button></div>
+    <div class="mermaid"></div>
+    <p class="fig-note">媒体永远不进 JSON：渲染树里只写 <code>/v1/files/:id/parts/*</code> 引用，浏览器按需 Range 取。</p>
+    <pre class="src">flowchart LR
+  subgraph WEB["浏览器 · apps/viewer（Vite 纯静态）"]
+    direction TB
+    HOST["host.tsx 文件栏<br/>打开文件 / 导入URL / 解析位置切换"]
+    PREV["preview.html · iframe<br/>按 format 路由"]
+    WORKER["浏览器 Worker<br/>pptx-engine / docx-engine"]
+    PDFJS["PDF.js<br/>getDocument(url)"]
+    HOST -->|"blob URL + query 参数"| PREV
+    PREV --> WORKER
+    PREV --> PDFJS
+  end
+  subgraph SRV["服务端 · apps/parse-server :8787"]
+    direction TB
+    UP["POST /v1/files<br/>流式上传 · 内容寻址 sha256"]
+    SES["会话 worker_threads<br/>slim + openPptx + buildRenderSlide"]
+    PARTS["GET /v1/files/:id/parts/*<br/>媒体 · Range 206"]
+  end
+  subgraph AND["Android · android-demo"]
+    direction TB
+    BD["BundleDownloader<br/>整包下载 模型+媒体+字体"]
+    LAS["LocalAssetServer<br/>127.0.0.1 回放 /viewer/* 与 /v1/*"]
+    WV["WebView<br/>preview.html?layout=client"]
+  end
+  HOST ==>|"auto超64MiB 或 parse=server<br/>上传 + 建会话"| UP
+  PREV -->|"units / text-widths / fonts"| SES
+  PREV -->|"img video 按需取"| PARTS
+  BD -->|"下载 units + parts + fonts"| SES
+  BD --> LAS
+  WV --> LAS</pre>
+  </div>
+  <div class="notes">
+    <div class="note"><b>1 GI B 上传 · RSS 103 MB</b><p>上传全程流式落盘不缓冲整份，实测 1 GiB 约 <strong>867 MB/s</strong>，峰值 RSS 仅 103 MB。</p></div>
+    <div class="note"><b>256 MI B XML 上限</b><p>PPTX 解析限制的是瘦包 XML 体量而非原文件大小，媒体留盘不进解析。</p></div>
+    <div class="note warn"><b>三档解析位置</b><p><strong>auto</strong>（大于 64 MiB 走服务端）/ <strong>local</strong> / <strong>server</strong>，host 文件栏可切换并记忆。</p></div>
+  </div>
+</section>
+
+<!-- ===== 02 Web 打开文件 ===== -->
+<section id="s2">
+  <div class="sec-head"><span class="sec-no">02</span><h2>Web 端 · 打开文件</h2></div>
+  <p class="sec-desc">入口在 <code>host.tsx</code>：三种来源汇入同一条「大小检查 → 解析位置决策 → iframe 注参」的主线；本地已知扩展名的文件全程不读入内存。</p>
+  <div class="fig">
+    <div class="fig-title"><span>图 2-1 · host.tsx 打开流程与阈值</span><button class="copy-btn" type="button">复制 Mermaid</button></div>
+    <div class="mermaid"></div>
+    <p class="fig-note">URL 来源要求文件服务器允许 CORS；token 模式下 PDF 先换取 HMAC 签名 URL，PDF.js 与 img/video 无需 Authorization 头。</p>
+    <pre class="src">flowchart TD
+  SRC["输入来源"] --> F1["本地文件 · 已知扩展名<br/>不读字节 直接 File 对象"]
+  SRC --> F2["本地文件 · 无扩展名<br/>读字节嗅探 %PDF- / PK zip / OLE"]
+  SRC --> F3["URL 导入<br/>fetch 需 CORS · 先看 Content-Length"]
+  F1 --> LIM{"大小检查<br/>MAX_BYTES = 1 GiB"}
+  F2 --> LIM
+  F3 --> LIM
+  LIM -->|"超限"| ERR1["拒绝 · 文件超过 1 GiB"]
+  LIM -->|"通过"| DOC{"DOCX 且本地模式?"}
+  DOC -->|"是 · 超过 32 MiB"| ERR2["明确报错<br/>大 DOCX 请切换服务端解析"]
+  DOC -->|"否"| MODE{"解析位置"}
+  MODE -->|"local"| LOC["URL.createObjectURL"]
+  MODE -->|"server"| UPL["POST /v1/files 流式上传<br/>返回 fileId"]
+  MODE -->|"auto"| AUTO{"文件大于 64 MiB ?"}
+  AUTO -->|"是"| UPL
+  AUTO -->|"否"| LOC
+  UPL --> PT{"PDF 且带 token ?"}
+  PT -->|"是"| SIGN["GET /v1/files/:id/content-url<br/>HMAC 签名 URL"]
+  PT -->|"否"| IFRAME
+  SIGN --> IFRAME
+  LOC --> IFRAME["iframe 加载 preview.html<br/>src format server fileId token layout"]
+  classDef err fill:#FBEAE5,stroke:#B3402A,color:#8C2F1C
+  class ERR1,ERR2 err</pre>
+  </div>
+</section>
+
+<!-- ===== 03 格式路由 ===== -->
+<section id="s3">
+  <div class="sec-head"><span class="sec-no">03</span><h2>Web 端 · preview 格式路由</h2></div>
+  <p class="sec-desc"><code>preview.tsx</code> 按 query 参数把渲染工作分给四个 lazy 组件；PPTX 再按是否携带服务端参数细分三条会话路径，三者实现同一个 session 接口。</p>
+  <div class="fig">
+    <div class="fig-title"><span>图 3-1 · preview.tsx 路由树</span><button class="copy-btn" type="button">复制 Mermaid</button></div>
+    <div class="mermaid"></div>
+    <p class="fig-note">两条远程路径中，<strong>客户端排版是默认</strong>（<code>layout≠server</code>），服务端渲染树需显式 <code>?layout=server</code> 回退。</p>
+    <pre class="src">flowchart TD
+  P["preview.html 参数<br/>src · format · server · fileId · token · layout"] --> Q{"format"}
+  Q -->|"pptx"| S["Slides 组件"]
+  Q -->|"pdf"| F["Pdf 组件<br/>PDF.js 渲染 blob URL 或签名 contentUrl"]
+  Q -->|"docx + server + fileId"| DS["DocsServer 组件<br/>block-chunk 懒加载 + 页面虚拟化 + 表格行分页"]
+  Q -->|"docx 本地"| D["Docs 组件<br/>Worker parseDocxOffThread<br/>Tiptap 只读节点 + DOM 分页"]
+  S --> R{"携带 server + fileId ?"}
+  R -->|"否"| LOCW["pptx-browser-worker<br/>本地 openPptx + 字体度量"]
+  R -->|"layout=server"| REM["pptx-remote-session<br/>服务端渲染树 + 字宽回传"]
+  R -->|"默认"| MOD["pptx-model-session + pptx-model-worker<br/>拉取解析模型 · Worker 客户端排版"]
+  classDef pick fill:#E3EFEB,stroke:#0E7A6F,color:#0A5A52,font-weight:bold
+  class MOD pick</pre>
+  </div>
+</section>
+
+<!-- ===== 04 字宽闭环 ===== -->
+<section id="s4">
+  <div class="sec-head"><span class="sec-no">04</span><h2>PPTX 字宽回传闭环</h2></div>
+  <p class="sec-desc">PPT 换行依赖浏览器实测字宽，这是两端一致性的核心机制：服务端先用启发式度量起步，浏览器加载字体实测后回传，服务端清缓存重排，循环直到无待测量项。首屏、懒加载页、放映预加载后都跑同一循环。</p>
+  <div class="fig">
+    <div class="fig-title"><span>图 4-1 · 测量 → 回传 → 重排循环</span><button class="copy-btn" type="button">复制 Mermaid</button></div>
+    <div class="mermaid"></div>
+    <p class="fig-note">极老的嵌入字体可能被 Chromium OTS 拒绝：回退替代字体并输出 warning，不中断流程。</p>
+    <pre class="src">flowchart TD
+  subgraph SRV["服务端 worker"]
+    A["buildRenderSlide<br/>启发式字体度量"] --> B["返回待测量项<br/>measurements 列表"]
+    D2["清空缓存渲染树<br/>用实测宽度重排已加载页"] --> A
+    D2 --> E["返回剩余 measurements"]
+  end
+  subgraph BRW["浏览器"]
+    B --> C1["FontFace 加载<br/>内置度量字体 + 会话嵌入字体"]
+    C1 --> C2["canvas measureText 实测"]
+    C2 --> C3["POST /v1/sessions/:id/text-widths<br/>提交 key 对应宽度"]
+    C3 --> D2
+    E --> C1
+  end
+  E -->|"剩余为空 · 排版稳定"| DONE["绘制当前页 + 可见缩略图<br/>翻页 / 放映前按需 loadUnit"]
+  classDef done fill:#E3EFEB,stroke:#0E7A6F,color:#0A5A52
+  class DONE done</pre>
+  </div>
+  <div class="notes">
+    <div class="note"><b>字体请求 23 → 3</b><p>按排版实际请求的字体加载，不再默认下载全部 23 个度量字体；字体响应体从约 12.83 MiB 降至 1.65–3.08 MiB。</p></div>
+    <div class="note"><b>只重排受影响页</b><p>回传只重建依赖这些测量 key 的幻灯片，Worker 只返回变化的页面，主线程合并其余页面。</p></div>
+    <div class="note warn"><b>闭环不可省</b><p>省略回传会导致换行与字形位置漂移——这是验收口径，不是性能优化项。</p></div>
+  </div>
+</section>
+
+<!-- ===== 05 服务端会话流水线 ===== -->
+<section id="s5">
+  <div class="sec-head"><span class="sec-no">05</span><h2>服务端 · PPTX 会话流水线与故障隔离</h2></div>
+  <p class="sec-desc"><code>apps/parse-server</code> 用「内容寻址存储 + 瘦包 + 每会话一 worker」接住 1 GiB 级 PPTX；任何单个 job 的超时 / OOM 都被隔离在 worker 内，HTTP 健康检查不受影响。</p>
+  <div class="fig">
+    <div class="fig-title"><span>图 5-1 · 上传到按页取用的完整链路</span><button class="copy-btn" type="button">复制 Mermaid</button></div>
+    <div class="mermaid"></div>
+    <p class="fig-note">实测：256 MiB deck（空白页 + 256 MiB stored 媒体）开会在约 22 ms、RSS 增量约 0.5 MiB——媒体从未被解压进内存。</p>
+    <pre class="src">flowchart TD
+  U["POST /v1/files<br/>流式上传"] --> ST["边写临时文件边算 sha256<br/>原子移动 files/前2位/完整哈希"]
+  CS["POST /v1/sessions {fileId}"] --> SLIM["slimPptxFile<br/>zip-reader 只拷非媒体 part 进瘦包<br/>ppt/media 留盘 · 解析上限 256 MiB XML"]
+  SLIM --> WK["每会话一个 worker_threads<br/>max-old-space-size + RSS watchdog"]
+  WK --> OPEN["openPptx 解析瘦包"]
+  OPEN --> U1["GET /v1/sessions/:id/units/:i<br/>buildRenderSlide + playback + measurements"]
+  U1 --> TW["POST text-widths → 清缓存重排"]
+  U1 -.->|"渲染树内媒体引用"| MP["GET /v1/files/:id/parts/:path<br/>stored 切片支持 Range 206<br/>deflated 流式解压"]
+  WK -.->|"解析超时"| E504["504 parse_timeout"]
+  WK -.->|"worker OOM / 崩溃"| E422["422 parse_failed"]
+  CONC["并发会话超上限"] -.-> E429["429 too_many_sessions"]
+  HB["GET /v1/sessions/:id<br/>每 60s 心跳续期"] -.-> TTL["TTL 清扫过期会话"]
+  GC["周期 GC<br/>未引用内容 · 容量上限 · 临时文件"] -.-> ST
+  classDef err fill:#FBEAE5,stroke:#B3402A,color:#8C2F1C
+  classDef svc fill:#F7ECDA,stroke:#A25E17,color:#7A470F
+  class E504,E422,E429 err
+  class HB,TTL,GC svc</pre>
+  </div>
+  <div class="notes">
+    <div class="note"><b>持久化</b><p>会话元数据原子写 <code>sessions.json</code>，重启后 model/units 可读、worker 懒重建；可选 MySQL 存元数据，大内容仍留磁盘。</p></div>
+    <div class="note"><b>可观测</b><p>每请求一行 JSON 日志；<code>/metrics</code> 输出 Prometheus 指标；<code>/v1/health</code> 含 sessions、workers、errors、memory。</p></div>
+    <div class="note warn"><b>删除保护</b><p>活跃会话存在时 <code>DELETE /v1/files/:id</code> 返回 <strong>409 file_in_use</strong>。</p></div>
+  </div>
+</section>
+
+<!-- ===== 06 DOCX ===== -->
+<section id="s6">
+  <div class="sec-head"><span class="sec-no">06</span><h2>服务端 · DOCX block-chunk 会话</h2></div>
+  <p class="sec-desc">DOCX 走 Gate A.3 的 block 级会话：按 200 blocks 切 chunk、磁盘持久化、重启可恢复。注意它不是 1 GiB DOCX 全方案——前端分页虚拟化已整体推迟（架构文档附录 F）。</p>
+  <div class="fig">
+    <div class="fig-title"><span>图 6-1 · block 切分与按 chunk 取用</span><button class="copy-btn" type="button">复制 Mermaid</button></div>
+    <div class="mermaid"></div>
+    <pre class="src">flowchart LR
+  A["POST /v1/sessions (docx)"] --> B["createDocxBlockParser<br/>流式扫 word/document.xml<br/>docx-metadata 收集 sections 与分页符"]
+  B --> C["顶层 block 切分<br/>200 blocks / chunk"]
+  C --> D["chunks/会话ID/<br/>manifest.json + chunks.bin<br/>含偏移与 SHA-256"]
+  D --> E["GET units/:id → {blocks}"]
+  E --> F["正文图片改写为<br/>/v1/files/:id/parts/* URL"]
+  E --> G["嵌入字体走<br/>/v1/sessions/:id/fonts/:id"]
+  H["重启恢复<br/>sessions.json + 磁盘索引<br/>worker 懒重建"] -.-> D
+  classDef keep fill:#E3EFEB,stroke:#0E7A6F,color:#0A5A52
+  class D keep</pre>
+  </div>
+</section>
+
+<!-- ===== 07 Android ===== -->
+<section id="s7">
+  <div class="sec-head"><span class="sec-no">07</span><h2>Android · 离线包下载与回放</h2></div>
+  <p class="sec-desc">移动端不引入任何解析/排版代码：先从解析服务把「已解析的模型 + 媒体 + 字体」整包下载并改写 URL，再由 loopback HTTP 服务按同一契约离线回放，渲染复用 Web Viewer 的客户端排版路径。</p>
+  <div class="fig">
+    <div class="fig-title"><span>图 7-1 · BundleDownloader → LocalAssetServer → WebView</span><button class="copy-btn" type="button">复制 Mermaid</button></div>
+    <div class="mermaid"></div>
+    <p class="fig-note">同源设计是关键：页面与 /v1 同 origin，无 CORS、canvas 不被跨域污染，音视频直接播本地缓存文件。</p>
+    <pre class="src">flowchart TD
+  subgraph DL["BundleDownloader · 后台线程"]
+    direction TB
+    A1["POST /v1/sessions 建会话"] --> A2["每 60 秒心跳续期<br/>下载大媒体期间也续期"]
+    A1 --> A3["GET /layout → 尺寸 / 页数 / 字体表"]
+    A3 --> A4["逐页 GET /layout/slides/i<br/>绝对 parts URL 改写为同源相对路径"]
+    A4 --> A5["下载引用的媒体分片 + 嵌入字体"]
+    A5 --> A6["manifest.json + complete 标记<br/>staging 原子生效 · 失败保留旧包"]
+  end
+  subgraph LA["LocalAssetServer · 127.0.0.1 随机端口"]
+    direction TB
+    B1["/viewer/* → APK assets<br/>Web Viewer 静态资源"]
+    B2["/v1/* → 回放缓存包<br/>parts 用 RandomAccessFile 切片<br/>支持 Range → video 可拖进度条"]
+    B3["text-widths → 直接返回空<br/>离线保留服务端启发式布局"]
+  end
+  subgraph SH["MainActivity · WebView 壳"]
+    direction TB
+    C1["WebView 配置<br/>JS + DOMStorage · 免手势播放<br/>allowFileAccess=false · keepScreenOn"]
+    C2["revealWhenReady<br/>轮询首个 canvas 或错误提示<br/>再撤原生 loading 防白屏"]
+  end
+  A6 --> C1
+  C1 -->|"preview.html?src=bundle&format=pptx<br/>&server=本地&layout=client&theme=dark"| B1
+  C1 --> B2
+  classDef key fill:#E3EFEB,stroke:#0E7A6F,color:#0A5A52
+  class A6,B2 key</pre>
+  </div>
+  <div class="notes">
+    <div class="note"><b>构建链</b><p>Web Viewer 以 <code>VIEWER_BASE=/viewer/</code> 构建后由 Gradle 同步进 APK assets，再 <code>assembleDebug</code>。</p></div>
+    <div class="note"><b>联调</b><p><code>adb reverse tcp:8790 tcp:8790</code> 让真机经 USB 访问电脑上的解析服务，intent 传 server/fileId/download。</p></div>
+    <div class="note warn"><b>已知限制</b><p>离屏页按当前页 ±1 淘汰，回访需重新拉取；媒体签名默认 12 小时；离线包无空间回收；演示允许明文 HTTP。</p></div>
+  </div>
+</section>
+
+<!-- ===== 08 职责分界 ===== -->
+<section id="s8">
+  <div class="sec-head"><span class="sec-no">08</span><h2>三端职责分界</h2></div>
+  <p class="sec-desc">解析被拆成五个阶段，只有一部分能搬到服务端——这张表是三端协作的边界合同。</p>
+  <table>
+    <colgroup><col style="width:18%"><col style="width:44%"><col style="width:38%"></colgroup>
+    <thead><tr><th>角色</th><th>负责</th><th>不负责</th></tr></thead>
+    <tbody>
+      <tr><td>浏览器前端</td><td>渲染、DOM 测量/分页、字体加载、交互、按需取资源、小文件本地解析（含 DOCX 本地预览）</td><td>大文件整份读入、CPU 密集解析的可靠性</td></tr>
+      <tr><td>解析服务</td><td>容器索引、XML → 模型、PPT 版面、缓存、限流与 worker 隔离</td><td>DOM 分页、最终绘制、字体实测（必须回传浏览器结果）</td></tr>
+      <tr><td>Android 壳</td><td>会话下载与 URL 改写、本地回放服务、WebView 生命周期</td><td>任何解析/排版逻辑（全部复用 Web Viewer）</td></tr>
+    </tbody>
+  </table>
+  <table>
+    <colgroup><col style="width:22%"><col style="width:20%"><col style="width:58%"></colgroup>
+    <thead><tr><th>格式</th><th>服务端完成阶段</th><th>说明</th></tr></thead>
+    <tbody>
+      <tr><td>PPTX</td><td>index · model · layout</td><td>版面在服务端，字宽必须回传浏览器；1 GiB 主路径</td></tr>
+      <tr><td>PDF</td><td>—（无）</td><td>PDF.js 自绘，服务端只做 Range 内容服务</td></tr>
+      <tr><td>DOCX</td><td>index · model</td><td>block-chunk 会话；1 GiB 全方案（流式 tokenizer + 分页虚拟化）已推迟</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>GenOffice Web / 移动 / 服务端运行工作流流程图 · 基于 <code>apps/viewer</code>、<code>apps/parse-server</code>、<code>apps/viewer/android-demo</code> 源码审查绘制 · 详细文字版见 <code>docs/runtime-workflows.zh-CN.md</code></p>
+  </div>
+</footer>
+
+</main>
+
+<script src="https://fastly.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  /* ===== Mermaid 渲染 ===== */
+  var SKIN = {
+    theme: 'base',
+    themeVariables: {
+      background: '#FFFFFF',
+      primaryColor: '#EFF5F2',
+      primaryTextColor: '#1C211F',
+      primaryBorderColor: '#0E7A6F',
+      lineColor: '#8A968F',
+      edgeLabelBackground: '#FFFFFF',
+      clusterBkg: '#F3F5F0',
+      clusterBorder: '#CBD4CC',
+      fontSize: '14px',
+      fontFamily: '-apple-system, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif'
+    },
+    flowchart: { curve: 'basis', nodeSpacing: 42, rankSpacing: 52, padding: 10 }
+  };
+
+  function renderAll() {
+    if (typeof window.mermaid === 'undefined') {
+      var msg = document.querySelectorAll('.mermaid-fallback');
+      for (var i = 0; i < msg.length; i++) msg[i].style.display = 'block';
+      return;
+    }
+    mermaid.initialize(Object.assign({ startOnLoad: false, securityLevel: 'loose' }, SKIN));
+    var figures = document.querySelectorAll('.fig');
+    var queue = [];
+    for (var i = 0; i < figures.length; i++) {
+      var src = figures[i].querySelector('pre.src');
+      var target = figures[i].querySelector('.mermaid');
+      if (src && target) queue.push({ src: src, target: target, id: 'mmd-' + i });
+    }
+    var idx = 0;
+    function next() {
+      if (idx >= queue.length) return;
+      var item = queue[idx++];
+      mermaid
+        .render(item.id, item.src.textContent.trim())
+        .then(function (out) {
+          item.target.innerHTML = out.svg;
+          next();
+        })
+        .catch(function () {
+          item.target.innerHTML =
+            '<p class="mermaid-fallback" style="display:block">此图渲染失败，可点击右上角复制 Mermaid 源码后粘贴到 mermaid.live 查看。</p>';
+          next();
+        });
+    }
+    next();
+  }
+
+  /* ===== 复制按钮 ===== */
+  document.addEventListener('click', function (ev) {
+    var btn = ev.target.closest ? ev.target.closest('.copy-btn') : null;
+    if (!btn) return;
+    var fig = btn.closest('.fig');
+    var src = fig ? fig.querySelector('pre.src') : null;
+    if (!src) return;
+    var text = src.textContent.trim();
+    function done() {
+      var old = btn.textContent;
+      btn.textContent = '已复制';
+      btn.classList.add('ok');
+      setTimeout(function () { btn.textContent = old; btn.classList.remove('ok'); }, 1600);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () { fallbackCopy(text, done); });
+    } else {
+      fallbackCopy(text, done);
+    }
+  });
+  function fallbackCopy(text, done) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); done(); } catch (e) { /* 保持静默 */ }
+    document.body.removeChild(ta);
+  }
+
+  /* ===== 目录高亮 ===== */
+  var links = document.querySelectorAll('.toc a');
+  var sections = [];
+  for (var i = 0; i < links.length; i++) {
+    var id = links[i].getAttribute('href').slice(1);
+    var el = document.getElementById(id);
+    if (el) sections.push({ link: links[i], el: el });
+  }
+  function updateToc() {
+    var pos = window.scrollY + 120, current = sections[0];
+    for (var i = 0; i < sections.length; i++) {
+      if (sections[i].el.offsetTop <= pos) current = sections[i];
+    }
+    for (var j = 0; j < sections.length; j++) {
+      sections[j].link.classList.toggle('on', sections[j] === current);
+    }
+  }
+  var ticking = false;
+  window.addEventListener('scroll', function () {
+    if (ticking) return;
+    ticking = true;
+    requestAnimationFrame(function () { updateToc(); ticking = false; });
+  }, { passive: true });
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function () { renderAll(); updateToc(); });
+  } else {
+    renderAll();
+    updateToc();
+  }
+})();
+</script>
+</body>
+</html>

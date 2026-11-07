@@ -1,4 +1,4 @@
-import { Worker } from 'node:worker_threads'
+import { IsolatedWorker } from './isolated-worker'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
 import type { PptxFontSummary } from './pptx-core'
@@ -13,9 +13,17 @@ export interface DocxOpenInput {
   parseTimeoutMs: number
   unitTimeoutMs: number
   workerMemoryMb: number
+  workerRssMb?: number
+  rssSampleMs?: number
+  cgroupRoot?: string
+  workerLifetimeMs?: number
+  processGroup?: string
+  /** Lifetime of the owning build; never serialized to the parser process. */
+  signal?: AbortSignal
   /** Directory for persisted chunk JSON files. */
   chunksDir: string
   onDead?: () => void
+  reserveStorage?: (bytes: number) => Promise<void>
 }
 
 interface Pending {
@@ -35,11 +43,11 @@ export class DocxTimeoutError extends Error {
   }
 }
 
-/** Main-thread handle for a DOCX session whose parse/chunks live in a worker. */
+/** HTTP-process handle for a DOCX session whose parse/chunks live in a worker. */
 export class DocxSession {
   model!: DocModel
   fonts: PptxFontSummary[] = []
-  private readonly worker: Worker
+  private readonly worker: IsolatedWorker
   private readonly pending = new Map<number, Pending>()
   private readonly onDead?: () => void
   private readonly unitTimeoutMs: number
@@ -48,10 +56,14 @@ export class DocxSession {
   private lastUsed = Date.now()
 
   private constructor(
-    worker: Worker,
+    worker: IsolatedWorker,
     readonly id: string,
     readonly fileId: string,
-    options: { onDead?: () => void; unitTimeoutMs: number },
+    private readonly options: {
+      onDead?: () => void
+      unitTimeoutMs: number
+      reserveStorage?: (bytes: number) => Promise<void>
+    },
   ) {
     this.worker = worker
     this.onDead = options.onDead
@@ -65,26 +77,41 @@ export class DocxSession {
   }
 
   static async open(input: DocxOpenInput): Promise<DocxSession> {
-    const { onDead, parseTimeoutMs, unitTimeoutMs, workerMemoryMb, ...workerInput } = input
-    const worker = new Worker(new URL('./docx-worker.ts', import.meta.url), {
-      execArgv: ['--import', 'tsx'],
-      resourceLimits: { maxOldGenerationSizeMb: workerMemoryMb },
+    const {
+      onDead,
+      parseTimeoutMs,
+      unitTimeoutMs,
+      workerMemoryMb,
+      reserveStorage,
+      signal: _signal,
+      ...workerInput
+    } = input
+    const worker = new IsolatedWorker(new URL('./docx-worker.ts', import.meta.url), {
+      signal: input.signal,
+      heapMb: workerMemoryMb,
+      rssMb: input.workerRssMb,
+      sampleMs: input.rssSampleMs,
+      cgroupRoot: input.cgroupRoot,
+      lifetimeMs: input.workerLifetimeMs,
+      taskId: input.id,
+      groupId: input.processGroup,
     })
     const session = new DocxSession(worker, input.id, input.fileId, {
       onDead,
       unitTimeoutMs,
+      reserveStorage,
     })
     try {
       const opened = await session.call<{ model: DocModel; fonts: PptxFontSummary[] }>(
         'open',
-        workerInput,
+        { ...workerInput, storageReservation: !!reserveStorage },
         parseTimeoutMs,
       )
       session.model = opened.model
       session.fonts = opened.fonts
       return session
     } catch (error) {
-      session.close()
+      await session.dispose()
       throw error
     }
   }
@@ -129,6 +156,11 @@ export class DocxSession {
     return []
   }
 
+  async dispose(): Promise<void> {
+    this.close()
+    await this.worker.terminate()
+  }
+
   close(): void {
     if (this.dead) return
     this.dead = true
@@ -167,10 +199,43 @@ export class DocxSession {
 
   private readonly handleMessage = (message: {
     id: number
+    kind?: string
+    storageId?: number
+    bytes?: number
     ok: boolean
     result?: unknown
     error?: { message?: string; code?: string }
   }): void => {
+    if (message.kind === 'storage_reserve') {
+      if (this.dead) return
+      void (async () => {
+        let error: { message: string; code?: string } | undefined
+        try {
+          if (
+            !Number.isSafeInteger(message.bytes) ||
+            message.bytes! < 0 ||
+            !this.options.reserveStorage
+          )
+            throw new Error('invalid DOCX storage reservation request')
+          await this.options.reserveStorage(message.bytes!)
+        } catch (cause) {
+          error = {
+            message: cause instanceof Error ? cause.message : String(cause),
+            code: (cause as { code?: string }).code,
+          }
+        }
+        if (this.dead) return
+        try {
+          this.worker.postMessage({
+            method: 'storage_reply',
+            params: { storageId: message.storageId, error },
+          })
+        } catch {
+          /* Worker exited while the reservation was pending; build cleanup releases it. */
+        }
+      })()
+      return
+    }
     const pending = this.pending.get(message.id)
     if (!pending) return
     this.pending.delete(message.id)

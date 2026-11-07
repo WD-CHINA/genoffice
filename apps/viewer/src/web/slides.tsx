@@ -168,6 +168,7 @@ export function Slides({
     [show, setShow] = useState(false),
     [showPage, setShowPage] = useState(0),
     [error, setError] = useState(''),
+    [loadingStatus, setLoadingStatus] = useState('正在加载字体和幻灯片…'),
     [width, setWidth] = useState(960)
   const [zoom, setZoom] = useState(1),
     [fit, setFit] = useState<'width' | 'page' | null>('page'),
@@ -316,6 +317,7 @@ export function Slides({
     const stageTiming = createViewerTiming('pptx')
     timing.current = stageTiming
     setError('')
+    setLoadingStatus('正在加载字体和幻灯片…')
     setDeck(null)
     setVisibleThumbs(new Set())
     slideUrls.current = []
@@ -361,8 +363,23 @@ export function Slides({
     const session =
       server && fileId
         ? layout
-          ? createModelPptxSession({ server, fileId, token })
-          : createRemotePptxSession({ server, fileId, token, fonts: REMOTE_FONTS })
+          ? createModelPptxSession({
+              server,
+              fileId,
+              token,
+              onStatus: (text) => {
+                if (!cancelled) setLoadingStatus(text)
+              },
+            })
+          : createRemotePptxSession({
+              server,
+              fileId,
+              token,
+              fonts: REMOTE_FONTS,
+              onStatus: (text) => {
+                if (!cancelled) setLoadingStatus(text)
+              },
+            })
         : createPptxSession()
     pptx.current = session
     const parts = partsRef.current
@@ -531,8 +548,8 @@ export function Slides({
     if (pending) return pending
     if (!session?.loadUnit || !slide?.placeholder) return
     const loadUnit = session.loadUnit.bind(session)
-    let job!: Promise<void>
-    job = (async () => {
+    // Defer work so even a synchronous loadUnit failure sees an initialized job identity.
+    const job = Promise.resolve().then(async () => {
       try {
         const unit = await loadUnit(index)
         if (pptx.current !== session) return
@@ -562,7 +579,7 @@ export function Slides({
       } finally {
         if (loadingSlides.current.get(index) === job) loadingSlides.current.delete(index)
       }
-    })()
+    })
     loadingSlides.current.set(index, job)
     return job
   }
@@ -639,7 +656,7 @@ export function Slides({
   if (!deck)
     return (
       <p className="viewer-status" role={error ? 'alert' : undefined}>
-        {error || '正在加载字体和幻灯片…'}
+        {error || loadingStatus}
       </p>
     )
   const source: SlidesDataSource = {

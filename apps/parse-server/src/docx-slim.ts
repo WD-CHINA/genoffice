@@ -31,7 +31,11 @@ async function readEntry(source: ByteSource, entry: ZipEntry): Promise<Uint8Arra
  * media; the slim archive keeps the worker memory bounded while the original
  * parts remain available through `GET /v1/files/:id/parts/...`.
  */
-export async function slimDocxFile(path: string, limits: ServerLimits): Promise<SlimDocx> {
+export async function slimDocxFile(
+  path: string,
+  limits: ServerLimits,
+  options: { omitDocument?: boolean } = {},
+): Promise<SlimDocx> {
   return withFileSource(path, async (source) => {
     const entries = await readZipEntries(source, {
       maxParts: limits.maxParts,
@@ -49,7 +53,14 @@ export async function slimDocxFile(path: string, limits: ServerLimits): Promise<
         removedBytes += entry.usize
         continue
       }
-      const data = await readEntry(source, entry)
+      const omit = options.omitDocument && entry.name === 'word/document.xml'
+      if (!omit && slimBytes + entry.usize > limits.maxParseBytes)
+        throw new ParseLimitError(limits.maxParseBytes)
+      const data = omit
+        ? Buffer.from(
+            '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body/></w:document>',
+          )
+        : await readEntry(source, entry)
       kept.push({ name: entry.name, data })
       slimBytes += data.length
       if (slimBytes > limits.maxParseBytes) throw new ParseLimitError(limits.maxParseBytes)

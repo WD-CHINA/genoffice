@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, open, readFile, rename } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { DocModel } from '@genoffice/parse-contract'
 import type { PptxFontSummary } from './pptx'
@@ -123,14 +123,25 @@ export class SessionStore {
 
   private persist(): Promise<void> {
     const payload = JSON.stringify(this.values())
-    this.writeChain = this.writeChain
-      .then(async () => {
-        const tmp = `${this.path}.tmp`
-        await writeFile(tmp, payload)
-        await rename(tmp, this.path)
-      })
-      .catch(() => undefined)
-    return this.writeChain
+    const task = this.writeChain.then(async () => {
+      const tmp = `${this.path}.tmp`
+      const file = await open(tmp, 'w')
+      try {
+        await file.writeFile(payload)
+        await file.sync()
+      } finally {
+        await file.close()
+      }
+      await rename(tmp, this.path)
+      const directory = await open(dirname(this.path), 'r')
+      try {
+        await directory.sync()
+      } finally {
+        await directory.close()
+      }
+    })
+    this.writeChain = task.catch(() => undefined)
+    return task
   }
 }
 

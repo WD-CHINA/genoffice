@@ -21,5 +21,14 @@ export const DEFAULT_LIMITS: ServerLimits = {
 }
 
 export function resolveLimits(partial?: Partial<ServerLimits>): ServerLimits {
-  return { ...DEFAULT_LIMITS, ...partial }
+  const limits = { ...DEFAULT_LIMITS }
+  for (const key of Object.keys(DEFAULT_LIMITS) as Array<keyof ServerLimits>) {
+    const value = partial?.[key]
+    if (value === undefined) continue
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`invalid server limit: ${key} must be a positive safe integer`)
+    }
+    limits[key] = value
+  }
+  return limits
 }

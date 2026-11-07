@@ -51,6 +51,13 @@ export class FeedbackMetrics implements FontMetricsProvider {
     return this.pending.size > 0
   }
 
+  /** Restore this viewing session's accepted widths in a short-lived layout worker. */
+  restore(widths: Readonly<Record<string, number>>): void {
+    for (const [key, width] of Object.entries(widths)) {
+      if (Number.isFinite(width) && width >= 0) this.cache.set(key, width)
+    }
+  }
+
   /** Accept browser-measured widths (at 100px) for pending keys. */
   accept(widths: Readonly<Record<string, number>>): void {
     for (const [key, width] of Object.entries(widths)) {

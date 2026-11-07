@@ -1,4 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { openingStateText } from './server-session'
+import { DocxRemoteSession } from './docx-remote-session'
+import { DocxFontScope } from './docx-font-scope'
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { editorExtensions } from '@genoffice/viewer-renderers/docs/renderer/editor/extensions'
 import {
@@ -7,8 +10,11 @@ import {
 } from '@genoffice/viewer-renderers/docs/renderer/editor/convert'
 import '@genoffice/viewer-renderers/docs/renderer/styles.css'
 import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
-import { paginateBlocks, visiblePages, type BlockMeasure } from './docx-pagination'
-import { paginateTableRows, type TableRowLayout } from './docx-table-pagination'
+import { paginateBlocks, visiblePages, type BlockMeasure, type PageDescriptor } from './docx-pagination'
+import { captureDocxAnchor, restoreDocxAnchor } from './docx-scroll-anchor'
+import { type TableRowLayout } from './docx-table-pagination'
+import { indexDocxUnit, replaceDocxUnitIndex, type DocxPageBlock } from './docx-page-index'
+import { DocxReadQueue } from './docx-read-queue'
 import { measureTableRows, sliceTableBlock } from './docx-table-measure'
 import { measureBlockHeights } from './docx-block-measure'
 
@@ -32,26 +38,12 @@ const DEFAULT_PAGE: PageSettings = {
 const PAGE_GAP = 24
 const OVERSCAN = 2
 const twipsToPx = (twips: number): number => twips / 15
-const CHUNK_LIMIT = 1
 
 interface Props {
   server: string
   fileId: string
   token?: string
   name?: string
-}
-
-interface UnitListing {
-  items: Array<{ id: string }>
-  next?: string
-}
-
-function estimateHeight(block: any): number {
-  if (block.type === 'table') return 320
-  if (block.type === 'image') return 240
-  if (block.type === 'passthrough') return 24
-  const text = (block.runs || []).map((run: any) => run.text || '').join('')
-  return Math.max(24, 22 + Math.ceil(text.length / 70) * 20)
 }
 
 interface StyleContextPayload {
@@ -80,7 +72,9 @@ function reviveStyleContext(payload: StyleContextPayload): StyleContext {
   }
 }
 
-function PageEditor({ blocks, doc }: { blocks: any[]; doc: StyleContext }) {
+function PageEditor({ blocks, doc, unitKey, onAssetsReady }: {
+  blocks: any[]; doc: StyleContext; unitKey: string; onAssetsReady: (id: string) => void
+}) {
   const editor = useEditor({
     extensions: editorExtensions,
     editable: false,
@@ -92,58 +86,55 @@ function PageEditor({ blocks, doc }: { blocks: any[]; doc: StyleContext }) {
       emitUpdate: false,
     })
   }, [editor, blocks, doc])
+  useEffect(() => {
+    if (!editor) return
+    const ready = () => {
+      for (const id of JSON.parse(unitKey) as string[]) onAssetsReady(id)
+    }
+    const root = editor.view.dom
+    root.addEventListener('load', ready, true)
+    root.addEventListener('error', ready, true)
+    document.fonts.addEventListener('loadingdone', ready)
+    const observer = new ResizeObserver(ready)
+    observer.observe(root)
+    return () => {
+      root.removeEventListener('load', ready, true)
+      root.removeEventListener('error', ready, true)
+      document.fonts.removeEventListener('loadingdone', ready)
+      observer.disconnect()
+    }
+  }, [editor, unitKey, onAssetsReady])
   return <EditorContent editor={editor} />
 }
 
-async function loadFonts(
-  server: string,
-  sessionId: string,
-  fonts: Array<{ id: string; family: string; bold: boolean; italic: boolean }>,
-  auth: Record<string, string>,
-): Promise<void> {
-  await Promise.all(
-    fonts.map(async (font) => {
-      try {
-        const response = await fetch(
-          `${server}/v1/sessions/${sessionId}/fonts/${encodeURIComponent(font.id)}`,
-          { headers: auth },
-        )
-        if (!response.ok) return
-        const bytes = await response.arrayBuffer()
-        const face = new FontFace(font.family, bytes, {
-          weight: font.bold ? 'bold' : 'normal',
-          style: font.italic ? 'italic' : 'normal',
-        })
-        await face.load()
-        document.fonts.add(face)
-      } catch {
-        /* a missing font should not block the document */
-      }
-    }),
-  )
-}
-
 export function DocsRemote({ server, fileId, token, name }: Props) {
-  const [blocks, setBlocks] = useState<any[]>([])
+  const [renderBlocks, setRenderBlocks] = useState<DocxPageBlock[]>([])
+  const [visibleUnits, setVisibleUnits] = useState<Map<string, { blocks: any[] }>>(new Map())
+  const [retryWindow, setRetryWindow] = useState(0)
   const [page, setPage] = useState<PageSettings>(DEFAULT_PAGE)
   const [styleContext, setStyleContext] = useState<StyleContext>({
     styles: new Map(),
     numbering: new Map(),
   })
-  const [tableRows, setTableRows] = useState<Map<number, TableRowLayout[]>>(new Map())
-  const [blockHeights, setBlockHeights] = useState<Map<number, number>>(new Map())
   const [status, setStatus] = useState('正在创建 DOCX 会话…')
   const [error, setError] = useState('')
+  const [windowError, setWindowError] = useState('')
   const [scrollTop, setScrollTop] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
   const [cursor, setCursor] = useState<string | undefined>()
   const [hasMore, setHasMore] = useState(false)
-  const session = useRef<string | null>(null)
+  const session = useRef<DocxRemoteSession | null>(null)
   const viewport = useRef<HTMLDivElement>(null)
+  const scrollPosition = useRef(0)
+  const previousLayout = useRef<{
+    key: string; blocks: DocxPageBlock[]; pages: PageDescriptor[]; tops: number[]; paddingTop: number
+  } | undefined>(undefined)
   const loadingRef = useRef(false)
-  const abortRef = useRef<AbortController | null>(null)
-  const measuredTables = useRef(new Set<number>())
-  const measuredBlocks = useRef(new Set<number>())
+  const visibleModels = useRef(visibleUnits)
+  visibleModels.current = visibleUnits
+  const remeasureQueue = useRef(new DocxReadQueue(2))
+  const remeasureJobs = useRef(new Map<string, { active: DocxRemoteSession; dirty: boolean; controller: AbortController }>())
+  const layoutContext = useRef({ styleContext, contentWidth: 1, contentHeight: 1 })
   const auth = useMemo<Record<string, string>>(
     () => (token ? { Authorization: `Bearer ${token}` } : {}) as Record<string, string>,
     [token],
@@ -157,178 +148,145 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
   const contentWidth = Math.max(1, pageWidth - paddingLeft - paddingRight)
   const contentHeight = Math.max(1, pageHeight - paddingTop - paddingBottom)
 
-  const loadChunk = useCallback(
-    async (sessionId: string, next?: string, signal?: AbortSignal) => {
-      if (loadingRef.current) return
-      loadingRef.current = true
-      setLoadingMore(true)
-      const controller = signal ? null : new AbortController()
-      const requestSignal = signal ?? controller!.signal
-      if (controller) {
-        abortRef.current?.abort()
-        abortRef.current = controller
-      }
-      try {
-        const query = new URLSearchParams({ limit: String(CHUNK_LIMIT) })
-        if (next) query.set('cursor', next)
-        const listingResponse = await fetch(`${server}/v1/sessions/${sessionId}/units?${query}`, {
-          headers: auth,
-          signal: requestSignal,
-        })
-        if (!listingResponse.ok)
-          throw new Error(`读取 chunk 列表失败（HTTP ${listingResponse.status}）`)
-        const listing = (await listingResponse.json()) as UnitListing
-        setCursor(listing.next)
-        setHasMore(!!listing.next)
-        if (!listing.items.length) {
-          setStatus('')
-          return
-        }
-        const loaded: any[] = []
-        for (const item of listing.items) {
-          const response = await fetch(
-            `${server}/v1/sessions/${sessionId}/units/${encodeURIComponent(item.id)}`,
-            { headers: auth, signal: requestSignal },
-          )
-          if (!response.ok) throw new Error(`读取 chunk 失败（HTTP ${response.status}）`)
-          loaded.push(...((await response.json()) as { blocks: any[] }).blocks)
-        }
-        setBlocks((old) => [...old, ...loaded])
-        setStatus('')
-      } catch (error) {
-        if ((error as Error)?.name !== 'AbortError') {
-          setError(error instanceof Error ? error.message : String(error))
-          setStatus('')
-        }
-      } finally {
-        if (abortRef.current === controller) abortRef.current = null
-        loadingRef.current = false
-        setLoadingMore(false)
-      }
-    },
-    [auth, server],
-  )
+  layoutContext.current = { styleContext, contentWidth, contentHeight }
 
-  const startSession = useCallback(async () => {
-    setError('')
-    setStatus('正在创建 DOCX 会话…')
-    session.current = null
-    abortRef.current?.abort()
-    const controller = new AbortController()
-    abortRef.current = controller
+  const onAssetsReady = useCallback((id: string) => {
+    const active = session.current
+    if (!active) return
+    const existing = remeasureJobs.current.get(id)
+    if (existing?.active === active && !existing.controller.signal.aborted) { existing.dirty = true; return }
+    const job = { active, dirty: true, controller: new AbortController() }
+    const signal = AbortSignal.any([active.signal, job.controller.signal])
+    remeasureJobs.current.set(id, job)
+    void remeasureQueue.current.run(signal, async () => {
+      while (job.dirty && session.current === active) {
+        job.dirty = false
+        const unit = visibleModels.current.get(id)
+        if (!unit) return
+        const layout = layoutContext.current
+        const rows = new Map<number, TableRowLayout[]>()
+        for (const block of unit.blocks) {
+          if (block.type === 'table')
+            rows.set(block.docxIndex, await measureTableRows(layout.styleContext, block, layout.contentWidth, signal))
+        }
+        const heights = await measureBlockHeights(layout.styleContext,
+          unit.blocks.filter((block) => block.type !== 'table'), 100, layout.contentWidth, signal)
+        if (signal.aborted || session.current !== active || !visibleModels.current.has(id)) return
+        const replacement = indexDocxUnit(id, unit.blocks, heights, rows, layout.contentHeight)
+        setRenderBlocks((old) => signal.aborted || session.current !== active ||
+          visibleModels.current.get(id) !== unit ? old : replaceDocxUnitIndex(old, id, replacement))
+      }
+    }).catch((caught) => {
+      if (session.current === active && !signal.aborted)
+        setWindowError(caught instanceof Error ? caught.message : String(caught))
+    }).finally(() => {
+      if (remeasureJobs.current.get(id) === job) remeasureJobs.current.delete(id)
+    })
+  }, [])
+
+  const loadChunk = useCallback(async (active: DocxRemoteSession, next?: string) => {
+    if (loadingRef.current || session.current !== active) return
+    loadingRef.current = true
+    setLoadingMore(true)
     try {
-      const created = await fetch(`${server}/v1/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...auth },
-        body: JSON.stringify({ fileId }),
-        signal: controller.signal,
+      const descriptors: DocxPageBlock[] = []
+      const result = await active.load(next, async (units) => {
+        const layout = layoutContext.current
+        for (const unit of units) {
+          const rows = new Map<number, TableRowLayout[]>()
+          for (const block of unit.blocks) {
+            if (block.type === 'table') {
+              rows.set(block.docxIndex, await measureTableRows(layout.styleContext, block, layout.contentWidth, active.signal))
+              if (session.current !== active) return
+            }
+          }
+          const heights = await measureBlockHeights(
+            layout.styleContext, unit.blocks.filter((block) => block.type !== 'table'), 100, layout.contentWidth, active.signal,
+          )
+          if (session.current !== active) return
+          descriptors.push(...indexDocxUnit(unit.id, unit.blocks, heights, rows, layout.contentHeight))
+        }
       })
-      if (!created.ok) throw new Error(`创建 DOCX 会话失败（HTTP ${created.status}）`)
-      const opened = (await created.json()) as {
-        sessionId: string
-        model?: { page?: PageSettings }
-        fonts?: Array<{ id: string; family: string; bold: boolean; italic: boolean }>
-      }
-      session.current = opened.sessionId
-      if (opened.model?.page) setPage(opened.model.page)
-      if (opened.fonts?.length) await loadFonts(server, opened.sessionId, opened.fonts, auth)
-      const stylesResponse = await fetch(`${server}/v1/sessions/${opened.sessionId}/styles`, {
-        headers: auth,
-        signal: controller.signal,
-      })
-      if (stylesResponse.ok) {
-        setStyleContext(reviveStyleContext((await stylesResponse.json()) as StyleContextPayload))
-      }
-      await loadChunk(opened.sessionId, undefined, controller.signal)
+      if (session.current !== active) return
+      setRenderBlocks((old) => session.current === active && !active.signal.aborted
+        ? [...old, ...descriptors] : old)
+      setCursor(result.next)
+      setHasMore(result.hasMore)
+      setError('')
+      setStatus('')
     } catch (error) {
-      if ((error as Error)?.name !== 'AbortError') {
+      if (session.current === active && (error as Error)?.name !== 'AbortError') {
         setError(error instanceof Error ? error.message : String(error))
         setStatus('')
       }
+    } finally {
+      if (session.current === active) {
+        loadingRef.current = false
+        setLoadingMore(false)
+      }
     }
-  }, [server, fileId, auth, loadChunk])
+  }, [])
 
   useEffect(() => {
-    void startSession()
-    return () => {
-      abortRef.current?.abort()
-      if (session.current) {
-        void fetch(`${server}/v1/sessions/${session.current}`, {
-          method: 'DELETE',
+    setRenderBlocks([])
+    setVisibleUnits(new Map())
+    setPage(DEFAULT_PAGE)
+    setStyleContext({ styles: new Map(), numbering: new Map() })
+    setCursor(undefined)
+    setHasMore(false)
+    setError('')
+    setWindowError('')
+    setStatus('正在创建 DOCX 会话…')
+    setScrollTop(0)
+    scrollPosition.current = 0
+    if (viewport.current) viewport.current.scrollTop = 0
+    loadingRef.current = false
+    const fontScope = new DocxFontScope()
+    const active = new DocxRemoteSession(
+      {
+        server,
+        fileId,
+        token,
+        onState: (state) => {
+          if (session.current === active) setStatus(openingStateText(state))
+        },
+      },
+      async (opened, signal) => {
+        if (session.current !== active || signal.aborted) return
+        setVisibleUnits(new Map())
+        setRetryWindow((value) => value + 1)
+        if (opened.model?.page) {
+          const settings = opened.model.page as unknown as PageSettings
+          setPage(settings)
+          layoutContext.current = {
+            ...layoutContext.current,
+            contentWidth: Math.max(1, twipsToPx(settings.pageWidth - settings.marginLeft - settings.marginRight)),
+            contentHeight: Math.max(1, twipsToPx(settings.pageHeight - settings.marginTop - settings.marginBottom)),
+          }
+        }
+        if (opened.fonts?.length)
+          await fontScope.load(server, opened.sessionId, opened.fonts, auth, signal)
+        const response = await fetch(`${server}/v1/sessions/${opened.sessionId}/styles`, {
           headers: auth,
-        }).catch(() => undefined)
-      }
-    }
-  }, [server, fileId, auth, startSession])
-
-  // Measure table rows as their blocks arrive; do not block the first paint.
-  useEffect(() => {
-    let cancelled = false
-    void (async () => {
-      for (const block of blocks) {
-        if (block.type !== 'table' || measuredTables.current.has(block.docxIndex)) continue
-        measuredTables.current.add(block.docxIndex)
-        const rows = await measureTableRows(
-          { styles: new Map(), numbering: new Map(), docDefaults: undefined },
-          block,
-        )
-        if (cancelled) return
-        setTableRows((old) => new Map(old).set(block.docxIndex, rows))
-      }
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [blocks, contentWidth, styleContext])
-
-  // Measure normal block heights incrementally; table blocks use row heights.
-  useEffect(() => {
-    let cancelled = false
-    const pending = blocks.filter(
-      (block) =>
-        block.type !== 'table' &&
-        block.docxIndex != null &&
-        !measuredBlocks.current.has(block.docxIndex),
-    )
-    if (!pending.length) return
-    for (const block of pending) measuredBlocks.current.add(block.docxIndex)
-    void (async () => {
-      const heights = await measureBlockHeights(styleContext, pending, 100, contentWidth)
-      if (cancelled) return
-      setBlockHeights((old) => {
-        const next = new Map(old)
-        for (const [index, height] of heights) next.set(index, height)
-        return next
-      })
-    })()
-    return () => {
-      cancelled = true
-    }
-  }, [blocks, contentWidth, styleContext])
-
-  const renderBlocks = useMemo(() => {
-    const result: Array<{ block: any; height: number; breakBefore?: boolean }> = []
-    for (const block of blocks) {
-      const rows = tableRows.get(block.docxIndex)
-      if (rows?.length) {
-        const headerRows = rows.filter((row) => row.header).length
-        paginateTableRows(rows, contentHeight, { headerRows }).forEach((tablePage) => {
-          result.push({
-            block: sliceTableBlock(block, tablePage),
-            height: Math.max(1, tablePage.height),
-            breakBefore: block.format?.pageBreakBefore === true,
-          })
+          signal,
         })
-        continue
-      }
-      result.push({
-        block,
-        height: blockHeights.get(block.docxIndex) ?? estimateHeight(block),
-        breakBefore: block.format?.pageBreakBefore === true,
-      })
+        if (!response.ok) throw new Error(`读取 DOCX 样式失败（HTTP ${response.status}）`)
+        const styles = (await response.json()) as StyleContextPayload
+        if (session.current === active && !signal.aborted) {
+          const context = reviveStyleContext(styles)
+          layoutContext.current = { ...layoutContext.current, styleContext: context }
+          setStyleContext(context)
+        }
+      },
+    )
+    session.current = active
+    void loadChunk(active)
+    return () => {
+      if (session.current === active) session.current = null
+      active.close()
+      fontScope.close()
     }
-    return result
-  }, [blocks, tableRows, blockHeights, contentHeight])
+  }, [server, fileId, token, auth, loadChunk])
 
   const pages = useMemo(() => {
     if (!renderBlocks.length) return []
@@ -356,12 +314,71 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
   const totalHeight = tops.length
     ? tops[tops.length - 1] + pageBoxHeights[pageBoxHeights.length - 1]
     : 0
+  useLayoutEffect(() => {
+    const key = JSON.stringify([server, fileId])
+    const previous = previousLayout.current
+    const element = viewport.current
+    if (previous?.key === key && element) {
+      const anchor = captureDocxAnchor(previous.blocks, previous.pages, previous.tops,
+        scrollPosition.current, previous.paddingTop)
+      const restored = anchor && restoreDocxAnchor(anchor, renderBlocks, pages, tops, paddingTop)
+      if (restored !== undefined) {
+        element.scrollTop = restored
+        scrollPosition.current = element.scrollTop
+        setScrollTop(element.scrollTop)
+      }
+    }
+    previousLayout.current = { key, blocks: renderBlocks, pages, tops, paddingTop }
+  }, [server, fileId, renderBlocks, pages, tops, paddingTop])
   const viewportHeight = viewport.current?.clientHeight || 720
   const range = visiblePages(tops, pageBoxHeights, scrollTop, viewportHeight, OVERSCAN)
+
+  const requiredKey = useMemo(() => {
+    const ids = new Set<string>()
+    for (const page of pages.slice(range.start, range.end))
+      for (const item of renderBlocks.slice(page.blockStart, page.blockEnd)) ids.add(item.unitId)
+    return JSON.stringify([...ids])
+  }, [pages, range.start, range.end, renderBlocks])
+
+  useEffect(() => {
+    const active = session.current
+    if (!active) return
+    let cancelled = false
+    setWindowError('')
+    const requiredUnits = JSON.parse(requiredKey) as string[]
+    active.retainUnits(requiredUnits)
+    const required = new Set(requiredUnits)
+    for (const [id, job] of remeasureJobs.current) {
+      if (job.active === active && !required.has(id)) {
+        remeasureJobs.current.delete(id)
+        job.controller.abort()
+      }
+    }
+    // Keep overlapping pages mounted, but drop every model outside the new window.
+    setVisibleUnits((old) => new Map(requiredUnits.flatMap((id) => {
+      const unit = old.get(id)
+      return unit ? [[id, unit] as const] : []
+    })))
+    void (async () => {
+      try {
+        for (const id of requiredUnits) {
+          if (cancelled) return
+          const unit = await active.unit(id)
+          if (cancelled || session.current !== active) return
+          setVisibleUnits((old) => new Map(old).set(id, unit))
+        }
+      } catch (caught) {
+        if (!cancelled && session.current === active && (caught as Error)?.name !== 'AbortError')
+          setWindowError(caught instanceof Error ? caught.message : String(caught))
+      }
+    })()
+    return () => { cancelled = true }
+  }, [requiredKey, retryWindow])
 
   const onScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget
     setScrollTop(element.scrollTop)
+    scrollPosition.current = element.scrollTop
     if (!hasMore || loadingRef.current) return
     if (element.scrollTop + element.clientHeight > element.scrollHeight - 240) {
       if (session.current) void loadChunk(session.current, cursor)
@@ -372,21 +389,23 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     <div className="viewer-preview viewer-doc-remote">
       {name && <span className="viewer-doc-remote-name">{name}</span>}
       {status && <p className="viewer-status">{status}</p>}
-      {error && (
+      {(error || windowError) && (
         <div className="viewer-doc-remote-error" role="alert">
-          <span>{error}</span>
+          <span>{error || windowError}</span>
           <button
             type="button"
             onClick={() => {
-              if (session.current) void loadChunk(session.current, cursor)
-              else void startSession()
+              setError('')
+              setWindowError('')
+              setRetryWindow((value) => value + 1)
+              if (error && session.current) void loadChunk(session.current, cursor)
             }}
           >
             重试
           </button>
         </div>
       )}
-      <div className="viewer-doc-remote-viewport" ref={viewport} onScroll={onScroll}>
+      <div className="viewer-doc-remote-viewport" ref={viewport} onScroll={onScroll} style={{ overflowAnchor: 'none' }}>
         <div className="viewer-doc-remote-canvas" style={{ height: totalHeight }}>
           {pages.slice(range.start, range.end).map((page) => (
             <div
@@ -406,12 +425,17 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
                   padding: `${paddingTop}px ${paddingRight}px ${paddingBottom}px ${paddingLeft}px`,
                 }}
               >
-                <PageEditor
-                  blocks={renderBlocks
-                    .slice(page.blockStart, page.blockEnd)
-                    .map((item) => item.block)}
-                  doc={styleContext}
-                />
+                {renderBlocks.slice(page.blockStart, page.blockEnd).every((item) => visibleUnits.has(item.unitId)) ? (
+                  <PageEditor
+                    unitKey={JSON.stringify([...new Set(renderBlocks.slice(page.blockStart, page.blockEnd).map((item) => item.unitId))])}
+                    onAssetsReady={onAssetsReady}
+                    blocks={renderBlocks.slice(page.blockStart, page.blockEnd).map((item) => {
+                      const block = visibleUnits.get(item.unitId)!.blocks[item.blockIndex]
+                      return item.tablePage ? sliceTableBlock(block, item.tablePage) : block
+                    })}
+                    doc={styleContext}
+                  />
+                ) : <p role="status">正在加载正文…</p>}
               </div>
             </div>
           ))}

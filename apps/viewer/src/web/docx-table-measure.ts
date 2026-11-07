@@ -1,4 +1,6 @@
 import { Editor } from '@tiptap/core'
+import { waitForDocxImages } from './docx-image-ready'
+import { waitForDocxLayout } from './docx-layout-ready'
 import { editorExtensions } from '@genoffice/viewer-renderers/docs/renderer/editor/extensions'
 import {
   blocksToPmDoc,
@@ -7,50 +9,45 @@ import {
 import type { TablePage, TablePageRow, TableRowLayout } from './docx-table-pagination'
 
 /** Measure top-level table rows (nested tables are excluded by table.rows). */
-export function measureTableRows(doc: any, block: any, width = 760): Promise<TableRowLayout[]> {
-  return new Promise((resolve) => {
-    const host = document.createElement('div')
-    host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;visibility:hidden;pointer-events:none`
-    document.body.appendChild(host)
-    const editor = new Editor({
-      element: host,
-      extensions: editorExtensions,
-      editable: false,
-      editorProps: { attributes: { class: 'doc-page' } },
-    })
-    try {
-      const storage = editor.storage.listNumbering as any
-      storage.styles = doc.styles
-      storage.docDefaults = doc.docDefaults
-      storage.defs = doc.numbering
-      editor.commands.setContent(blocksToPmDoc([block], undefined, pmDocOptions(doc)), {
-        emitUpdate: false,
-      })
-      setTimeout(() => {
-        const table = editor.view.dom.querySelector('table')
-        const tableModel = block.table
-        resolve(
-          table
-            ? [...table.rows].map((row, index) => ({
-                height: row.getBoundingClientRect().height,
-                header: tableModel?.repeatHeaderRows?.[index] === true,
-                cantSplit: tableModel?.rowCantSplit?.[index] === true,
-                cellParagraphs: [...row.cells].map(
-                  (cell) => cell.querySelectorAll(':scope > p').length || 1,
-                ),
-              }))
-            : [],
-        )
-        editor.destroy()
-        host.remove()
-      }, 0)
-    } catch (error) {
-      console.warn('measureTableRows failed', error)
-      editor.destroy()
-      host.remove()
-      resolve([])
-    }
+export async function measureTableRows(
+  doc: any, block: any, width = 760, signal?: AbortSignal,
+): Promise<TableRowLayout[]> {
+  signal?.throwIfAborted()
+  const host = document.createElement('div')
+  host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;visibility:hidden;pointer-events:none`
+  document.body.appendChild(host)
+  const editor = new Editor({
+    element: host,
+    extensions: editorExtensions,
+    editable: false,
+    editorProps: { attributes: { class: 'doc-page' } },
   })
+  try {
+    const storage = editor.storage.listNumbering as any
+    storage.styles = doc.styles
+    storage.docDefaults = doc.docDefaults
+    storage.defs = doc.numbering
+    editor.commands.setContent(blocksToPmDoc([block], undefined, pmDocOptions(doc)), { emitUpdate: false })
+    await new Promise<void>((resolve) => setTimeout(resolve, 0))
+    void editor.view.dom.offsetHeight
+    await waitForDocxLayout(document.fonts.ready, signal)
+    await waitForDocxImages(editor.view.dom.querySelectorAll('img'), signal)
+    const table = editor.view.dom.querySelector('table')
+    const tableModel = block.table
+    return table ? [...table.rows].map((row, index) => ({
+      height: row.getBoundingClientRect().height,
+      header: tableModel?.repeatHeaderRows?.[index] === true,
+      cantSplit: tableModel?.rowCantSplit?.[index] === true,
+      cellParagraphs: [...row.cells].map((cell) => cell.querySelectorAll(':scope > p').length || 1),
+    })) : []
+  } catch (error) {
+    if (signal?.aborted) throw error
+    console.warn('measureTableRows failed', error)
+    return []
+  } finally {
+    editor.destroy()
+    host.remove()
+  }
 }
 
 /**

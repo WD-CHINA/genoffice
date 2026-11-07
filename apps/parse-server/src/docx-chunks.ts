@@ -46,10 +46,16 @@ export async function readChunkManifest(dir: string): Promise<ChunkManifest | nu
   return null
 }
 
-export async function writeChunkManifest(dir: string, manifest: ChunkManifest): Promise<void> {
+export async function writeChunkManifest(
+  dir: string,
+  manifest: ChunkManifest,
+  reserve?: (bytes: number) => Promise<void>,
+): Promise<void> {
   await mkdir(dir, { recursive: true })
   const tmp = join(dir, 'manifest.json.tmp')
-  await writeFile(tmp, JSON.stringify(manifest))
+  const bytes = Buffer.from(JSON.stringify(manifest))
+  await reserve?.(bytes.length)
+  await writeFile(tmp, bytes)
   await rename(tmp, join(dir, 'manifest.json'))
 }
 
@@ -57,7 +63,11 @@ export async function writeChunkManifest(dir: string, manifest: ChunkManifest): 
  * Write all chunks into one `chunks.bin` (gzip frames) plus per-chunk offsets.
  * This avoids thousands of tiny files for large DOCX sessions.
  */
-export async function writeChunks(dir: string, chunks: unknown[][]): Promise<ChunkEntry[]> {
+export async function writeChunks(
+  dir: string,
+  chunks: Iterable<unknown[]> | AsyncIterable<unknown[]>,
+  reserve?: (bytes: number) => Promise<void>,
+): Promise<ChunkEntry[]> {
   await mkdir(dir, { recursive: true })
   const path = join(dir, 'chunks.bin')
   const tmp = join(dir, 'chunks.bin.tmp')
@@ -65,11 +75,21 @@ export async function writeChunks(dir: string, chunks: unknown[][]): Promise<Chu
   const entries: ChunkEntry[] = []
   let offset = 0
   try {
-    for (const blocks of chunks) {
+    for await (const blocks of chunks) {
       const raw = Buffer.from(JSON.stringify(blocks))
       const hash = createHash('sha256').update(raw).digest('hex')
       const compressed = gzipSync(raw)
-      await handle.write(compressed, 0, compressed.length)
+      await reserve?.(compressed.length)
+      let written = 0
+      while (written < compressed.length) {
+        const { bytesWritten } = await handle.write(
+          compressed,
+          written,
+          compressed.length - written,
+        )
+        if (!bytesWritten) throw new Error('DOCX chunk write made no progress')
+        written += bytesWritten
+      }
       entries.push({ offset, length: compressed.length, hash })
       offset += compressed.length
     }
@@ -128,6 +148,7 @@ export async function collectOrphanChunks(
   }
   const cutoff = Date.now() - maxAgeMs
   for (const name of names) {
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(name)) continue
     if (keep.has(name)) continue
     const path = join(root, name)
     try {

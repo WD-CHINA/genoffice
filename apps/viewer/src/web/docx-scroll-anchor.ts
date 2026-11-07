@@ -1,0 +1,53 @@
+import type { DocxPageBlock } from './docx-page-index'
+import type { PageDescriptor } from './docx-pagination'
+
+export interface DocxScrollAnchor {
+  unitId: string
+  blockIndex: number
+  offset: number
+  row?: number
+  paragraph?: number
+}
+
+/** Capture a stable source reference, never a page number that reflow can change. */
+export function captureDocxAnchor(
+  blocks: readonly DocxPageBlock[], pages: readonly PageDescriptor[],
+  tops: readonly number[], scrollTop: number, paddingTop: number,
+): DocxScrollAnchor | undefined {
+  if (!pages.length) return undefined
+  let pageIndex = 0
+  while (pageIndex + 1 < tops.length && tops[pageIndex + 1] <= scrollTop) pageIndex++
+  const page = pages[pageIndex]
+  let top = tops[pageIndex] + paddingTop
+  for (let index = page.blockStart; index < page.blockEnd; index++) {
+    const block = blocks[index]
+    if (top + block.height > scrollTop || index === page.blockEnd - 1) {
+      // Repeated headers are not unique anchors: use a body row when available.
+      const row = block.tablePage?.rows.find((entry) => entry.row >= (block.headerRows ?? 0))
+        ?? block.tablePage?.rows.at(-1)
+      return {
+        unitId: block.unitId, blockIndex: block.blockIndex, offset: scrollTop - top,
+        ...(row ? { row: row.row, paragraph: row.part?.start ?? 0 } : {}),
+      }
+    }
+    top += block.height
+  }
+  return undefined
+}
+
+/** Return undefined when a replacement document no longer contains this source reference. */
+export function restoreDocxAnchor(
+  anchor: DocxScrollAnchor, blocks: readonly DocxPageBlock[],
+  pages: readonly PageDescriptor[], tops: readonly number[], paddingTop: number,
+): number | undefined {
+  const index = blocks.findIndex((block) => block.unitId === anchor.unitId &&
+    block.blockIndex === anchor.blockIndex && (anchor.row === undefined ||
+      block.tablePage?.rows.some((row) => row.row === anchor.row && (!row.part ||
+        ((anchor.paragraph ?? 0) >= row.part.start && (anchor.paragraph ?? 0) < row.part.end)))))
+  if (index < 0) return undefined
+  const pageIndex = pages.findIndex((page) => page.blockStart <= index && page.blockEnd > index)
+  if (pageIndex < 0) return undefined
+  let top = tops[pageIndex] + paddingTop
+  for (let block = pages[pageIndex].blockStart; block < index; block++) top += blocks[block].height
+  return Math.max(0, top + anchor.offset)
+}

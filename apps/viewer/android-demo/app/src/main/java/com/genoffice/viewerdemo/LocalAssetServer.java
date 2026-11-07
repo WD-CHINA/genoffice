@@ -189,7 +189,7 @@ final class LocalAssetServer extends Thread {
                 String requested = body.optString("fileId", fileId);
                 if (!requested.isEmpty()) fileId = requested;
             }
-            if (!store.isComplete() && store.unitCount() <= 0) {
+            if (!store.isComplete()) {
                 sendJson(out, 404, "{\"code\":\"bundle_missing\",\"message\":\"离线包不存在\"}");
                 return;
             }

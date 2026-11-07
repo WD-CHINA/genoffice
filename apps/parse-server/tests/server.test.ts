@@ -56,9 +56,7 @@ describe('parse-server', () => {
 
   it('opens a DOCX block-chunk session', async () => {
     const { server } = await start()
-    const bytes = await readFile(
-      join(process.cwd(), 'tests', 'fixtures', 'docx', 'table.docx'),
-    )
+    const bytes = await readFile(join(process.cwd(), 'tests', 'fixtures', 'docx', 'table.docx'))
     const uploaded = await upload(server.url, bytes)
     expect(uploaded.status).toBe(201)
     const file = (await uploaded.json()) as { fileId: string; format: string }
@@ -91,9 +89,7 @@ describe('parse-server', () => {
 
   it('serves DOCX embedded fonts', async () => {
     const { server } = await start()
-    const bytes = await readFile(
-      join(process.cwd(), 'tests', 'fixtures', 'docx', 'font.docx'),
-    )
+    const bytes = await readFile(join(process.cwd(), 'tests', 'fixtures', 'docx', 'font.docx'))
     const uploaded = await upload(server.url, bytes)
     const file = (await uploaded.json()) as { fileId: string }
     const opened = await fetch(`${server.url}/v1/sessions`, {
@@ -122,9 +118,7 @@ describe('parse-server', () => {
     const dir = await mkdtemp(join(tmpdir(), 'parse-server-docx-restart-'))
     const first = await createParseServer({ dataDir: dir })
     try {
-      const bytes = await readFile(
-        join(process.cwd(), 'tests', 'fixtures', 'docx', 'table.docx'),
-      )
+      const bytes = await readFile(join(process.cwd(), 'tests', 'fixtures', 'docx', 'table.docx'))
       const uploaded = await upload(first.url, bytes)
       const file = (await uploaded.json()) as { fileId: string }
       const opened = await fetch(`${first.url}/v1/sessions`, {
@@ -141,14 +135,15 @@ describe('parse-server', () => {
       }
       expect(Array.isArray(styles.styles)).toBe(true)
       expect(Array.isArray(styles.numbering)).toBe(true)
-      const chunkFiles = await readdir(join(dir, 'chunks', session.sessionId))
-      expect(chunkFiles).toContain('manifest.json')
-      expect(chunkFiles).toContain('chunks.bin')
-      const manifest = JSON.parse(
-        await readFile(join(dir, 'chunks', session.sessionId, 'manifest.json'), 'utf8'),
-      ) as { chunks?: Array<{ hash: string }> }
-      expect(manifest.chunks?.length).toBeGreaterThan(0)
-      expect(manifest.chunks?.[0]?.hash).toMatch(/^[0-9a-f]{64}$/)
+      const prefixes = await readdir(join(dir, 'artifacts'))
+      const keys = await readdir(join(dir, 'artifacts', prefixes[0]))
+      const artifactDir = join(dir, 'artifacts', prefixes[0], keys[0])
+      expect(await readdir(artifactDir)).toEqual(['manifest.json', 'units.bin'])
+      const manifest = JSON.parse(await readFile(join(artifactDir, 'manifest.json'), 'utf8')) as {
+        records: Array<{ sha256: string }>
+      }
+      expect(manifest.records.length).toBeGreaterThan(0)
+      expect(manifest.records[0].sha256).toMatch(/^[0-9a-f]{64}$/)
       await first.close()
       const second = await createParseServer({ dataDir: dir })
       try {

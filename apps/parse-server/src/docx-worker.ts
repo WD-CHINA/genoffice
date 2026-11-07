@@ -1,7 +1,5 @@
-import { readFile } from 'node:fs/promises'
-import { Readable } from 'node:stream'
 import JSZip from 'jszip'
-import { parentPort } from 'node:worker_threads'
+import { parentPort } from './worker-channel'
 import {
   createDocxBlockParser,
   readDocxEmbeddedFonts,
@@ -10,7 +8,7 @@ import {
 } from '@genoffice/docx-engine'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
-import { streamDocxBlocks } from './docx-stream'
+import { streamDocxBlocks, openDocxDocumentStream } from './docx-stream'
 import { slimDocxFile } from './docx-slim'
 import { scanDocxMetadata } from './docx-metadata'
 import {
@@ -30,12 +28,25 @@ interface OpenInput {
   baseUrl: string
   /** Directory for persisted chunk JSON files. */
   chunksDir: string
+  storageReservation?: boolean
 }
 
 interface Message {
   id: number
   method: string
   params?: any
+}
+
+let reserveEnabled = false
+let nextStorageId = 0
+const storageRequests = new Map<number, { resolve: () => void; reject: (error: Error) => void }>()
+function reserveStorage(bytes: number): Promise<void> {
+  if (!reserveEnabled) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const storageId = nextStorageId++
+    storageRequests.set(storageId, { resolve, reject })
+    parentPort!.postMessage({ kind: 'storage_reserve', storageId, bytes })
+  })
 }
 
 const CHUNK_BLOCKS = 200
@@ -48,7 +59,6 @@ let fonts: Array<{ id: string; family: string; bold: boolean; italic: boolean; d
 let styleContext: unknown = null
 let persisted = false
 let chunksDir = ''
-let lastUsed = Date.now()
 
 async function rewriteImages(
   blocks: any[],
@@ -76,7 +86,7 @@ async function rewriteImages(
     const target = rels.get(embed)
     if (!target || /^https?:/i.test(target)) continue
     const partPath = target.startsWith('/') ? target.slice(1) : `word/${target}`
-    block.imageDataUrl = `${baseUrl.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(fileId)}/parts/${encodeURI(partPath)}`
+    block.imageDataUrl = `${baseUrl.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(fileId)}/parts/${partPath.split('/').map(encodeURIComponent).join('/')}`
   }
 }
 
@@ -84,13 +94,10 @@ async function open(input: OpenInput): Promise<{
   model: DocModel
   fonts: Array<{ id: string; family: string; bold: boolean; italic: boolean; also: string[] }>
 }> {
+  reserveEnabled = !!input.storageReservation
   chunksDir = input.chunksDir
-  const slim = await slimDocxFile(input.path, input.limits)
+  const slim = await slimDocxFile(input.path, input.limits, { omitDocument: true })
   const bytes = slim.bytes
-  const zip = await JSZip.loadAsync(bytes)
-  const documentFile = zip.file('word/document.xml')
-  if (!documentFile) throw new Error('not a docx: missing word/document.xml')
-  const documentXml = await documentFile.async('string')
   styleContext = await readDocxStyleContext(bytes)
   const embedded = await readDocxEmbeddedFonts(bytes)
   fonts = embedded.map((font, index) => ({
@@ -107,9 +114,8 @@ async function open(input: OpenInput): Promise<{
     italic,
     also: [],
   }))
-  const sectionXml =
-    documentXml.match(/<w:sectPr[^>]*\/>|<w:sectPr[\s\S]*?<\/w:sectPr>/g)?.at(-1) ?? ''
-  const settings = sectionSettingsFromXml(sectionXml, {})
+  const metadata = await scanDocxMetadata(await openDocxDocumentStream(input.path, input.limits))
+  const settings = sectionSettingsFromXml(metadata.sections.at(-1)?.xml ?? '', {})
   const manifest = await readChunkManifest(input.chunksDir)
   if (
     manifest &&
@@ -139,38 +145,43 @@ async function open(input: OpenInput): Promise<{
     }
     return { model, fonts: fontSummaries }
   }
-  const metadata = await scanDocxMetadata(Readable.from([documentXml]))
   const parser = await createDocxBlockParser(bytes, {
     ...metadata,
     mediaUrl: (partPath) =>
-      `${input.baseUrl.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(input.fileId)}/parts/${encodeURI(partPath)}`,
+      `${input.baseUrl.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(input.fileId)}/parts/${partPath.split('/').map(encodeURIComponent).join('/')}`,
   })
-  const slices = []
-  for await (const slice of streamDocxBlocks(Readable.from([documentXml]))) slices.push(slice)
-  const blocks = []
-  for (let index = 0; index < slices.length; index++) {
-    blocks.push(await parser.parseBlock(slices[index].xml, index, slices[index].start))
+  async function* parsedChunks(): AsyncGenerator<unknown[]> {
+    let batch: any[] = []
+    for await (const slice of streamDocxBlocks(
+      await openDocxDocumentStream(input.path, input.limits),
+    )) {
+      batch.push(await parser.parseBlock(slice.xml, slice.docxIndex, slice.start))
+      if (batch.length >= CHUNK_BLOCKS) {
+        await rewriteImages(batch, bytes, input.baseUrl, input.fileId)
+        yield batch
+        batch = []
+      }
+    }
+    if (batch.length) {
+      await rewriteImages(batch, bytes, input.baseUrl, input.fileId)
+      yield batch
+    }
   }
-  await rewriteImages(blocks, bytes, input.baseUrl, input.fileId)
-  const parsedChunks: any[][] = []
-  for (let offset = 0; offset < blocks.length; offset += CHUNK_BLOCKS) {
-    parsedChunks.push(blocks.slice(offset, offset + CHUNK_BLOCKS))
-  }
-  const entries = await writeChunks(input.chunksDir, parsedChunks)
+  const entries = await writeChunks(input.chunksDir, parsedChunks(), reserveStorage)
   const nextManifest: ChunkManifest = {
     version: 2,
     fileId: input.fileId,
     parserVersion: input.parserVersion,
-    unitCount: parsedChunks.length,
+    unitCount: entries.length,
     chunkBlocks: CHUNK_BLOCKS,
     chunkFile: 'chunks.bin',
     chunks: entries,
     createdAt: Date.now(),
   }
   chunkManifest = nextManifest
-  await writeChunkManifest(input.chunksDir, nextManifest)
+  await writeChunkManifest(input.chunksDir, nextManifest, reserveStorage)
   persisted = true
-  chunkCount = parsedChunks.length
+  chunkCount = entries.length
   chunks = []
   model = {
     format: 'docx',
@@ -208,6 +219,20 @@ function units(cursor?: string, limit = 100): { items: UnitSummary[]; next?: str
 }
 
 parentPort?.on('message', (message: Message) => {
+  if (message.method === 'storage_reply') {
+    const reply = message.params as {
+      storageId: number
+      error?: { message: string; code?: string }
+    }
+    const pending = storageRequests.get(reply.storageId)
+    if (!pending) return
+    storageRequests.delete(reply.storageId)
+    if (reply.error) {
+      const error = Object.assign(new Error(reply.error.message), { code: reply.error.code })
+      pending.reject(error)
+    } else pending.resolve()
+    return
+  }
   const respond = (value: unknown) =>
     parentPort?.postMessage({ id: message.id, ok: true, result: value })
   const fail = (error: unknown) => {
@@ -225,12 +250,10 @@ parentPort?.on('message', (message: Message) => {
           respond(await open(message.params as OpenInput))
           break
         case 'units':
-          lastUsed = Date.now()
           respond(units(message.params?.cursor, message.params?.limit))
           break
         case 'unit': {
           if (!model) throw new Error('docx: session is not open')
-          lastUsed = Date.now()
           const index = Number.parseInt(String(message.params?.id), 10)
           if (!Number.isInteger(index) || index < 0 || index >= chunkCount) {
             throw new Error('docx: unknown block chunk')

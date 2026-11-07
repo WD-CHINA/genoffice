@@ -9,7 +9,7 @@
 /** Bumped whenever a breaking wire change lands. Mixed versions must not share a session. */
 export const CONTRACT_VERSION = 1
 
-/** Formats the Viewer can display. `docx` is local-only in v1 (no remote parser). */
+/** Formats the Viewer can display locally or through the parse service. */
 export type DocFormat = 'pptx' | 'pdf' | 'docx'
 
 /** Formats the remote provider can parse. */
@@ -58,6 +58,9 @@ export interface Capabilities {
     rangeRequests: boolean
     fontWidthFeedback: boolean
     streamingUnits: boolean
+    asyncSessions?: boolean
+    historyLibrary?: boolean
+    offlineBundles?: boolean
   }
 }
 
@@ -266,4 +269,36 @@ export function assertDocModel(value: unknown): asserts value is DocModel {
     throw new Error('parse-contract: stagesPending must contain parse stages')
   }
   if (!Array.isArray(model.warnings)) throw new Error('parse-contract: warnings must be an array')
+}
+
+/** Immutable bytes for one PPTX offline bundle; URLs are attached per viewing session. */
+export interface OfflineBundleResource {
+  path: string
+  size: number
+  sha256: string
+  href?: string
+}
+export interface OfflineBundleManifest {
+  bundleSchemaVersion: 1
+  modelSchemaVersion: number
+  artifactKey: string
+  modelArtifactKey: string
+  fileId: string
+  format: 'pptx'
+  parserVersion: string
+  parserFingerprint: string
+  unitCount: number
+  fonts: Array<{
+    id: string
+    family: string
+    bold: boolean
+    italic: boolean
+    also: string[]
+    resourcePath: string
+  }>
+  /** Includes all stripped ppt/media entries, even ones unused by the current slides. */
+  inventory: 'ppt-media-v1'
+  totalBytes: number
+  resources: OfflineBundleResource[]
+  externalResources: string[]
 }

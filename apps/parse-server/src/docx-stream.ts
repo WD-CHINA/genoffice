@@ -1,6 +1,6 @@
 import { createReadStream } from 'node:fs'
-import { createInflateRaw } from 'node:zlib'
-import type { Readable } from 'node:stream'
+import { createInflateRaw, crc32 } from 'node:zlib'
+import { Readable } from 'node:stream'
 import { readZipEntries, type ZipEntry } from '@genoffice/zip-reader'
 import { withFileSource } from './file-source'
 import type { ServerLimits } from './limits'
@@ -12,7 +12,7 @@ export interface DocxBlockSlice {
   tag: string
   /** Exact XML slice, including the element itself. */
   xml: string
-  /** Absolute byte offset of the slice in document.xml. */
+  /** Absolute UTF-16 character offset of the slice in document.xml. */
   start: number
   /** Absolute end offset (exclusive). */
   end: number
@@ -29,8 +29,16 @@ type Chunk = string | Uint8Array
  */
 export async function* streamDocxBlocks(
   input: AsyncIterable<Chunk> | Readable,
+  maxBlockChars = 64 * 1024 * 1024,
 ): AsyncGenerator<DocxBlockSlice> {
-  const decoder = new TextDecoder()
+  if (!Number.isSafeInteger(maxBlockChars) || maxBlockChars <= 0)
+    throw new Error('invalid DOCX block character limit')
+  const limit = () => {
+    throw Object.assign(new Error(`DOCX block exceeds ${maxBlockChars} XML characters`), {
+      code: 'parse_limit',
+    })
+  }
+  const decoder = new TextDecoder('utf-8', { fatal: true })
   let buffer = ''
   let base = 0
   let scan = 0
@@ -44,6 +52,7 @@ export async function* streamDocxBlocks(
     if (captureStart < 0) return null
     const startInBuffer = captureStart - base
     const endInBuffer = end - base
+    if (endInBuffer - startInBuffer > maxBlockChars) limit()
     const xml = buffer.slice(startInBuffer, endInBuffer)
     const tag = /^<([^\s/>]+)/.exec(xml)?.[1] ?? ''
     const block = { docxIndex: blockIndex++, tag, xml, start: captureStart, end }
@@ -103,7 +112,7 @@ export async function* streamDocxBlocks(
       if (closing) {
         depth--
         if (captureDepth > 0 && depth < captureDepth) {
-          const block = emit(scan)
+          const block = emit(base + scan)
           if (block) yield block
         }
         if (bodyDepth >= 0 && depth < bodyDepth) bodyDepth = -1
@@ -118,23 +127,29 @@ export async function* streamDocxBlocks(
       if (selfClosing) {
         depth--
         if (captureDepth > 0 && depth < captureDepth) {
-          const block = emit(scan)
+          const block = emit(base + scan)
           if (block) yield block
         }
       }
     }
-    // Drop consumed bytes, but never while a block is being captured.
+    // A partial block may follow many complete blocks in this input chunk.
+    // Drop its consumed prefix too, otherwise each partial tail pins the document.
+    if (captureStart >= 0 && captureStart - base > 64 * 1024) {
+      const consumed = captureStart - base
+      buffer = buffer.slice(consumed)
+      base += consumed
+      scan -= consumed
+    }
     if (captureStart < 0 && scan > 64 * 1024) {
       buffer = buffer.slice(scan)
       base += scan
       scan = 0
     }
+    if (captureStart >= 0 && buffer.length - (captureStart - base) > maxBlockChars) limit()
   }
   buffer += decoder.decode()
-  if (captureStart >= 0) {
-    const block = emit(base + buffer.length)
-    if (block) yield block
-  }
+  if (captureStart >= 0 || depth !== 0)
+    throw new Error('DOCX document.xml has an incomplete element')
 }
 
 /** Open word/document.xml as a stream straight from the docx zip entry. */
@@ -153,12 +168,40 @@ export async function openDocxDocumentStream(
   })
   const entry = found as ZipEntry | null
   if (!entry) throw new Error('not a docx: missing word/document.xml')
-  const compressed = createReadStream(path, {
-    start: entry.dataOffset,
-    end: entry.dataOffset + entry.csize - 1,
-  })
-  if (entry.method === 0) return compressed
-  if (entry.method === 8) return compressed.pipe(createInflateRaw())
-  compressed.destroy()
-  throw new Error(`unsupported zip compression method ${entry.method}`)
+  if (entry.method !== 0 && entry.method !== 8)
+    throw new Error(`unsupported zip compression method ${entry.method}`)
+  return Readable.from(
+    (async function* () {
+      const compressed = entry.csize
+        ? createReadStream(path, {
+            start: entry.dataOffset,
+            end: entry.dataOffset + entry.csize - 1,
+          })
+        : Readable.from([])
+      const inflated = entry.method === 8 ? createInflateRaw() : undefined
+      const fail = (error: Error) => {
+        inflated?.destroy(error)
+      }
+      compressed.on('error', fail)
+      const output = inflated ? compressed.pipe(inflated) : compressed
+      let size = 0
+      let crc = 0
+      try {
+        for await (const chunk of output) {
+          const bytes = chunk as Buffer
+          size += bytes.length
+          if (size > entry.usize || size > limits.maxPartBytes)
+            throw new Error('DOCX document.xml exceeds declared size or part limit')
+          crc = crc32(bytes, crc)
+          yield bytes
+        }
+        if (size !== entry.usize || crc !== entry.crc)
+          throw new Error('DOCX document.xml length or CRC mismatch')
+      } finally {
+        compressed.destroy()
+        inflated?.destroy()
+        compressed.removeListener('error', fail)
+      }
+    })(),
+  )
 }

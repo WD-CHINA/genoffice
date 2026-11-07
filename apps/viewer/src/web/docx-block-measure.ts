@@ -1,4 +1,6 @@
 import { Editor } from '@tiptap/core'
+import { waitForDocxImages } from './docx-image-ready'
+import { waitForDocxLayout } from './docx-layout-ready'
 import { editorExtensions } from '@genoffice/viewer-renderers/docs/renderer/editor/extensions'
 import {
   blocksToPmDoc,
@@ -14,6 +16,7 @@ export async function measureBlockHeights(
   blocks: any[],
   chunkSize = 100,
   width = 760,
+  signal?: AbortSignal,
 ): Promise<Map<number, number>> {
   const heights = new Map<number, number>()
   if (!blocks.length) return heights
@@ -31,8 +34,8 @@ export async function measureBlockHeights(
     storage.styles = doc.styles
     storage.docDefaults = doc.docDefaults
     storage.defs = doc.numbering
-    await document.fonts.ready
     for (let offset = 0; offset < blocks.length; offset += chunkSize) {
+      signal?.throwIfAborted()
       const chunk = blocks.slice(offset, offset + chunkSize)
       editor.commands.setContent(blocksToPmDoc(chunk, undefined, pmDocOptions(doc)), {
         emitUpdate: false,
@@ -40,6 +43,10 @@ export async function measureBlockHeights(
       // A timer avoids background-tab requestAnimationFrame throttling; the
       // getBoundingClientRect below forces layout.
       await new Promise<void>((resolve) => setTimeout(resolve, 0))
+      // Read layout after inserting content, so its CSS font requests have started.
+      void editor.view.dom.offsetHeight
+      await waitForDocxLayout(document.fonts.ready, signal)
+      await waitForDocxImages(editor.view.dom.querySelectorAll('img'), signal)
       for (const block of chunk) {
         if (block.docxIndex == null) continue
         const element = editor.view.dom.querySelector<HTMLElement>(

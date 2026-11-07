@@ -25,6 +25,14 @@ export interface ArtifactReadLease {
   owner: string
   leaseUntil: number
 }
+export interface ArtifactArchive {
+  key: string
+  fileId: string
+  generation: number
+  retiredGenerations: number
+  flatArchived: boolean
+  archivedAt: number
+}
 export type ArtifactClaim = { kind: 'acquired'; lease: ArtifactLease }
   | { kind: 'busy'; leaseUntil: number }
   | { kind: 'ready'; artifact: ReadyArtifact }
@@ -229,6 +237,56 @@ export class MysqlArtifactCatalog {
     })
   }
 
+  /**
+   * Final cleanup of an unreferenced directory row. The caller must have proved
+   * the whole key directory is empty (no g-N, flat files or unknown children);
+   * SQL independently fences readiness, live builders and live readers.
+   * Compressing retirement/flat history and deleting the row releases the
+   * source-file FK so TTL GC can finally reclaim a temporary upload, while the
+   * tombstone preserves the generation high-water mark across rebuilding.
+   */
+  archiveArtifact(key: string, diskEmpty: boolean): Promise<ArtifactArchive | null> {
+    if (!HASH.test(key)) throw new Error('invalid artifact key')
+    if (!diskEmpty) return Promise.resolve(null)
+    return this.transaction(async (connection) => {
+      const [artifacts] = await connection.execute<RowDataPacket[]>(
+        'SELECT * FROM parse_artifacts WHERE artifact_key = ? FOR UPDATE', [key])
+      const artifact = artifacts[0]
+      if (!artifact || artifact.ready_generation !== null || artifact.state === 'building') return null
+      // Same artifact -> job -> readers lock order as publication/retirement.
+      const [jobs] = await connection.execute<RowDataPacket[]>(
+        'SELECT * FROM parse_jobs WHERE artifact_key = ? FOR UPDATE', [key])
+      const now = await this.now(connection)
+      if (jobs.some((job) => job.state === 'building' && integer(job.lease_until ?? 0) > now)) return null
+      const [reads] = await connection.execute<RowDataPacket[]>(
+        'SELECT id, lease_until FROM parse_artifact_read_leases WHERE artifact_key = ? FOR UPDATE', [key])
+      const expired = reads.filter((reader) => integer(reader.lease_until) <= now)
+      for (const reader of expired)
+        await connection.execute('DELETE FROM parse_artifact_read_leases WHERE id = ?', [reader.id])
+      if (reads.length !== expired.length) return null
+      const [retirements] = await connection.execute<RowDataPacket[]>(
+        'SELECT generation FROM parse_artifact_retirements WHERE artifact_key = ? FOR UPDATE', [key])
+      const [flat] = await connection.execute<RowDataPacket[]>(
+        'SELECT artifact_key FROM parse_artifact_flat_archives WHERE artifact_key = ? FOR UPDATE', [key])
+      // RESTRICT children must be removed before the directory row can go.
+      await connection.execute('DELETE FROM parse_artifact_retirements WHERE artifact_key = ?', [key])
+      await connection.execute('DELETE FROM parse_artifact_flat_archives WHERE artifact_key = ?', [key])
+      await connection.execute('DELETE FROM parse_jobs WHERE artifact_key = ?', [key])
+      const summary: ArtifactArchive = { key, fileId: artifact.file_id,
+        generation: integer(artifact.generation), retiredGenerations: retirements.length,
+        flatArchived: flat.length > 0, archivedAt: now }
+      await connection.execute(`INSERT INTO parse_artifact_archives
+        (artifact_key, file_id, generation, retired_generations, flat_archived, archived_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE generation = VALUES(generation),
+          retired_generations = VALUES(retired_generations), flat_archived = VALUES(flat_archived)`,
+      [key, summary.fileId, summary.generation, summary.retiredGenerations,
+        summary.flatArchived ? 1 : 0, summary.archivedAt])
+      await connection.execute('DELETE FROM parse_artifacts WHERE artifact_key = ?', [key])
+      return summary
+    })
+  }
+
   /** Irreversibly fence a generation before filesystem collection, not a transient can-delete check. */
   retireGeneration(key: string, generation: number): Promise<boolean> {
     artifactGenerationPath(key, generation)
@@ -267,9 +325,15 @@ export class MysqlArtifactCatalog {
     const key = artifactKey(identity)
     if (!/^[a-zA-Z0-9._:-]{1,128}$/.test(owner)) throw new Error('invalid lease owner')
     return this.transaction(async (connection) => {
+      // A tombstone keeps the generation counter monotonic even after its
+      // directory row was archived and the source file was reclaimed. Existing
+      // rows keep their own counter (ON DUPLICATE KEY UPDATE is a no-op).
       await connection.execute(`INSERT INTO parse_artifacts
-        (artifact_key, file_id, identity, state, last_access_at) VALUES (?, ?, ?, 'building', 0)
-        ON DUPLICATE KEY UPDATE artifact_key = artifact_key`, [key, identity.fileId, canonicalJson(identity)])
+        (artifact_key, file_id, identity, state, generation, last_access_at)
+        VALUES (?, ?, ?, 'building',
+          COALESCE((SELECT generation FROM parse_artifact_archives WHERE artifact_key = ?), 0), 0)
+        ON DUPLICATE KEY UPDATE artifact_key = artifact_key`,
+      [key, identity.fileId, canonicalJson(identity), key])
       const [artifacts] = await connection.execute<RowDataPacket[]>(
         'SELECT * FROM parse_artifacts WHERE artifact_key = ? FOR UPDATE', [key])
       const artifact = artifacts[0]

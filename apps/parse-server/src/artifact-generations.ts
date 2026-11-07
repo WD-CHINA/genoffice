@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstat, mkdir, open, readFile, rm, rmdir, stat, unlink } from 'node:fs/promises'
+import { lstat, mkdir, open, readFile, readdir, rm, rmdir, stat, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
-import { artifactGenerationPath, type MysqlArtifactCatalog, type ReadyArtifact } from './artifact-catalog'
+import { artifactGenerationPath, type ArtifactArchive, type MysqlArtifactCatalog, type ReadyArtifact } from './artifact-catalog'
 import { ArtifactCorruptionError, ArtifactReader, ArtifactWriter, artifactKey, syncArtifactDirectory, type ArtifactIdentity } from './artifact-store'
 import type { StorageBudget } from './storage-budget'
 
@@ -120,5 +120,41 @@ export class ArtifactGenerations {
     }
     await syncArtifactDirectory(directory)
     return freed
+  }
+
+  /**
+   * Final filesystem cleanup after every generation/flat file is gone. Only a
+   * canonical, non-symlink, literally empty key directory is eligible, and the
+   * SQL transaction must have archived the directory row first. rmdir (rather
+   * than a recursive rm) is atomic with respect to a concurrent publisher that
+   * creates g-N under this key: ENOTEMPTY means somebody else won the race and
+   * the freshly archived row will simply be re-created by their claim.
+   */
+  async collectEmptyKey(key: string,
+    catalog: Pick<MysqlArtifactCatalog, 'archiveArtifact'>): Promise<ArtifactArchive | null> {
+    if (!/^[a-f0-9]{64}$/.test(key)) throw new Error('invalid artifact key')
+    const prefix = key.slice(0, 2)
+    const artifactsRoot = join(this.root, 'artifacts')
+    const bucket = join(artifactsRoot, prefix)
+    const directory = join(bucket, key)
+    const info = await lstat(directory).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return null
+      throw error
+    })
+    if (!info?.isDirectory()) return null
+    if ((await readdir(directory)).length) return null
+    const archived = await catalog.archiveArtifact(key, true)
+    if (!archived || archived.key !== key) return null
+    for (const path of [directory, bucket]) {
+      try { await rmdir(path) }
+      catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== 'ENOTEMPTY' && code !== 'ENOENT' && code !== 'EEXIST') throw error
+      }
+    }
+    await syncArtifactDirectory(artifactsRoot).catch((error: NodeJS.ErrnoException) => {
+      if (error.code !== 'ENOENT') throw error
+    })
+    return archived
   }
 }

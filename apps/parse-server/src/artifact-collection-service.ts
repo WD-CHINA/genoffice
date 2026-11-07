@@ -17,6 +17,8 @@ export class ArtifactCollectionService {
   private stopped = false
   private started = false
   private requested = false
+  private urgentRequested = false
+  private urgentPasses = 0
   private passes = 0
   private lastResult?: GenerationSweepResult
   private lastErrorCode?: string
@@ -37,7 +39,8 @@ export class ArtifactCollectionService {
 
   get snapshot() {
     return { running: !!this.active, stopped: this.stopped, passes: this.passes,
-      lastResult: this.lastResult, lastErrorCode: this.lastErrorCode }
+      urgentPasses: this.urgentPasses, lastResult: this.lastResult,
+      lastErrorCode: this.lastErrorCode }
   }
 
   start(): void {
@@ -47,9 +50,11 @@ export class ArtifactCollectionService {
     this.schedule(0)
   }
 
-  request(): void {
+  /** `urgent` is a storage high-water hint: old generations skip their grace period. */
+  request(urgent = false): void {
     if (this.stopped) throw new Error('generation collection service closed')
     this.started = true
+    if (urgent) this.urgentRequested = true
     if (this.active) this.requested = true
     else this.schedule(0)
   }
@@ -64,13 +69,16 @@ export class ArtifactCollectionService {
     if (this.stopped || this.active) return
     this.timer = undefined
     let next = this.options.intervalMs
+    const urgent = this.urgentRequested
+    this.urgentRequested = false
     const work = Promise.resolve().then(async () => {
       if (this.stopped) return
       try {
-        const result = await this.sweeper.sweep(this.options.batchSize, this.options.graceMs)
+        const result = await this.sweeper.sweep(this.options.batchSize, this.options.graceMs, { urgent })
         this.lastResult = result
         this.lastErrorCode = undefined
         this.passes++
+        if (urgent) this.urgentPasses++
         this.retryAfter = result.failed ? performance.now() + this.options.errorBackoffMs : 0
         if (result.hasMore && !result.stopped) next = this.options.continuationMs
       } catch (error) {

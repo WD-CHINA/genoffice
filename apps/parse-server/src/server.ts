@@ -102,6 +102,8 @@ export interface ParseServerOptions {
   storageReservationLeaseMs?: number
   /** How often to sweep unreferenced content/temp files. */
   gcIntervalMs?: number
+  /** Generation directories kept per artifact key before high-water archiving. */
+  generationRetainCount?: number
   /** MySQL persistence for file metadata and sessions; unset = filesystem only. */
   mysql?: MysqlConfig
 }
@@ -1123,7 +1125,12 @@ async function fileInUse(ctx: Context, fileId: string): Promise<boolean> {
 }
 
 async function reclaimArtifacts(ctx: Context, bytes: number): Promise<void> {
-  if (bytes <= 0 || ctx.closing) return
+  if (ctx.closing) return
+  // Capacity pressure accelerates old-generation collection. Only scheduling
+  // happens here: the SQL retirement/archive transaction must never run under
+  // the shared storage admission GET_LOCK.
+  ctx.generationCollection?.request(true)
+  if (bytes <= 0) return
   let freed = 0
   for (const candidate of await ctx.artifacts.evictionCandidates(
     `${ctx.parserVersion}:${ctx.parserFingerprint}`,
@@ -1844,6 +1851,14 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
         artifacts.stats.legacyFlatPendingBytes = Math.max(0,
           artifacts.stats.legacyFlatPendingBytes - bytes)
         artifacts.forgetFlat(key)
+      },
+      {
+        retainGenerations: options.generationRetainCount ?? 4,
+        archiveCatalog: ctx.artifactCatalog,
+        onArchived: (archive) => {
+          artifacts.stats.archivedKeys++
+          artifacts.stats.archivedRetiredRows += archive.retiredGenerations
+        },
       },
     ), { intervalMs: ctx.gcIntervalMs })
   }

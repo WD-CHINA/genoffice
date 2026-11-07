@@ -391,6 +391,8 @@ export class ArtifactStore {
     legacyFlatCollected: 0,
     legacyFlatCollectedBytes: 0,
     legacyFlatPendingBytes: 0,
+    archivedKeys: 0,
+    archivedRetiredRows: 0,
     evicted: 0,
     evictedBytes: 0,
   }

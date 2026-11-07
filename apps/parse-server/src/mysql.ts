@@ -166,6 +166,20 @@ export class MysqlDatabase {
         CONSTRAINT fk_flat_archive_artifact FOREIGN KEY (artifact_key) REFERENCES parse_artifacts(artifact_key) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `)
+    // Tombstones deliberately have NO foreign key to parse_artifacts: deleting
+    // the directory row is what releases the source-file FK, and the high-water
+    // generation must survive that deletion so claim() can never reuse g-1.
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS parse_artifact_archives (
+        artifact_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+        file_id VARCHAR(64) NOT NULL,
+        generation BIGINT UNSIGNED NOT NULL,
+        retired_generations BIGINT UNSIGNED NOT NULL DEFAULT 0,
+        flat_archived TINYINT(1) NOT NULL DEFAULT 0,
+        archived_at BIGINT NOT NULL,
+        KEY idx_artifact_archive_file (file_id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
   }
 
   async ping(): Promise<boolean> {

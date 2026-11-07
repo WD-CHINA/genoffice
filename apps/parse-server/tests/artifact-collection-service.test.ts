@@ -8,7 +8,8 @@ afterEach(async () => {
   vi.useRealTimers()
 })
 const result = (hasMore = false): GenerationSweepResult => ({ examined: 1, collected: 0, protected: 1,
-  young: 0, failed: 0, hasMore, flatBytes: 0, flatCollected: 0, stopped: false, errors: [] })
+  young: 0, failed: 0, hasMore, flatBytes: 0, flatCollected: 0,
+  archivedKeys: 0, retiredRows: 0, highWaterArchived: 0, stopped: false, errors: [] })
 function setup() {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] })
   const sweeper = { sweep: vi.fn(async () => result()), close: vi.fn(async () => {}) }
@@ -76,6 +77,22 @@ it('close drains an active pass and cancels all future scheduling', async () => 
   } finally { release(result(true)); await closed }
   await vi.advanceTimersByTimeAsync(10_000)
   expect(sweeper.sweep).toHaveBeenCalledTimes(1)
+})
+
+it('an urgent high-water request reaches the sweeper once and is observable', async () => {
+  const { service, sweeper } = setup()
+  service.start()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(sweeper.sweep).toHaveBeenCalledWith(64, 60 * 60_000, { urgent: false })
+  expect(service.snapshot.urgentPasses).toBe(0)
+  service.request(true)
+  await vi.advanceTimersByTimeAsync(1)
+  expect(sweeper.sweep).toHaveBeenCalledWith(64, 60 * 60_000, { urgent: true })
+  expect(service.snapshot.urgentPasses).toBe(1)
+  // The flag is consumed: a regular scheduled pass is not urgent again.
+  await vi.advanceTimersByTimeAsync(1100)
+  expect(sweeper.sweep).toHaveBeenLastCalledWith(64, 60 * 60_000, { urgent: false })
+  expect(service.snapshot.urgentPasses).toBe(1)
 })
 
 it('candidate failures back off continuation and manual requests cannot bypass that delay', async () => {

@@ -38,6 +38,7 @@ export function validateRuntimeOptions(options: ParseServerOptions): void {
   integer('parseTimeoutMs', 60_000, 1, MAX_TIMER)
   integer('unitTimeoutMs', 30_000, 1, MAX_TIMER)
   integer('gcIntervalMs', 600_000, 1, MAX_TIMER)
+  integer('generationRetainCount', 4, 1, 64)
   integer('sessionTtlMs', 900_000, 0, Number.MAX_SAFE_INTEGER)
   integer('contentTtlMs', 604_800_000, 0, Number.MAX_SAFE_INTEGER)
   integer('maxStoreBytes', 20 * 1024 ** 3, 0, Number.MAX_SAFE_INTEGER)

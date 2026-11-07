@@ -1,11 +1,12 @@
 import { setTimeout as delay } from 'node:timers/promises'
 import type { ArtifactReadLease, MysqlArtifactCatalog, ReadyArtifact } from './artifact-catalog'
 import type { ArtifactGenerations } from './artifact-generations'
-import type { ArtifactReader } from './artifact-store'
+import { ArtifactCorruptionError, type ArtifactReader } from './artifact-store'
 import { observeUntilAbort } from './artifact-signals'
+import { logEvent } from './telemetry'
 
 type Catalog = Pick<MysqlArtifactCatalog, 'leaseMs' | 'pin' | 'renewRead' | 'releaseRead'>
-  & Partial<Pick<MysqlArtifactCatalog, 'forkRead'>>
+  & Partial<Pick<MysqlArtifactCatalog, 'forkRead' | 'invalidateReady'>>
 type Disk = Pick<ArtifactGenerations, 'open'>
 
 export class ArtifactReadLeaseLostError extends Error {
@@ -23,6 +24,7 @@ export class ArtifactReadHandle {
   private deadline = 0
   private reader?: ArtifactReader
   private closing?: Promise<void>
+  private corruptionReported?: Promise<void>
 
   static async open(catalog: Catalog, disk: Disk, key: string, owner: string,
     durationMs = catalog.leaseMs): Promise<ArtifactReadHandle | null> {
@@ -34,7 +36,12 @@ export class ArtifactReadHandle {
     const handle = new ArtifactReadHandle(catalog, pinned.lease, pinned.artifact, durationMs, started)
     try {
       handle.check()
-      handle.reader = await observeUntilAbort(disk.open(pinned.artifact), handle.signal)
+      // Lazy frame checksum failures are reported against THIS exact generation,
+      // so only a matching ready pointer can ever be withdrawn.
+      handle.reader = await observeUntilAbort(
+        disk.open(pinned.artifact, (error) => { void handle.reportCorruption(error) }),
+        handle.signal,
+      )
       handle.check()
       return handle
     } catch (error) {
@@ -52,6 +59,25 @@ export class ArtifactReadHandle {
   }
 
   get signal(): AbortSignal { return this.controller.signal }
+
+  /** Withdraw only the exact ready pointer this reader observed as damaged. */
+  reportCorruption(error: ArtifactCorruptionError): Promise<void> {
+    if (!this.corruptionReported) {
+      this.corruptionReported = (async () => {
+        if (!this.catalog.invalidateReady) return
+        try { await this.catalog.invalidateReady(this.artifact) }
+        catch (cause) {
+          logEvent('warn', 'artifact_corruption_report_failed', {
+            artifactKey: this.artifact.key,
+            generation: this.artifact.generation,
+            message: error.message,
+            cause: cause instanceof Error ? cause.message : String(cause),
+          })
+        }
+      })()
+    }
+    return this.corruptionReported
+  }
 
   private confirm(started: number): void {
     if (this.signal.aborted) return
@@ -120,7 +146,15 @@ export class ArtifactReadHandle {
   }
 
   async read(id: string): ReturnType<ArtifactReader['read']> {
-    return this.use(() => this.reader!.read(id))
+    return this.use(async () => {
+      try { return await this.reader!.read(id) }
+      catch (error) {
+        // Forked handles share the parent's reader and therefore its callback;
+        // always report against this handle's own generation pin as well.
+        if (error instanceof ArtifactCorruptionError) await this.reportCorruption(error)
+        throw error
+      }
+    })
   }
 
   close(): Promise<void> {
@@ -128,6 +162,7 @@ export class ArtifactReadHandle {
     this.closing = Promise.resolve().then(async () => {
       await this.heartbeat
       await Promise.allSettled([...this.active])
+      await this.corruptionReported
       try { await this.catalog.releaseRead(this.lease) }
       finally { this.reader = undefined }
     })

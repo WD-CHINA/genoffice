@@ -49,11 +49,13 @@ export class ArtifactGenerations {
     } finally { await reservation?.release() }
   }
 
-  async open(ready: ReadyArtifact): Promise<ArtifactReader> {
+  async open(ready: ReadyArtifact,
+    onCorruption?: (error: ArtifactCorruptionError) => void): Promise<ArtifactReader> {
     if (ready.storagePath !== artifactGenerationPath(ready.key, ready.generation) ||
         !/^[a-f0-9]{64}$/.test(ready.manifestSha256)) throw new Error('invalid generation pointer')
     const directory = join(this.root, ready.storagePath)
-    const reader = await ArtifactReader.openDirectory(directory, ready.key, this.maxRecordBytes, ready.manifestSha256)
+    const reader = await ArtifactReader.openDirectory(directory, ready.key, this.maxRecordBytes,
+      ready.manifestSha256, onCorruption)
     const manifestSize = (await stat(join(directory, 'manifest.json'))).size
     if (manifestSize + reader.manifest.dataBytes !== ready.bytes ||
         reader.manifest.records.filter((record) => /^unit:\d+$/.test(record.id)).length !== ready.unitCount)

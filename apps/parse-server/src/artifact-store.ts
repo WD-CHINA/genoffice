@@ -111,6 +111,8 @@ function validateManifest(value: ArtifactManifest, key: string, maxBytes: number
 }
 
 export class ArtifactCorruptionError extends Error {
+  /** Stable across IPC: the parser process cannot serialize Error subclasses. */
+  readonly code = 'artifact_corrupt'
   constructor(message: string, options?: ErrorOptions) {
     super(message, options)
     this.name = 'ArtifactCorruptionError'
@@ -120,6 +122,7 @@ export class ArtifactCorruptionError extends Error {
 export class ArtifactReader {
   static async openDirectory(
     directory: string, key: string, maxRecordBytes = DEFAULT_MAX_RECORD_BYTES, manifestSha256?: string,
+    onCorruption?: (error: ArtifactCorruptionError) => void,
   ): Promise<ArtifactReader> {
     const path = join(directory, 'manifest.json')
     try {
@@ -135,7 +138,7 @@ export class ArtifactReader {
       } catch (cause) { throw new ArtifactCorruptionError('invalid artifact manifest', { cause }) }
       if ((await stat(join(directory, 'units.bin'))).size !== manifest.dataBytes)
         throw new ArtifactCorruptionError('artifact data length mismatch')
-      return new ArtifactReader(directory, manifest, maxRecordBytes)
+      return new ArtifactReader(directory, manifest, maxRecordBytes, onCorruption)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT')
         throw new ArtifactCorruptionError('artifact generation missing', { cause: error })
@@ -212,8 +215,11 @@ export class ArtifactReader {
       return entry.encoding === 'bytes' ? raw : (JSON.parse(raw.toString('utf8')) as JsonValue)
     } catch (error) {
       if (error instanceof ArtifactCorruptionError) {
+        // Report once per reader: concurrent reads of the same damaged frame must
+        // not stampede the catalog's compare-and-clear invalidation.
+        const first = !this.corruption
         this.corruption = error
-        this.onCorruption?.(error)
+        if (first) this.onCorruption?.(error)
       }
       throw error
     } finally {

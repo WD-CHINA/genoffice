@@ -682,4 +682,31 @@ ready 缓存主动淘汰、目录最终归档与备份恢复仍待完成。GC �
 - 新增 coordinator 损坏清单重建与权限错误不失效测试；真实 SQL 测试验证撤下期间新 pin 不可用、旧 reader 仍续租、替换 job 可续租并完成、新 ready 不被旧报告撤下。
 - 新增真实 catalog HTTP 恢复测试：源解析完成后关闭服务器，破坏 generation 1 manifest，重启访问原 session unit 正常，源构建累计两次，ready_generation=2，旧目录仍在。
 - 最终隔离真实 MySQL 全量 209 项通过、32 文件通过、无跳过；类型检查、定向 ESLint、diff 检查通过。日志 `/tmp/genoffice-corrupt-mysql-suite.log`。测试数据库全部删除，专用 MySQL 正常退出并清理。
-- 当前自动恢复覆盖打开清单时发现的损坏/缺失。单条 document/unit/font 内容损坏、已打开 view 的错误恢复、并发修复更广泛故障注入仍未完成；旧布局迁移、辅助包 generation、多实例配额及硬件验收继续保留在整体目标中。
+- 当前自动恢复覆盖打开清单时发现的损坏/缺失。单条 document/unit/font 内容损坏、已打开 view 的错误恢复、并发修复更广泛故障注入仍未完成；旧布局迁移、辅助包 generation、多实例配额及硬件验收继续保留在整体目标中。本节由后续「单条记录损坏」检查点取代。
+
+
+### 单条记录损坏上报与已打开视图自动恢复（2026-11-07）
+
+- `ArtifactCorruptionError` 增加稳定 `code = 'artifact_corrupt'`，可跨子进程 IPC 识别而非被当作 worker 崩溃。
+  `pptx-artifact-worker` 回传该 code，`PptxSession.handleMessage` 在父进程还原为损坏错误。
+- `ArtifactReader.openDirectory` 支持 `onCorruption`：惰性 gzip 帧/sha256 校验失败时只上报一次（并发读取同一坏帧不会打爆目录表）。
+  `ArtifactGenerations.open` 透传回调；`ArtifactReadHandle.open` 把回调绑定到**本次句柄的确切 generation 指针**，
+  `reportCorruption` 按句柄去重调用 `catalog.invalidateReady`，普通 EACCES 等 IO 错误不撤下 ready；fork 句柄各自上报。
+  关闭时先等在途失效上报结束再释放读租约。
+- `ArtifactSession` 在 catalog 后端持有修复闭包：document/styles/unit/font 以及 PPTX 缓存渲染遇到损坏错误时，
+  经 single-flight 撤销旧 ready → coordinator 重建 → pin 新代次 → 换用新句柄后重试一次；每个视图只允许一次修复，
+  避免损坏循环。旧句柄保留到视图关闭再释放，在途读取不会被中途 abort；model/fonts/document 与离线包缓存同步失效。
+- HTTP 层统一把损坏映射为可重试 `503 artifact_corrupt` 并带 `Retry-After: 1`，styles/fonts/bundle 等没有局部
+  parseFailure 映射的路由也适用；unit/layout 的既有 catch 不再把损坏误报成 404。
+- 新增 `artifact-corruption-recovery.test.ts` 6 项、`artifact-read-handle.test.ts` 3 项：单帧损坏只上报一次、
+  已打开视图重建后重试成功且旧代次目录仍在、第二次损坏不循环重建、两个视图并发修复只重建一次、
+  document 损坏在准入阶段先修复、EACCES 不失效、fork 独立上报、关闭等待在途上报。定向 25 项通过。
+- 完整服务端**串行**回归 189 项通过、30 项可选 MySQL 测试跳过、0 失败（日志 `/tmp/genoffice-corruption-serial.log`）。
+  类型检查、改动文件 ESLint、`git diff --check` 通过。沙箱内高并发跑法出现 2 项 20 秒超时
+  （`artifact-preview`、`pptx-session`），单独复跑分别 7/7、12/12 通过，属并行负载而非断言回归。
+
+此步补上了「单条记录损坏 / 已打开 view / 并发修复」这一检查点，但只在目录表后端与直接读取路径生效：
+已打开 view 中另一个独立渲染子进程自己打开的损坏帧现在能回传 code，仍依赖 worker 协作；
+离线包衍生产物损坏只清除视图内缓存、由下次请求走旧存储重建，尚未走 generation 修复；
+辅助包 generation、旧布局迁移、多实例配额、备份恢复与目标硬件验收仍未完成，整体目标保持未完成。
+

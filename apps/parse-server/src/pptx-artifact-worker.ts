@@ -1,7 +1,7 @@
 import { ArtifactGenerations } from './artifact-generations'
 import { parentPort } from './worker-channel'
 import { buildRenderSlide } from '@genoffice/pptx-render'
-import { ArtifactStore, type ArtifactReader } from './artifact-store'
+import { ArtifactCorruptionError, ArtifactStore, type ArtifactReader } from './artifact-store'
 import { FeedbackMetrics } from './metrics'
 import { refreshDocxResourceUrls } from './resource-urls'
 import type { PptxLayoutSlide } from './pptx-core'
@@ -64,6 +64,11 @@ port.on('message', (request: { id: number; op: string; input: any }) => {
         id: request.id,
         ok: false,
         error: error instanceof Error ? error.message : String(error),
+        // Let the HTTP process distinguish damaged persisted bytes from a crash
+        // and withdraw only the matching ready generation.
+        code: error instanceof ArtifactCorruptionError
+          ? error.code
+          : (error as { code?: string })?.code,
       })
     }
   })

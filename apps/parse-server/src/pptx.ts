@@ -1,4 +1,5 @@
 import type { ReadyArtifact } from './artifact-catalog'
+import { ArtifactCorruptionError } from './artifact-store'
 import { IsolatedWorker } from './isolated-worker'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
@@ -251,7 +252,10 @@ export class PptxSession {
     this.pending.delete(message.id)
     if (message.ok) pending.resolve(message.result)
     else {
-      const error = new Error(message.error || 'parse worker failed')
+      const text = message.error || 'parse worker failed'
+      const error: Error = message.code === 'artifact_corrupt'
+        ? new ArtifactCorruptionError(text)
+        : new Error(text)
       if (message.code) (error as { code?: string }).code = message.code
       pending.reject(error)
     }

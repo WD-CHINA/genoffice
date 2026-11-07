@@ -318,6 +318,8 @@ function parseFailure(error: unknown): HttpError {
     return new HttpError(413, code, 'job exceeds total parse memory budget')
   if (code === 'parse_queue_full')
     return new HttpError(429, code, 'parse queue is full; retry later')
+  if (code === 'artifact_corrupt')
+    return new HttpError(503, code, 'parsed artifact is damaged; retry')
   if (error instanceof ParseLimitError || code === 'parse_limit') {
     return new HttpError(
       413,
@@ -1039,7 +1041,8 @@ async function handleSession(
         code === 'parse_queue_full' ||
         code === 'parse_memory_limit' ||
         code === 'parse_memory_monitor_failed' ||
-        code === 'parse_memory_budget'
+        code === 'parse_memory_budget' ||
+        code === 'artifact_corrupt'
       )
         throw parseFailure(error)
       if (code === 'parse_timeout') {
@@ -1071,7 +1074,8 @@ async function handleSession(
         code === 'parse_queue_full' ||
         code === 'parse_memory_limit' ||
         code === 'parse_memory_monitor_failed' ||
-        code === 'parse_memory_budget'
+        code === 'parse_memory_budget' ||
+        code === 'artifact_corrupt'
       )
         throw parseFailure(error)
       if (code === 'parse_timeout') {
@@ -1791,9 +1795,13 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
       sendError(res, 503, 'server_stopping', 'server is stopping', true, requestId)
       return
     }
-    route(req, res, ctx, requestId).catch((error: unknown) => {
+    route(req, res, ctx, requestId).catch((raw: unknown) => {
+      // Damage in an already-open view is retryable even on routes without a
+      // local parse-failure mapper (styles, fonts, bundle resources).
+      const error = raw instanceof ArtifactCorruptionError ? parseFailure(raw) : raw
       if (error instanceof HttpError) {
         if (error.code === 'parse_queue_full') res.setHeader('Retry-After', '5')
+        if (error.code === 'artifact_corrupt') res.setHeader('Retry-After', '1')
         if (error.code === 'parse_timeout') ctx.metrics.parseTimeouts++
         if (error.code === 'too_many_sessions') ctx.metrics.tooManySessions++
         recordError(ctx.metrics, error.code)
@@ -1803,7 +1811,8 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
           status: error.status,
           message: error.message,
         })
-        sendError(res, error.status, error.code, error.message, false, requestId)
+        sendError(res, error.status, error.code, error.message,
+          error.code === 'artifact_corrupt', requestId)
         return
       }
       const message = error instanceof Error ? error.message : String(error)

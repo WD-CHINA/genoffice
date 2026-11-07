@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ArtifactReadHandle } from '../src/artifact-read-handle'
-import { ArtifactReader, artifactKey, type ArtifactIdentity } from '../src/artifact-store'
+import { ArtifactCorruptionError, ArtifactReader, artifactKey, type ArtifactIdentity } from '../src/artifact-store'
 import type { ArtifactReadLease, ReadyArtifact } from '../src/artifact-catalog'
 
 const identity: ArtifactIdentity = { fileId: 'a'.repeat(64), format: 'pptx', parserFingerprint: 'read-handle', schemaVersion: 2, options: {} }
@@ -24,6 +24,7 @@ function setup() {
     forkRead: vi.fn(async (source: ArtifactReadLease, owner: string) => ({ ...source, id: randomUUID(), owner })),
     renewRead: vi.fn(async () => true),
     releaseRead: vi.fn(async (_lease: ArtifactReadLease) => true),
+    invalidateReady: vi.fn(async (_expected: ReadyArtifact) => true),
   }
   const disk = { open: vi.fn(async () => reader) }
   const open = async (durationMs?: number) => {
@@ -125,6 +126,51 @@ it('retains the pin until an external renderer finishes termination after cancel
   let invoked = false
   await expect(handle.use(async () => { invoked = true })).rejects.toMatchObject({ name: 'AbortError' })
   expect(invoked).toBe(false)
+})
+
+it('reports a damaged frame once per handle against its exact pinned generation', async () => {
+  const { catalog, read, open } = setup()
+  const damage = new ArtifactCorruptionError('artifact record checksum mismatch')
+  read.mockRejectedValue(damage)
+  const handle = await open()
+  await expect(handle.read('unit:0')).rejects.toBe(damage)
+  await expect(handle.read('unit:0')).rejects.toBe(damage)
+  expect(catalog.invalidateReady).toHaveBeenCalledTimes(1)
+  expect(catalog.invalidateReady).toHaveBeenCalledWith(artifact)
+  await handle.close()
+  expect(catalog.releaseRead).toHaveBeenCalledTimes(1)
+})
+
+it('a forked dependency reports damage against its own independent pin', async () => {
+  const { catalog, read, open } = setup()
+  const damage = new ArtifactCorruptionError('artifact record compression invalid')
+  read.mockRejectedValue(damage)
+  const handle = await open()
+  const fork = await handle.fork('bundle-worker')
+  handles.push(fork)
+  await expect(fork.read('unit:0')).rejects.toBe(damage)
+  expect(catalog.invalidateReady).toHaveBeenCalledTimes(1)
+  expect(catalog.invalidateReady).toHaveBeenCalledWith(artifact)
+  await expect(handle.read('unit:0')).rejects.toBe(damage)
+  expect(catalog.invalidateReady).toHaveBeenCalledTimes(2)
+})
+
+it('closing waits for an in-flight corruption report before releasing the read lease', async () => {
+  const { catalog, read, open } = setup()
+  let release!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  catalog.invalidateReady.mockImplementation(async () => { await gate; return true })
+  read.mockRejectedValue(new ArtifactCorruptionError('truncated'))
+  const handle = await open()
+  const pending = handle.read('unit:0')
+  void pending.catch(() => undefined)
+  await expect.poll(() => catalog.invalidateReady.mock.calls.length).toBe(1)
+  const closing = handle.close()
+  expect(catalog.releaseRead).not.toHaveBeenCalled()
+  release()
+  await closing
+  await expect(pending).rejects.toThrow()
+  expect(catalog.releaseRead).toHaveBeenCalledTimes(1)
 })
 
 it('forked dependencies survive view closure and own their lease release independently', async () => {

@@ -59,11 +59,17 @@ export function canonicalResources(value: JsonValue, fileId: string): JsonValue 
   return value
 }
 
-interface StoredDocument {
+export interface StoredDocument {
   model: DocModel
   fonts: PptxFontSummary[]
   layout?: PptxLayoutInfo
 }
+
+/** Rebuild the shared artifact and return a fresh, already-validated view pin. */
+export type ArtifactRepair = () => Promise<{
+  handle: ArtifactReadHandle
+  document: StoredDocument
+}>
 
 export interface ArtifactSessionInput extends PptxOpenInput {
   format: 'pptx' | 'docx'
@@ -73,21 +79,26 @@ export interface ArtifactSessionInput extends PptxOpenInput {
 
 /** One lightweight reader per viewing session; parsing is shared by artifact identity. */
 export class ArtifactSession {
-  readonly model: DocModel
-  readonly fonts: PptxFontSummary[]
+  model: DocModel
+  fonts: PptxFontSummary[]
   private readonly widths: Record<string, number> = {}
   private readonly pendingWidths = new Map<string, WidthItem>()
   private readonly renderers = new Set<PptxSession>()
   private readonly renderFlights = new Set<Promise<unknown>>()
   private closed = false
   private bundleOpening?: Promise<ArtifactReader>
+  private repairing?: Promise<void>
+  private repairs = 0
+  /** Old generation pins stay alive until the view closes, so in-flight reads are never aborted. */
+  private readonly retired: ArtifactReadHandle[] = []
 
   private constructor(
-    readonly reader: ArtifactReader | ArtifactReadHandle,
-    private readonly document: StoredDocument,
+    private reader: ArtifactReader | ArtifactReadHandle,
+    private document: StoredDocument,
     private readonly store: ArtifactStore,
     private readonly input: ArtifactSessionInput,
     private readonly queue?: ParseQueue,
+    private readonly repair?: ArtifactRepair,
   ) {
     this.model = document.model
     this.fonts = document.fonts
@@ -209,38 +220,105 @@ export class ArtifactSession {
     queue?: ParseQueue, onAdmission?: () => void): Promise<ArtifactSession> {
     return store.runOwned(input.fileId, async () => {
       const identity = this.identity(input)
-      try {
+      const key = artifactKey(identity)
+      /** Attach to or rebuild the shared artifact, then pin exactly one generation. */
+      const openOne = async (notify?: () => void): Promise<{
+        handle: ArtifactReadHandle; document: StoredDocument
+      }> => {
         for (let attempt = 0; ; attempt++) {
           await backend.coordinator.getOrBuild(identity,
             (writer, signal) => {
               store.stats.buildsStarted++
-              return this.build(store, input, writer, queue, signal, onAdmission)
-            }, undefined, onAdmission)
-          const handle = await ArtifactReadHandle.open(backend.catalog, backend.disk, artifactKey(identity), `view:${randomUUID()}`)
+              return this.build(store, input, writer, queue, signal, notify)
+            }, undefined, notify)
+          const handle = await ArtifactReadHandle.open(backend.catalog, backend.disk, key, `view:${randomUUID()}`)
           if (!handle) throw new Error('ready artifact disappeared before view admission')
-          try { return await this.openPinned(handle, store, input, queue) }
+          try { return { handle, document: await this.validatePinned(handle, input) } }
           catch (error) {
+            await handle.close().catch(() => undefined)
             if (!(error instanceof ArtifactCorruptionError) || attempt >= 1) throw error
-            // openPinned has released this failed view; compare-and-clear cannot affect a replacement.
+            // The handle already reported the damage. Compare-and-clear is idempotent
+            // and cannot withdraw a replacement generation published meanwhile.
             await backend.catalog.invalidateReady(handle.artifact)
           }
         }
-      } finally { store.finishProgress(artifactKey(identity)) }
+      }
+      const repair: ArtifactRepair = async () => {
+        // The view owns its old pin; compare-and-clear cannot affect a replacement
+        // generation published by another process in the meantime.
+        const handle = session?.reader
+        if (handle instanceof ArtifactReadHandle)
+          await backend.catalog.invalidateReady(handle.artifact)
+        return openOne()
+      }
+      let session: ArtifactSession | undefined
+      try {
+        const first = await openOne(onAdmission)
+        session = new ArtifactSession(first.handle, first.document, store, input, queue, repair)
+        return session
+      } finally { store.finishProgress(key) }
     })
+  }
+
+  /** Swap in a repaired generation without aborting reads still using the old pin. */
+  private adopt(handle: ArtifactReadHandle, document: StoredDocument, previous: ArtifactReadHandle): void {
+    this.reader = handle
+    this.document = document
+    this.model = document.model
+    this.fonts = document.fonts
+    // Bundle identity includes the model digest; future requests must use the new pin.
+    this.bundleOpening = undefined
+    this.retired.push(previous)
+  }
+
+  private repairOnce(): Promise<void> {
+    if (!this.repairing) {
+      this.repairing = (async () => {
+        this.repairs++
+        const previous = this.reader
+        if (!(previous instanceof ArtifactReadHandle))
+          throw new Error('artifact view has no generation pin to repair')
+        const next = await this.repair!()
+        if (this.closed) { await next.handle.close(); return }
+        this.adopt(next.handle, next.document, previous)
+      })().finally(() => { this.repairing = undefined })
+    }
+    return this.repairing
+  }
+
+  /** Exactly one transparent rebuild + retry for damage found while a view is open. */
+  private async withRepair<T>(operation: () => Promise<T>): Promise<T> {
+    try { return await operation() }
+    catch (error) {
+      if (!(error instanceof ArtifactCorruptionError) || !this.repair || this.repairs >= 1) throw error
+      await this.repairOnce()
+      this.check()
+      return await operation()
+    }
+  }
+
+  private readRecord(id: string): Promise<JsonValue | Buffer> {
+    return this.withRepair(() => this.reader.read(id))
+  }
+
+  private static async validatePinned(handle: ArtifactReadHandle,
+    input: ArtifactSessionInput): Promise<StoredDocument> {
+    if (handle.manifest.key !== artifactKey(this.identity(input)))
+      throw new ArtifactCorruptionError('artifact session identity mismatch')
+    if (input.format === 'pptx' && !handle.has('external-media'))
+      throw new ArtifactCorruptionError('external media index missing')
+    const document = (await handle.read('document')) as unknown as StoredDocument
+    if (!document?.model || document.model.format !== input.format || !Array.isArray(document.fonts))
+      throw new ArtifactCorruptionError('artifact document schema mismatch')
+    return document
   }
 
   /** Adopt a dedicated view pin; the caller must not share this handle with another view. */
   static async openPinned(handle: ArtifactReadHandle, store: ArtifactStore,
-    input: ArtifactSessionInput, queue?: ParseQueue): Promise<ArtifactSession> {
+    input: ArtifactSessionInput, queue?: ParseQueue, repair?: ArtifactRepair): Promise<ArtifactSession> {
     try {
-      if (handle.manifest.key !== artifactKey(this.identity(input)))
-        throw new ArtifactCorruptionError('artifact session identity mismatch')
-      if (input.format === 'pptx' && !handle.has('external-media'))
-        throw new ArtifactCorruptionError('external media index missing')
-      const document = (await handle.read('document')) as unknown as StoredDocument
-      if (!document?.model || document.model.format !== input.format || !Array.isArray(document.fonts))
-        throw new ArtifactCorruptionError('artifact document schema mismatch')
-      return new ArtifactSession(handle, document, store, input, queue)
+      const document = await this.validatePinned(handle, input)
+      return new ArtifactSession(handle, document, store, input, queue, repair)
     } catch (error) {
       await handle.close().catch(() => undefined)
       throw error
@@ -302,10 +380,19 @@ export class ArtifactSession {
     return this.bundleOpening
   }
 
+  /** A damaged derived bundle must not stay cached in this view. */
+  private async readBundleRecord(reader: ArtifactReader, id: string): Promise<JsonValue | Buffer> {
+    try { return await reader.read(id) }
+    catch (error) {
+      if (error instanceof ArtifactCorruptionError) this.bundleOpening = undefined
+      throw error
+    }
+  }
+
   async bundleManifest(): Promise<OfflineBundleManifest> {
     const reader = await this.ensureBundle()
     this.check()
-    return (await reader.read('bundle')) as unknown as OfflineBundleManifest
+    return (await this.readBundleRecord(reader, 'bundle')) as unknown as OfflineBundleManifest
   }
 
   async bundleResource(
@@ -325,14 +412,16 @@ export class ArtifactSession {
     } else if (path.startsWith('parts/')) {
       const partPath = path.slice(6)
       if (!bundle.has(`bundle:part:${partPath}`)) return null
-      const info = (await bundle.read(
+      const info = (await this.readBundleRecord(bundle,
         `bundle:part:${partPath}`,
       )) as unknown as OfflineBundleResource
       return { info, partPath }
     }
     const source = id === 'bundle:layout' ? bundle : this.reader
     if (!id || !source.has(id)) return null
-    const value = await source.read(id)
+    const value = source === bundle
+      ? await this.readBundleRecord(bundle, id)
+      : await this.readRecord(id)
     const bytes = Buffer.isBuffer(value) ? value : Buffer.from(canonicalJson(value))
     return { info: { path, ...source.describe(id) }, bytes }
   }
@@ -348,7 +437,7 @@ export class ArtifactSession {
     this.validateUnit(unitId)
     if (this.model.format !== 'pptx') throw new Error('layout is only available for PPTX')
     return refreshDocxResourceUrls(
-      await this.reader.read(`unit:${unitId}`),
+      await this.readRecord(`unit:${unitId}`),
       this.input.fileId,
       this.input.baseUrl,
       this.input.mediaSecret,
@@ -389,23 +478,27 @@ export class ArtifactSession {
       }
       const render = (signal?: AbortSignal) => this.queue
         ? this.queue.run(() => layout(signal), layoutRssMb, signal) : layout(signal)
-      const work = this.reader instanceof ArtifactReadHandle ? this.reader.use(render) : render()
-      this.renderFlights.add(work)
-      void work.finally(() => this.renderFlights.delete(work)).catch(() => undefined)
-      return work
+      // The isolated renderer opens its own copy of this generation; a damaged
+      // frame is reported over IPC as a corruption error, not a worker crash.
+      return this.withRepair(async () => {
+        const work = this.reader instanceof ArtifactReadHandle ? this.reader.use(render) : render()
+        this.renderFlights.add(work)
+        void work.finally(() => this.renderFlights.delete(work)).catch(() => undefined)
+        return work
+      })
     }
-    return this.reader.read(`unit:${id}`)
+    return this.readRecord(`unit:${id}`)
   }
 
   async styleContext(): Promise<unknown> {
     this.check()
     if (this.model.format !== 'docx') throw new Error('styles are only available for DOCX')
-    return this.reader.read('styles')
+    return this.readRecord('styles')
   }
   async fontBytes(id: string): Promise<Uint8Array | null> {
     this.check()
     if (!this.fonts.some((font) => font.id === id)) return null
-    return (await this.reader.read(`font:${id}`)) as Buffer
+    return (await this.readRecord(`font:${id}`)) as Buffer
   }
   async acceptWidths(widths: Readonly<Record<string, number>>): Promise<unknown[]> {
     this.check()
@@ -424,12 +517,14 @@ export class ArtifactSession {
     for (const renderer of this.renderers) renderer.close()
     this.renderers.clear()
     this.pendingWidths.clear()
-    if (this.reader instanceof ArtifactReadHandle) void this.reader.close().catch(() => undefined)
+    for (const handle of [this.reader, ...this.retired])
+      if (handle instanceof ArtifactReadHandle) void handle.close().catch(() => undefined)
   }
 
   async dispose(): Promise<void> {
     this.close()
     await Promise.allSettled([...this.renderFlights])
-    if (this.reader instanceof ArtifactReadHandle) await this.reader.close()
+    for (const handle of [this.reader, ...this.retired])
+      if (handle instanceof ArtifactReadHandle) await handle.close()
   }
 }

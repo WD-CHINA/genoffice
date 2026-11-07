@@ -114,7 +114,8 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
 
 **仍可在代码层继续（本地可验证）**
 
-1. 辅助离线包从旧 `ArtifactStore.getOrBuild` 布局切到 generation + 独立依赖 pin，并把损坏修复统一到 catalog 后端。
+1. 旧 flat 离线包的导入与回收对账：catalog 后端目前直接重建派生 generation，旧 flat 文件仍由 TTL 回收，
+   尚未像模型产物那样做两遍校验后导入；generation 高水位归档与目录最终清理也仍待实施。
 2. 跨进程统一空间准入：`StorageBudget` 目前是单实例账本，需把并发预留/水位回收移到 SQL 或等价共享协调层；
    generation 高水位归档、目录最终清理与完整启动对账。
 3. 解析中的增量首屏（当前仍全量 ready 后才发布）、复杂 PPTX/DOCX round-trip 与真实 GB 正文压测记录。
@@ -136,7 +137,8 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
 也没有多实例共享目录的生产验收。文件索引适配器仍是单服务进程去重；`StorageBudget` 的并发预留与软水位是进程内状态，
 只能看见别的进程已落盘字节。历史库按实例共享，尚无多用户归属。已支持打开清单时的条件失效、单条记录损坏的
 按代次撤销/重建、已打开视图的 single-flight 修复，以及旧扁平产物两遍校验后的导入；普通 IO 错误不误判为损坏，
-旧 generation 目录不会被修复路径删除。离线包衍生产物仍走旧布局，其损坏只清除视图内缓存。原文件与产物字节已纳入
+旧 generation 目录不会被修复路径删除。离线包在 catalog 后端已发布为独立 generation 并持有独立读租约，
+帧/清单损坏按确切代次撤下并由视图单次重建；local 后端仍用旧 flat 布局，旧 flat 离线包不会被 catalog 后端导入（留待 TTL 回收）。原文件与产物字节已纳入
 上传准入配额，产物写入增量预留，上传临时文件逐块保护，DOCX scratch 接入预算，压力下闲置派生产物回收、高低水位、
 共享 staging 对账与后台 generation 回收均已接入；跨进程统一准入、generation 高水位归档、目录最终清理与完整启动
 对账仍待实施；显式保存的原文件不会被自动删除。客户端仍保留小 DOCX 全量本地渲染。DOCX 已移除全量 document.xml、
@@ -753,5 +755,29 @@ ready 缓存主动淘汰、目录最终归档与备份恢复仍待完成。GC �
 
 迁移是单次一次性成本（逐帧读两遍），不改变旧缓存的删除策略；尚未接入跨进程统一配额与
 generation 高水位归档。辅助包 generation、多实例配额、备份恢复、Linux cgroup 内核验证、
-Android 续传/版本目录与目标硬件压测仍未完成，整体目标保持未完成。
+Android 续传/版本目录与目标硬件压测仍未完成，整体目标保持未完成。本节由后续「辅助包 generation」检查点取代。
+
+
+### 辅助离线包接入 generation 与独立读租约（2026-11-07）
+
+- `ArtifactSession` 在 catalog 后端把离线包发布为独立 `artifactKey`（`options.purpose=offline-bundle`，
+  绑定模型 generation key 与模型内容摘要）的 generation：经 `ArtifactCoordinator.getOrBuild` 领取 SQL 构建租约、
+  `ArtifactGenerations.publish` 原子发布，再用 `ArtifactReadHandle.open` 给视图一个独立读租约。
+  构建期间 fork 模型 generation 句柄，保证被哈希的源文件 part 与模型记录在引用期间不被回收；
+  local 后端仍保留原 `ArtifactStore.getOrBuild` flat 布局，行为不变。
+- `bundleManifest` / `bundleResource` 的派生记录使用视图内 single-flight 修复：帧或清单损坏时按确切
+  generation 指针 compare-and-clear 撤下 ready → coordinator 重建 → pin 新代次 → 重试一次，每视图限一次。
+  只撤派生产物，模型 generation、其读租约与已打开视图不受影响；普通 IO 错误不撤 ready；
+  manifest 损坏在新视图 attach 时由 coordinator 的条件失效路径重建。
+  模型资源（`layout/N.json`、`fonts/*`）仍走原有模型修复路径，视图关闭统一释放模型与派生 pin。
+- 发布与 pin 之间 ready 被并发撤下时重试一次 claim；`store.stats.buildsStarted` 与 health 同时覆盖派生构建。
+- 新增 `artifact-shared-bundle.test.ts` 8 项：generation 落盘/独立 pin、跨视图复用、帧损坏重建重试、
+  并发只重建一次、清单损坏新视图恢复、pin 竞争、EACCES 不失效、模型资源隔离。
+  `offline-bundle-catalog-mysql.test.ts` 3 项真实 SQL HTTP 集成：SQL 代次与读租约核对、HTTP 损坏只重建派生产物、
+  服务器重启后复用已修复的派生 generation。
+- 带隔离真实 MySQL 的**串行全量** 236 项 / 36 文件通过、无跳过（日志 `/tmp/genoffice-bundle-mysql-full.log`）；
+  不带 MySQL 的串行全量 203 通过 / 30 可选跳过 / 0 失败。类型检查、改动文件 ESLint、`git diff --check` 通过。
+
+辅助包不再依赖进程内 flat 缓存，但仍未解决旧 flat 离线包导入、跨进程统一空间准入、generation 高水位归档、
+备份恢复演练与目标环境压测；整体目标保持未完成。
 

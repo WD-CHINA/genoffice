@@ -71,6 +71,15 @@ export type ArtifactRepair = () => Promise<{
   document: StoredDocument
 }>
 
+/** Cross-process artifact backend. The offline bundle is a derived generation on the same catalog. */
+export interface SharedArtifactBackend {
+  catalog: MysqlArtifactCatalog
+  disk: ArtifactGenerations
+  coordinator: ArtifactCoordinator
+}
+
+type BundleReader = ArtifactReader | ArtifactReadHandle
+
 export interface ArtifactSessionInput extends PptxOpenInput {
   format: 'pptx' | 'docx'
   parserFingerprint: string
@@ -86,7 +95,10 @@ export class ArtifactSession {
   private readonly renderers = new Set<PptxSession>()
   private readonly renderFlights = new Set<Promise<unknown>>()
   private closed = false
-  private bundleOpening?: Promise<ArtifactReader>
+  private bundleOpening?: Promise<BundleReader>
+  /** Derived bundle generations own their own read leases until the view closes. */
+  private readonly bundlePins: ArtifactReadHandle[] = []
+  private bundleRepairs = 0
   private repairing?: Promise<void>
   private repairs = 0
   /** Old generation pins stay alive until the view closes, so in-flight reads are never aborted. */
@@ -99,6 +111,7 @@ export class ArtifactSession {
     private readonly input: ArtifactSessionInput,
     private readonly queue?: ParseQueue,
     private readonly repair?: ArtifactRepair,
+    private readonly shared?: SharedArtifactBackend,
   ) {
     this.model = document.model
     this.fonts = document.fonts
@@ -271,7 +284,7 @@ export class ArtifactSession {
   }
 
   static openShared(store: ArtifactStore, input: ArtifactSessionInput,
-    backend: { catalog: MysqlArtifactCatalog; disk: ArtifactGenerations; coordinator: ArtifactCoordinator },
+    backend: SharedArtifactBackend,
     queue?: ParseQueue, onAdmission?: () => void): Promise<ArtifactSession> {
     return store.runOwned(input.fileId, async () => {
       const identity = this.identity(input)
@@ -317,7 +330,7 @@ export class ArtifactSession {
       let session: ArtifactSession | undefined
       try {
         const first = await openOne(onAdmission)
-        session = new ArtifactSession(first.handle, first.document, store, input, queue, repair)
+        session = new ArtifactSession(first.handle, first.document, store, input, queue, repair, backend)
         return session
       } finally { store.finishProgress(key) }
     })
@@ -331,6 +344,7 @@ export class ArtifactSession {
     this.fonts = document.fonts
     // Bundle identity includes the model digest; future requests must use the new pin.
     this.bundleOpening = undefined
+    this.bundleRepairs = 0
     this.retired.push(previous)
   }
 
@@ -393,48 +407,25 @@ export class ArtifactSession {
     if (this.reader instanceof ArtifactReadHandle) this.reader.signal.throwIfAborted()
   }
 
-  private async ensureBundle(): Promise<ArtifactReader> {
+  private bundleIdentity(): ArtifactIdentity {
+    return {
+      ...ArtifactSession.identity(this.input),
+      options: {
+        purpose: 'offline-bundle',
+        modelArtifactKey: this.reader.manifest.key,
+        modelContentDigest: this.reader.contentDigest,
+      },
+    }
+  }
+
+  private async ensureBundle(): Promise<BundleReader> {
     this.check()
     if (this.model.format !== 'pptx') throw new Error('offline bundles currently require PPTX')
     if (!this.bundleOpening) {
-      const identity = {
-        ...ArtifactSession.identity(this.input),
-        options: {
-          purpose: 'offline-bundle',
-          modelArtifactKey: this.reader.manifest.key,
-          modelContentDigest: this.reader.contentDigest,
-        },
-      }
-      const task = this.store.runOwned(this.input.fileId, async () => {
-        const source = this.reader instanceof ArtifactReadHandle
-          ? await this.reader.fork(`bundle:${randomUUID()}`) : this.reader
-        try {
-          return await this.store.getOrBuild(identity, async (writer) => {
-            const build = async () => {
-              this.store.markRunning(artifactKey(identity))
-              const external = (await source.read('external-media')) as string[]
-              await writeOfflineBundle(
-                writer,
-                {
-                  ...this.input,
-                  artifactKey: artifactKey(identity),
-                  modelArtifactKey: source.manifest.key,
-                  modelSchemaVersion: MODEL_SCHEMA_VERSION,
-                },
-                this.document.layout!,
-                new Set(external),
-                (id) => source.describe(id),
-              )
-            }
-            const run = (signal?: AbortSignal) => this.queue
-              ? this.queue.run(build, Math.min(this.input.workerRssMb ?? 4096, 512), signal) : build()
-            if (source instanceof ArtifactReadHandle) await source.use(run)
-            else await run()
-          })
-        } finally {
-          if (source instanceof ArtifactReadHandle) await source.close()
-        }
-      })
+      const identity = this.bundleIdentity()
+      const task = this.shared
+        ? this.openSharedBundle(identity, this.shared)
+        : this.openLocalBundle(identity)
       this.bundleOpening = task
       void task.catch(() => {
         if (this.bundleOpening === task) this.bundleOpening = undefined
@@ -443,8 +434,85 @@ export class ArtifactSession {
     return this.bundleOpening
   }
 
+  /** Legacy flat bundle, used only by the single-process backend. */
+  private openLocalBundle(identity: ArtifactIdentity): Promise<ArtifactReader> {
+    return this.store.runOwned(this.input.fileId, () => this.store.getOrBuild(identity,
+      async (writer) => {
+        this.store.markRunning(artifactKey(identity))
+        await this.runBundleBuild(identity, writer)
+      }))
+  }
+
+  /**
+   * Derived bundle as its own catalog generation, with a view-owned read lease.
+   * The source model generation is forked for the whole build so its bytes stay
+   * pinned while the bundle hashes the archived package.
+   */
+  private async openSharedBundle(identity: ArtifactIdentity,
+    backend: SharedArtifactBackend): Promise<ArtifactReadHandle> {
+    const key = artifactKey(identity)
+    return this.store.runOwned(this.input.fileId, async () => {
+      try {
+        const ensurePublished = () => backend.coordinator.getOrBuild(identity,
+          async (writer, signal) => {
+            this.store.stats.buildsStarted++
+            this.store.markRunning(key)
+            await this.runBundleBuild(identity, writer, signal)
+          })
+        await ensurePublished()
+        let handle = await ArtifactReadHandle.open(backend.catalog, backend.disk, key,
+          `bundle:${randomUUID()}`)
+        if (!handle) {
+          // Another process may withdraw the ready pointer between publish and pin.
+          await ensurePublished()
+          handle = await ArtifactReadHandle.open(backend.catalog, backend.disk, key,
+            `bundle:${randomUUID()}`)
+        }
+        if (!handle) throw new Error('ready bundle artifact disappeared before view admission')
+        if (handle.manifest.key !== key) {
+          await handle.close()
+          throw new ArtifactCorruptionError('offline bundle identity mismatch')
+        }
+        this.bundlePins.push(handle)
+        return handle
+      } finally { this.store.finishProgress(key) }
+    })
+  }
+
+  private async runBundleBuild(identity: ArtifactIdentity, writer: ArtifactWriter,
+    signal?: AbortSignal): Promise<void> {
+    const source = this.reader instanceof ArtifactReadHandle
+      ? await this.reader.fork(`bundle:${randomUUID()}`) : this.reader
+    try {
+      const build = async () => {
+        signal?.throwIfAborted()
+        const external = (await source.read('external-media')) as string[]
+        await writeOfflineBundle(
+          writer,
+          {
+            ...this.input,
+            artifactKey: artifactKey(identity),
+            modelArtifactKey: source.manifest.key,
+            modelSchemaVersion: MODEL_SCHEMA_VERSION,
+          },
+          this.document.layout!,
+          new Set(external),
+          (id) => source.describe(id),
+        )
+      }
+      const run = (active?: AbortSignal) => this.queue
+        ? this.queue.run(build, Math.min(this.input.workerRssMb ?? 4096, 512), active) : build()
+      if (source instanceof ArtifactReadHandle)
+        await source.use((forkSignal) => run(
+          signal ? AbortSignal.any([signal, forkSignal]) : forkSignal))
+      else await run(signal)
+    } finally {
+      if (source instanceof ArtifactReadHandle) await source.close()
+    }
+  }
+
   /** A damaged derived bundle must not stay cached in this view. */
-  private async readBundleRecord(reader: ArtifactReader, id: string): Promise<JsonValue | Buffer> {
+  private async readBundleRecord(reader: BundleReader, id: string): Promise<JsonValue | Buffer> {
     try { return await reader.read(id) }
     catch (error) {
       if (error instanceof ArtifactCorruptionError) this.bundleOpening = undefined
@@ -452,10 +520,25 @@ export class ArtifactSession {
     }
   }
 
+  /** Exactly one transparent rebuild + retry of the derived generation per view. */
+  private async withBundleRepair<T>(operation: () => Promise<T>): Promise<T> {
+    try { return await operation() }
+    catch (error) {
+      if (!(error instanceof ArtifactCorruptionError) || !this.shared || this.bundleRepairs >= 1)
+        throw error
+      this.bundleRepairs++
+      this.bundleOpening = undefined
+      this.check()
+      return await operation()
+    }
+  }
+
   async bundleManifest(): Promise<OfflineBundleManifest> {
-    const reader = await this.ensureBundle()
-    this.check()
-    return (await this.readBundleRecord(reader, 'bundle')) as unknown as OfflineBundleManifest
+    return this.withBundleRepair(async () => {
+      const reader = await this.ensureBundle()
+      this.check()
+      return (await this.readBundleRecord(reader, 'bundle')) as unknown as OfflineBundleManifest
+    })
   }
 
   async bundleResource(
@@ -463,30 +546,40 @@ export class ArtifactSession {
   ): Promise<{ info: OfflineBundleResource; bytes?: Buffer; partPath?: string } | null> {
     this.check()
     if (this.model.format !== 'pptx' || !validBundlePath(path)) return null
-    const bundle = await this.ensureBundle()
-    this.check()
+    // Records owned by the derived bundle generation use its own repair path.
+    const derived = await this.withBundleRepair(async () => {
+      const bundle = await this.ensureBundle()
+      this.check()
+      if (path.startsWith('parts/')) {
+        const partPath = path.slice(6)
+        if (!bundle.has(`bundle:part:${partPath}`)) return null
+        const info = (await this.readBundleRecord(bundle,
+          `bundle:part:${partPath}`,
+        )) as unknown as OfflineBundleResource
+        return { info, partPath }
+      }
+      if (path === 'layout.json') {
+        const value = await this.readBundleRecord(bundle, 'bundle:layout')
+        return {
+          info: { path, ...bundle.describe('bundle:layout') },
+          bytes: Buffer.isBuffer(value) ? value : Buffer.from(canonicalJson(value)),
+        }
+      }
+      return null
+    })
+    if (derived) return derived
+    // Model records (layout pages and embedded fonts) keep the model repair path.
     let id: string | undefined
-    if (path === 'layout.json') id = 'bundle:layout'
-    else if (/^layout\/(0|[1-9]\d*)\.json$/.test(path)) id = `unit:${path.slice(7, -5)}`
+    if (/^layout\/(0|[1-9]\d*)\.json$/.test(path)) id = `unit:${path.slice(7, -5)}`
     else if (path.startsWith('fonts/') && path.endsWith('.sfnt')) {
       const match = /^fonts\/font-(0|[1-9]\d*)\.sfnt$/.exec(path)
       const font = match ? this.fonts[Number(match[1])] : undefined
       if (font) id = `font:${font.id}`
-    } else if (path.startsWith('parts/')) {
-      const partPath = path.slice(6)
-      if (!bundle.has(`bundle:part:${partPath}`)) return null
-      const info = (await this.readBundleRecord(bundle,
-        `bundle:part:${partPath}`,
-      )) as unknown as OfflineBundleResource
-      return { info, partPath }
     }
-    const source = id === 'bundle:layout' ? bundle : this.reader
-    if (!id || !source.has(id)) return null
-    const value = source === bundle
-      ? await this.readBundleRecord(bundle, id)
-      : await this.readRecord(id)
+    if (!id || !this.reader.has(id)) return null
+    const value = await this.readRecord(id)
     const bytes = Buffer.isBuffer(value) ? value : Buffer.from(canonicalJson(value))
-    return { info: { path, ...source.describe(id) }, bytes }
+    return { info: { path, ...this.reader.describe(id) }, bytes }
   }
 
   async layoutInfo(): Promise<PptxLayoutInfo> {
@@ -580,14 +673,14 @@ export class ArtifactSession {
     for (const renderer of this.renderers) renderer.close()
     this.renderers.clear()
     this.pendingWidths.clear()
-    for (const handle of [this.reader, ...this.retired])
+    for (const handle of [this.reader, ...this.retired, ...this.bundlePins])
       if (handle instanceof ArtifactReadHandle) void handle.close().catch(() => undefined)
   }
 
   async dispose(): Promise<void> {
     this.close()
     await Promise.allSettled([...this.renderFlights])
-    for (const handle of [this.reader, ...this.retired])
+    for (const handle of [this.reader, ...this.retired, ...this.bundlePins])
       if (handle instanceof ArtifactReadHandle) await handle.close()
   }
 }

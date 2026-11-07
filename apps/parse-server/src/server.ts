@@ -1,6 +1,7 @@
 import { ArtifactCoordinator } from './artifact-coordinator'
 import { ArtifactReadHandle } from './artifact-read-handle'
 import { StorageBudget } from './storage-budget'
+import { SqlStorageReservations } from './storage-reservations'
 import { statfs } from 'node:fs/promises'
 import { PendingSessionStore, type PendingSession } from './pending-session-store'
 import { artifactKey } from './artifact-store'
@@ -91,6 +92,14 @@ export interface ParseServerOptions {
   maxStoreBytes?: number
   storageHighWaterPercent?: number
   storageLowWaterPercent?: number
+  /**
+   * `shared` fences in-flight writes through SQL so multiple instances cannot
+   * oversell the same quota. Defaults to shared for the catalog backend and to
+   * instance-local accounting otherwise; `shared` requires MySQL.
+   */
+  storageAdmission?: 'instance' | 'shared'
+  /** Lease for a shared reservation; crashed writers are reclaimed after it expires. */
+  storageReservationLeaseMs?: number
   /** How often to sweep unreferenced content/temp files. */
   gcIntervalMs?: number
   /** MySQL persistence for file metadata and sessions; unset = filesystem only. */
@@ -125,6 +134,7 @@ interface Context {
   sharedArtifacts?: { catalog: MysqlArtifactCatalog; disk: ArtifactGenerations; coordinator: ArtifactCoordinator }
   generationCollection?: ArtifactCollectionService
   storageBudget: StorageBudget
+  sharedAdmission?: SqlStorageReservations
   library: LibraryStore
   files: FileLifecycle
   parseQueue: ParseQueue
@@ -320,6 +330,8 @@ function parseFailure(error: unknown): HttpError {
     return new HttpError(429, code, 'parse queue is full; retry later')
   if (code === 'artifact_corrupt')
     return new HttpError(503, code, 'parsed artifact is damaged; retry')
+  if (code === 'storage_admission_lease_lost')
+    return new HttpError(503, code, 'shared storage admission lease expired; retry')
   if (error instanceof ParseLimitError || code === 'parse_limit') {
     return new HttpError(
       413,
@@ -1239,6 +1251,12 @@ async function handleUpload(
         reply = () => sendError(res, 507, 'storage_full', 'insufficient space for upload')
         return
       }
+      if ((error as { code?: string }).code === 'storage_admission_lease_lost') {
+        res.setHeader('Retry-After', '1')
+        reply = () => sendError(res, 503, 'storage_admission_lease_lost',
+          'shared storage admission lease expired; retry', true)
+        return
+      }
       throw error
     }
     let detected: Awaited<ReturnType<typeof detectFormat>>
@@ -1523,7 +1541,11 @@ async function route(
       },
       parseQueue: ctx.parseQueue.snapshot,
       parseMemory: ctx.parseQueue.memorySnapshot,
-      storageBudget: ctx.storageBudget.snapshot,
+      storageBudget: {
+        ...ctx.storageBudget.snapshot,
+        sharedReservedBytes: await ctx.storageBudget.sharedReservedBytes(),
+        coordination: ctx.sharedAdmission ? 'shared' : 'instance',
+      },
       maintenance: { gcTasks: ctx.gcFlights.size, generationCollection: ctx.generationCollection?.snapshot },
       childProcesses: isolatedMemory(ctx.processGroup),
       processLimits: {
@@ -1690,11 +1712,31 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     throw new Error('invalid artifact backend')
   if (options.artifactBackend === 'catalog' && !options.mysql)
     throw new Error('catalog artifact backend requires MySQL')
+  if (options.storageAdmission === 'shared' && !options.mysql)
+    throw new Error('shared storage admission requires MySQL')
+  if (options.storageAdmission !== undefined && !['instance', 'shared'].includes(options.storageAdmission))
+    throw new Error('invalid storage admission mode')
   validateRuntimeOptions(options)
   const limits = resolveLimits(options.limits)
   const db = options.mysql ? new MysqlDatabase(options.mysql) : undefined
   const store = new ContentStore(options.dataDir, db)
   await store.init()
+  const sharedAdmission = db && (
+    options.storageAdmission === 'shared' ||
+    (options.storageAdmission !== 'instance' && options.artifactBackend === 'catalog')
+  )
+    ? new SqlStorageReservations(db, {
+      ...(options.storageReservationLeaseMs === undefined
+        ? {} : { leaseMs: options.storageReservationLeaseMs }),
+    })
+    : undefined
+  if (sharedAdmission) {
+    await sharedAdmission.init()
+    // Startup reconciliation: rows from processes that died without closing are
+    // invisible to admission already; remove them so the ledger stays bounded.
+    const reclaimed = await sharedAdmission.reconcile()
+    if (reclaimed > 0) logEvent('info', 'storage_admission_reconciled', { reclaimed })
+  }
   const library = new LibraryStore(options.dataDir, db)
   await library.init()
   const sessionTtlMs = options.sessionTtlMs ?? 15 * 60_000
@@ -1716,6 +1758,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
       highPercent: options.storageHighWaterPercent ?? 90,
       lowPercent: options.storageLowWaterPercent ?? 80,
     },
+    sharedAdmission,
   )
   const artifacts: ArtifactStore = new ArtifactStore(options.dataDir, undefined, storageBudget)
   // Only aged, recognizable temporary paths are eligible. Journal ownership
@@ -1738,6 +1781,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     sessionDisposals: new Set(),
     sessionDisposalByHandle: new WeakMap(),
     storageBudget,
+    ...(sharedAdmission ? { sharedAdmission } : {}),
     library,
     files,
     parseQueue: new ParseQueue(
@@ -1801,7 +1845,8 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
       const error = raw instanceof ArtifactCorruptionError ? parseFailure(raw) : raw
       if (error instanceof HttpError) {
         if (error.code === 'parse_queue_full') res.setHeader('Retry-After', '5')
-        if (error.code === 'artifact_corrupt') res.setHeader('Retry-After', '1')
+        if (error.code === 'artifact_corrupt' || error.code === 'storage_admission_lease_lost')
+          res.setHeader('Retry-After', '1')
         if (error.code === 'parse_timeout') ctx.metrics.parseTimeouts++
         if (error.code === 'too_many_sessions') ctx.metrics.tooManySessions++
         recordError(ctx.metrics, error.code)
@@ -1812,7 +1857,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
           message: error.message,
         })
         sendError(res, error.status, error.code, error.message,
-          error.code === 'artifact_corrupt', requestId)
+          error.code === 'artifact_corrupt' || error.code === 'storage_admission_lease_lost', requestId)
         return
       }
       const message = error instanceof Error ? error.message : String(error)
@@ -1884,6 +1929,11 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     await ctx.sessionStore.flush()
     await ctx.library.flush()
     await ctx.pendingViews.flush()
+    // Graceful shutdown releases our rows immediately instead of making other
+    // instances wait for the lease to expire.
+    await sharedAdmission?.close().catch((error: unknown) =>
+      logEvent('warn', 'storage_admission_release_failed', { message: String(error) }),
+    )
     await db?.close()
   })()
   return {

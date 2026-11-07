@@ -116,8 +116,9 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
 
 1. 旧 flat 离线包的导入与回收对账：catalog 后端目前直接重建派生 generation，旧 flat 文件仍由 TTL 回收，
    尚未像模型产物那样做两遍校验后导入；generation 高水位归档与目录最终清理也仍待实施。
-2. 跨进程统一空间准入：`StorageBudget` 目前是单实例账本，需把并发预留/水位回收移到 SQL 或等价共享协调层；
-   generation 高水位归档、目录最终清理与完整启动对账。
+2. 跨进程软水位回收的一致性：共享预留账本已覆盖「尚未落盘字节」的准入、启动过期行对账与优雅关闭释放；
+   高水位触发的回收仍由单个实例扫描并裁决，多实例下重复扫描/回收、generation 高水位归档与目录最终清理
+   仍待实施。
 3. 解析中的增量首屏（当前仍全量 ready 后才发布）、复杂 PPTX/DOCX round-trip 与真实 GB 正文压测记录。
 4. 最后一个等待者取消后的共享任务调度策略、SQL/IO 关闭宽限期硬超时、跨节点任务状态映射。
 5. Android 续传（ETag/Content-Range 严格校验）、按 artifactKey 的版本目录、缓存配额与清理入口；
@@ -134,14 +135,15 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
 ## 当前限制
 
 `artifactBackend` 默认仍是 `local`；catalog（MySQL + generation + 租约）是可程序化选择的入口，尚未设为默认，
-也没有多实例共享目录的生产验收。文件索引适配器仍是单服务进程去重；`StorageBudget` 的并发预留与软水位是进程内状态，
-只能看见别的进程已落盘字节。历史库按实例共享，尚无多用户归属。已支持打开清单时的条件失效、单条记录损坏的
+也没有多实例共享目录的生产验收。文件索引适配器仍是单服务进程去重；catalog 后端已把 `StorageBudget` 的
+并发预留改为 SQL 共享账本（带租约的预留行 + `GET_LOCK` 跨进程互斥 + 启动过期行清理 + 优雅关闭释放），
+local 后端以及高水位触发的回收仍是进程内状态。历史库按实例共享，尚无多用户归属。已支持打开清单时的条件失效、单条记录损坏的
 按代次撤销/重建、已打开视图的 single-flight 修复，以及旧扁平产物两遍校验后的导入；普通 IO 错误不误判为损坏，
 旧 generation 目录不会被修复路径删除。离线包在 catalog 后端已发布为独立 generation 并持有独立读租约，
 帧/清单损坏按确切代次撤下并由视图单次重建；local 后端仍用旧 flat 布局，旧 flat 离线包不会被 catalog 后端导入（留待 TTL 回收）。原文件与产物字节已纳入
 上传准入配额，产物写入增量预留，上传临时文件逐块保护，DOCX scratch 接入预算，压力下闲置派生产物回收、高低水位、
-共享 staging 对账与后台 generation 回收均已接入；跨进程统一准入、generation 高水位归档、目录最终清理与完整启动
-对账仍待实施；显式保存的原文件不会被自动删除。客户端仍保留小 DOCX 全量本地渲染。DOCX 已移除全量 document.xml、
+共享 staging 对账与后台 generation 回收均已接入；共享准入与启动/关闭对账已落地，generation 高水位归档、
+目录最终清理与软水位回收的跨进程一致性仍待实施；显式保存的原文件不会被自动删除。客户端仍保留小 DOCX 全量本地渲染。DOCX 已移除全量 document.xml、
 slices、blocks 与 parsedChunks 的持有，使用正文双遍流读取、最多 200 块一批落盘；辅助 parts、元数据索引和单个
 XML 块仍在内存，单块上限 64 Mi UTF-16 字符。产物仍构建完后整体发布，尚无解析中的增量首屏。独立进程隔离及采样式
 RSS 限制已验证；Linux cgroup 内核硬限制、真实 GB 正文压测、500 阅读会话压测及 Android 真机未完成。
@@ -779,5 +781,31 @@ Android 续传/版本目录与目标硬件压测仍未完成，整体目标保�
   不带 MySQL 的串行全量 203 通过 / 30 可选跳过 / 0 失败。类型检查、改动文件 ESLint、`git diff --check` 通过。
 
 辅助包不再依赖进程内 flat 缓存，但仍未解决旧 flat 离线包导入、跨进程统一空间准入、generation 高水位归档、
-备份恢复演练与目标环境压测；整体目标保持未完成。
+备份恢复演练与目标环境压测；整体目标保持未完成。本节由后续「跨进程统一空间准入」检查点取代。
+
+
+### 跨进程统一空间准入与启动对账（2026-11-07）
+
+- 新增 `storage-reservations.ts`：`parse_storage_reservations` 表按 `id/owner/bytes/expires_at_ms` 记录
+  **尚未落盘的在途写入**，`GET_LOCK`（库名哈希，规避 MySQL 64 字符上限）+ 过期行清理把
+  「读取全局预留 → 检查配额/物理空闲 → 发布预留」串行化到跨进程；锁内重入由 AsyncLocalStorage 短路，
+  避免同进程另一连接自等死锁。心跳按租约 1/3 续期，行被回收后一律 fail-closed，不静默重新放行。
+- `StorageBudget` 新增可选 `shared` 账本：原有进程内 `held` 改为 `SUM(未过期行)`，小写入按 1 MiB 块
+  向上取整批量预占（只可能多占、不会超卖），块内消耗不产生 SQL 往返；`reservation.bytes` 返回实际预占量，
+  保证 GC 的 `committedReservationBytes` 与账本一致。非 shared 路径行为不变。租约丢失抛
+  `storage_admission_lease_lost`，HTTP 统一为可重试 503 + `Retry-After: 1`（上传与解析两条路径都覆盖）。
+- catalog 后端默认启用共享准入，也可用 `storageAdmission: 'instance' | 'shared'` 显式切换；
+  `storageReservationLeaseMs` 纳入统一数值校验。启动时 `reconcile()` 清掉崩溃进程遗留的过期行并记日志，
+  优雅关闭删除本 `owner` 的全部行（其他实例无需等租约到期）。`/v1/health` 的 `storageBudget` 增加
+  `sharedReservedBytes` 与 `coordination`。
+- 新增 `storage-budget-shared.test.ts` 6 项：双实例不可超卖、块批量与余量消耗、过期行 fail-closed、
+  renew 失效不重新放行、释放幂等、物理空闲计入所有实例预留；
+  `storage-reservations-mysql.test.ts` 5 项真实 MySQL：双实例围栏、并发准入只有一个成功、崩溃行回收、
+  按 owner 释放、catalog 默认 shared 与显式 opt-out 的 HTTP health。
+- 带隔离真实 MySQL 的**串行全量** 247 项 / 38 文件通过、无跳过（`exit=0`，日志
+  `/tmp/genoffice-shared-admission-mysql-full.log`）；不带 MySQL 的串行全量见
+  `/tmp/genoffice-shared-admission-local-full.log`。类型检查、改动文件 ESLint、`git diff --check` 通过。
+
+共享账本只解决「在途写入」的可见性；水位回收仍由本地扫描触发，跨进程重复回收、generation 高水位归档、
+目录最终清理、旧 flat 离线包导入、备份恢复与目标硬件压测仍未完成，整体目标保持未完成。
 

@@ -41,6 +41,7 @@ export function validateRuntimeOptions(options: ParseServerOptions): void {
   integer('sessionTtlMs', 900_000, 0, Number.MAX_SAFE_INTEGER)
   integer('contentTtlMs', 604_800_000, 0, Number.MAX_SAFE_INTEGER)
   integer('maxStoreBytes', 20 * 1024 ** 3, 0, Number.MAX_SAFE_INTEGER)
+  integer('storageReservationLeaseMs', 300_000, 10_000, 3_600_000)
   const high = integer('storageHighWaterPercent', 90, 2, 100)
   const low = integer('storageLowWaterPercent', 80, 1, 99)
   if (low >= high) throw new Error('storage low watermark must be below high watermark')

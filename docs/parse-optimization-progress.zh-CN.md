@@ -114,11 +114,12 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
 
 **仍可在代码层继续（本地可验证）**
 
-1. 旧 flat 离线包的回收对账：派生产物现已在 catalog 冷构建前经两遍校验导入旧 flat 离线包，
-   剩余是导入后旧 flat 文件的最终清理与回收对账；generation 高水位归档与目录最终清理也仍待实施。
+1. generation 高水位归档与目录最终清理：旧 flat 主产物/离线包已在 catalog 冷构建前两遍校验导入，
+   导入后的冗余 flat 文件也由目录表不可逆授权、确认新 generation 落盘后安全清理并与配额账本对账；
+   剩余是按高水位归档整个 generation 目录、清理无引用的 key 根与退休历史，并做备份恢复演练。
 2. 跨进程软水位回收的一致性：共享预留账本已覆盖「尚未落盘字节」的准入、启动过期行对账与优雅关闭释放；
-   高水位触发的回收仍由单个实例扫描并裁决，多实例下重复扫描/回收、generation 高水位归档与目录最终清理
-   仍待实施。
+   高水位触发的回收仍由单个实例扫描并裁决，多实例下重复扫描/回收仍待实施。flat 冗余字节只由 GC
+   报告并催促后台扫描，不在准入锁内做 SQL 授权。
 3. 解析中的增量首屏（当前仍全量 ready 后才发布）、复杂 PPTX/DOCX round-trip 与真实 GB 正文压测记录。
 4. 最后一个等待者取消后的共享任务调度策略、SQL/IO 关闭宽限期硬超时、跨节点任务状态映射。
 5. Android 续传（ETag/Content-Range 严格校验）、按 artifactKey 的版本目录、缓存配额与清理入口；
@@ -141,10 +142,13 @@ local 后端以及高水位触发的回收仍是进程内状态。历史库按�
 按代次撤销/重建、已打开视图的 single-flight 修复，以及旧扁平产物两遍校验后的导入；普通 IO 错误不误判为损坏，
 旧 generation 目录不会被修复路径删除。离线包在 catalog 后端已发布为独立 generation 并持有独立读租约，
 帧/清单损坏按确切代次撤下并由视图单次重建；旧 flat 离线包在冷构建前经完整身份/权威清单比对与
-两遍逐帧校验后导入为 generation，不重建也不删除旧文件。local 后端仍用旧 flat 布局。原文件与产物字节已纳入
+两遍逐帧校验后导入为 generation，不重建。导入/发布遗留的旧 flat 文件在目录表不可逆授权、确认新
+generation 落盘后，由后台扫描只删除顶层两个文件，并在 health 与配额字节上对账。local 后端仍用旧 flat
+布局。原文件与产物字节已纳入
 上传准入配额，产物写入增量预留，上传临时文件逐块保护，DOCX scratch 接入预算，压力下闲置派生产物回收、高低水位、
 共享 staging 对账与后台 generation 回收均已接入；共享准入与启动/关闭对账已落地，generation 高水位归档、
-目录最终清理与软水位回收的跨进程一致性仍待实施；显式保存的原文件不会被自动删除。客户端仍保留小 DOCX 全量本地渲染。DOCX 已移除全量 document.xml、
+目录最终清理与软水位回收的跨进程一致性仍待实施；压力路径不同步删除 flat（避免 SQL 授权与准入锁嵌套），
+只报告待清理字节并催促后台扫描，故 flat 释放仍受默认 1 小时宽限。显式保存的原文件不会被自动删除。客户端仍保留小 DOCX 全量本地渲染。DOCX 已移除全量 document.xml、
 slices、blocks 与 parsedChunks 的持有，使用正文双遍流读取、最多 200 块一批落盘；辅助 parts、元数据索引和单个
 XML 块仍在内存，单块上限 64 Mi UTF-16 字符。产物仍构建完后整体发布，尚无解析中的增量首屏。独立进程隔离及采样式
 RSS 限制已验证；Linux cgroup 内核硬限制、真实 GB 正文压测、500 阅读会话压测及 Android 真机未完成。
@@ -835,7 +839,40 @@ Android 续传/版本目录与目标硬件压测仍未完成，整体目标保�
   **258 项 / 39 文件全部通过、无跳过**（`exit=0`，`/tmp/genoffice-legacy-bundle-mysql-full.log`）。
   类型检查、改动文件 ESLint、`git diff --check` 通过。测试库全部删除，专用 MySQL 正常退出并清理目录。
 
-导入只解决「不重复构建」；旧 flat 文件在导入后的最终清理与回收对账、generation 高水位归档、
-目录最终清理、软水位回收跨进程一致性、解析中增量首屏、备份恢复与目标硬件压测仍未完成，
+导入只解决「不重复构建」；旧 flat 文件的最终清理与回收对账见下一检查点，generation 高水位归档、
+目录最终清理、软水位回收跨进程一致性、解析中增量首屏、备份恢复与目标硬件压测仍未完成。
+本节由后续「旧 flat 最终清理与回收对账」检查点取代。
+
+
+### 旧 flat 最终清理与回收对账（2026-11-07）
+
+- 新增 `parse_artifact_flat_archives` 与 `MysqlArtifactCatalog.authorizeFlatArchive`：在
+  artifact → job → retirement 锁序的同一事务中确认 ready 指针合法、目录行 state=ready、
+  没有 `building` 任务（导入/重建可能仍在读旧文件）、ready 代次未被退役，再登记不可逆归档标记
+  并返回确切的 `ReadyArtifact`。重复授权幂等；条件失效、代次退役或活跃构建一律拒绝。
+- `ArtifactGenerations.collectLegacyFlat` 在删除前先用返回的摘要打开并校验新 generation 目录
+  （规范路径、manifest SHA、数据长度），再校验顶层两个 flat 路径都是普通文件；只 unlink
+  `manifest.json` / `units.bin`，同步 key 目录并返回实际释放字节。不递归、不触碰 g-N 子目录、
+  不跟随符号链接，generation 缺失/摘要不符/非普通文件一律失败且不留半删除状态。
+- `ArtifactGenerationSweeper` 在 generation 与 staging 阶段之后增加第三类 flat 候选：沿用同一
+  批次上限、游标、宽限、失败退避与关闭排空；只有 SQL 授权成功才计入 `flatCollected/flatBytes`，
+  无 catalog 后端时一律保护。`ArtifactCollectionService` 无需改动即沿用既有调度。
+- `ArtifactStore` 的 `diskEntries` 单独统计顶层 flat 字节，`legacyFlatEntries` 报告已发布
+  generation 的冗余字节，`forgetFlat` 清除本地 reader 缓存；stats 新增
+  `legacyFlatCollected/CollectedBytes/PendingBytes` 并随 health 暴露。`performGc` 刷新待清理字节
+  并催促后台扫描；压力回收路径**不做同步 SQL 删除**，避免目录表事务与共享准入 `GET_LOCK` 嵌套，
+  因此释放仍受默认 1 小时宽限，这是明确的保守取舍。
+- 新增 `artifact-legacy-flat-collection.test.ts` 11 项：只删顶层且 generation 可读、SQL 拒绝、
+  新代缺失/摘要不符失败闭合、非普通文件与符号链接、幂等不重复计数、扫描器三阶段顺序/宽限/
+  无 catalog 保护/SQL 失败不泄露细节/多 key 分批续扫。新增 `artifact-legacy-flat-mysql.test.ts`
+  2 项真实 MySQL：授权语义（活跃构建、退役、条件失效、幂等）与 HTTP 端到端（GC 触发清理、
+  health 字节对账、`totalBytes()` 下降等于释放字节、归档行、unit 仍可读、重复 GC 不重复计数）。
+- 带隔离真实 MySQL 的**串行全量** 271 项 / 41 文件通过、无跳过（`exit=0`，
+  `/tmp/genoffice-legacy-flat-mysql-full.log`）；不带 MySQL 的串行全量 230 项通过 /
+  41 项可选 MySQL 跳过 / 0 失败（`exit=0`，`/tmp/genoffice-legacy-flat-local-full.log`）。
+  类型检查、改动文件 ESLint、`git diff --check` 通过。测试库全部删除，专用 MySQL 正常退出并清理目录。
+
+清理解决的是「同一份内容被重复计费」；generation 高水位归档、目录与退休历史最终清理、
+软水位回收的跨进程一致性、解析中增量首屏、备份恢复演练与目标硬件压测仍未完成，
 整体目标保持未完成。
 

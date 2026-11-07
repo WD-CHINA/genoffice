@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdir, open, readFile, rm, rmdir, stat } from 'node:fs/promises'
+import { lstat, mkdir, open, readFile, rm, rmdir, stat, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { artifactGenerationPath, type MysqlArtifactCatalog, type ReadyArtifact } from './artifact-catalog'
 import { ArtifactCorruptionError, ArtifactReader, ArtifactWriter, artifactKey, syncArtifactDirectory, type ArtifactIdentity } from './artifact-store'
@@ -72,5 +72,53 @@ export class ArtifactGenerations {
       if (error.code !== 'ENOENT') throw error
     })
     return true
+  }
+
+  /**
+   * Remove only the two top-level legacy flat files once the catalog has
+   * irreversibly authorized their archive. The replacement generation must be
+   * present and match the registered manifest before the old copy disappears.
+   * Never recurses: g-N directories, unknown children and symlinks stay put.
+   */
+  async collectLegacyFlat(key: string,
+    catalog: Pick<MysqlArtifactCatalog, 'authorizeFlatArchive'>): Promise<number> {
+    if (!/^[a-f0-9]{64}$/.test(key)) throw new Error('invalid artifact key')
+    const ready = await catalog.authorizeFlatArchive(key)
+    if (!ready || ready.key !== key) return 0
+    if (ready.storagePath !== artifactGenerationPath(key, ready.generation) ||
+        !/^[a-f0-9]{64}$/.test(ready.manifestSha256))
+      throw new Error('invalid legacy flat archive pointer')
+    const directory = join(this.root, 'artifacts', key.slice(0, 2), key)
+    const generationPath = join(this.root, ready.storagePath)
+    const generationInfo = await lstat(generationPath)
+    if (!generationInfo.isDirectory())
+      throw new Error('legacy flat archive generation is not a directory')
+    await ArtifactReader.openDirectory(generationPath, key, this.maxRecordBytes, ready.manifestSha256)
+
+    // Validate every legacy file first: a non-regular path must not leave a
+    // half-deleted flat layout behind after the first unlink succeeds.
+    const targets: Array<{ path: string; bytes: number }> = []
+    for (const name of ['manifest.json', 'units.bin']) {
+      const path = join(directory, name)
+      try {
+        const info = await lstat(path)
+        if (!info.isFile()) throw new Error('legacy flat path is not a regular file')
+        targets.push({ path, bytes: info.size })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+    }
+    let freed = 0
+    for (const target of targets) {
+      try {
+        await unlink(target.path)
+        freed += target.bytes
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+        // Another collector already removed it; only one process reports the bytes.
+      }
+    }
+    await syncArtifactDirectory(directory)
+    return freed
   }
 }

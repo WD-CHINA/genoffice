@@ -195,6 +195,40 @@ export class MysqlArtifactCatalog {
     })
   }
 
+  /**
+   * Irreversibly authorize removing the pre-generation flat files for `key`.
+   * A builder may still be reading them (legacy import), so any live build job
+   * vetoes the archive. Returns the exact ready pointer the caller must prove
+   * on disk before deleting the legacy copy.
+   */
+  authorizeFlatArchive(key: string): Promise<ReadyArtifact | null> {
+    if (!HASH.test(key)) throw new Error('invalid artifact key')
+    return this.transaction(async (connection) => {
+      const [artifacts] = await connection.execute<RowDataPacket[]>(
+        'SELECT * FROM parse_artifacts WHERE artifact_key = ? FOR UPDATE', [key])
+      const artifact = artifacts[0]
+      if (!artifact) return null
+      // Same artifact -> job -> readers lock order as publication/retirement.
+      const [jobs] = await connection.execute<RowDataPacket[]>(
+        'SELECT state FROM parse_jobs WHERE artifact_key = ? FOR UPDATE', [key])
+      if (jobs.some((job) => job.state === 'building')) return null
+      if (artifact.state !== 'ready') return null
+      const ready = this.ready(artifact)
+      if (!ready) return null
+      const [retired] = await connection.execute<RowDataPacket[]>(
+        'SELECT generation FROM parse_artifact_retirements WHERE artifact_key = ? AND generation = ? FOR UPDATE',
+        [key, ready.generation])
+      if (retired.length) return null
+      const now = await this.now(connection)
+      await connection.execute(`INSERT INTO parse_artifact_flat_archives
+        (artifact_key, generation, manifest_sha256, archived_at) VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE generation = ?, manifest_sha256 = ?, archived_at = ?`,
+      [key, ready.generation, ready.manifestSha256, now,
+        ready.generation, ready.manifestSha256, now])
+      return ready
+    })
+  }
+
   /** Irreversibly fence a generation before filesystem collection, not a transient can-delete check. */
   retireGeneration(key: string, generation: number): Promise<boolean> {
     artifactGenerationPath(key, generation)

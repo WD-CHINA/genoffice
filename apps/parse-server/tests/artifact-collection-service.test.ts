@@ -8,7 +8,7 @@ afterEach(async () => {
   vi.useRealTimers()
 })
 const result = (hasMore = false): GenerationSweepResult => ({ examined: 1, collected: 0, protected: 1,
-  young: 0, failed: 0, hasMore, stopped: false, errors: [] })
+  young: 0, failed: 0, hasMore, flatBytes: 0, flatCollected: 0, stopped: false, errors: [] })
 function setup() {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] })
   const sweeper = { sweep: vi.fn(async () => result()), close: vi.fn(async () => {}) }

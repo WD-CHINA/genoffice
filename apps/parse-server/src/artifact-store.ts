@@ -388,6 +388,9 @@ export class ArtifactStore {
     sharedWaiters: 0,
     legacyImports: 0,
     legacyBundleImports: 0,
+    legacyFlatCollected: 0,
+    legacyFlatCollectedBytes: 0,
+    legacyFlatPendingBytes: 0,
     evicted: 0,
     evictedBytes: 0,
   }
@@ -546,10 +549,11 @@ export class ArtifactStore {
   }
 
   private async diskEntries(): Promise<
-    Array<{ key: string; directory: string; bytes: number; accessedAt: number; nested: boolean }>
+    Array<{ key: string; directory: string; bytes: number; accessedAt: number; nested: boolean; flatBytes: number }>
   > {
     const root = join(this.root, 'artifacts')
-    const result: Array<{ key: string; directory: string; bytes: number; accessedAt: number; nested: boolean }> = []
+    const result: Array<{ key: string; directory: string; bytes: number; accessedAt: number;
+      nested: boolean; flatBytes: number }> = []
     let prefixes
     try {
       prefixes = await readdir(root, { withFileTypes: true })
@@ -567,6 +571,7 @@ export class ArtifactStore {
           const info = await stat(directory)
           let bytes = 0
           let nested = false
+          let flatBytes = 0
           const pending = [directory]
           while (pending.length) {
             const current = pending.pop()!
@@ -582,7 +587,12 @@ export class ArtifactStore {
               else if (file.isFile()) {
                 try {
                   const fileInfo = await lstat(path)
-                  if (fileInfo.isFile()) bytes += fileInfo.size
+                  if (fileInfo.isFile()) {
+                    bytes += fileInfo.size
+                    if (current === directory &&
+                        (file.name === 'manifest.json' || file.name === 'units.bin'))
+                      flatBytes += fileInfo.size
+                  }
                 } catch (error) {
                   if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
                 }
@@ -595,6 +605,7 @@ export class ArtifactStore {
             bytes,
             accessedAt: this.access.get(entry.name) ?? info.mtimeMs,
             nested,
+            flatBytes,
           })
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
@@ -636,6 +647,24 @@ export class ArtifactStore {
   async totalBytes(): Promise<number> {
     // Quota accounting must not depend on a healthy model index.
     return (await this.diskEntries()).reduce((sum, entry) => sum + entry.bytes, 0)
+  }
+
+  /**
+   * Redundant pre-generation flat bytes that a catalog-backed generation has
+   * already superseded. Report only; deletion needs a catalog transaction.
+   */
+  async legacyFlatEntries(): Promise<{ keys: string[]; bytes: number }> {
+    const redundant = (await this.diskEntries()).filter((entry) => entry.flatBytes > 0 && entry.nested)
+    return { keys: redundant.map((entry) => entry.key),
+      bytes: redundant.reduce((sum, entry) => sum + entry.flatBytes, 0) }
+  }
+
+  /** Drop the local flat reader/index cache after another collector removed the files. */
+  forgetFlat(key: string): void {
+    if (!HASH.test(key)) return
+    this.readers.delete(key)
+    this.access.delete(key)
+    this.corruptions.delete(key)
   }
 
   async evictionCandidates(

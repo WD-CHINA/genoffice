@@ -157,6 +157,15 @@ export class MysqlDatabase {
         CONSTRAINT fk_retired_artifact FOREIGN KEY (artifact_key) REFERENCES parse_artifacts(artifact_key) ON DELETE RESTRICT
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `)
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS parse_artifact_flat_archives (
+        artifact_key CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL PRIMARY KEY,
+        generation BIGINT UNSIGNED NOT NULL,
+        manifest_sha256 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+        archived_at BIGINT NOT NULL,
+        CONSTRAINT fk_flat_archive_artifact FOREIGN KEY (artifact_key) REFERENCES parse_artifacts(artifact_key) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `)
   }
 
   async ping(): Promise<boolean> {

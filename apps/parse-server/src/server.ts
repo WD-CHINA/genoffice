@@ -1161,6 +1161,14 @@ function runGc(
 }
 
 async function performGc(ctx: Context, keepFileId?: string, committedReservationBytes = 0): Promise<void> {
+  // Reconcile redundant pre-generation flat bytes with the background collector.
+  // The catalog transaction that authorizes deletion must not run under the
+  // storage admission lock, so GC only reports the bytes and requests a sweep.
+  if (ctx.artifactCatalog) {
+    const pending = await ctx.artifacts.legacyFlatEntries()
+    ctx.artifacts.stats.legacyFlatPendingBytes = pending.bytes
+    if (pending.keys.length) ctx.generationCollection?.request()
+  }
   const files = (await ctx.store.list()).sort(
     (a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt),
   )
@@ -1823,13 +1831,20 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     ...(db ? { db, artifactCatalog: new MysqlArtifactCatalog(db) } : {}),
   }
   if (ctx.artifactCatalog) {
+    const disk = new ArtifactGenerations(options.dataDir, undefined, storageBudget)
     if (options.artifactBackend === 'catalog') {
-      const disk = new ArtifactGenerations(options.dataDir, undefined, storageBudget)
       ctx.sharedArtifacts = { catalog: ctx.artifactCatalog, disk,
         coordinator: new ArtifactCoordinator(ctx.artifactCatalog, disk) }
     }
     ctx.generationCollection = new ArtifactCollectionService(new ArtifactGenerationSweeper(
-      new ArtifactGenerations(options.dataDir, undefined, storageBudget), ctx.artifactCatalog,
+      disk, ctx.artifactCatalog, ctx.artifactCatalog,
+      (key, bytes) => {
+        artifacts.stats.legacyFlatCollected++
+        artifacts.stats.legacyFlatCollectedBytes += bytes
+        artifacts.stats.legacyFlatPendingBytes = Math.max(0,
+          artifacts.stats.legacyFlatPendingBytes - bytes)
+        artifacts.forgetFlat(key)
+      },
     ), { intervalMs: ctx.gcIntervalMs })
   }
   for (const record of sessionStore.values()) ctx.sessions.set(record.id, { record })

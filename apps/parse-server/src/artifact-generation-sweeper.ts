@@ -4,7 +4,7 @@ import type { MysqlArtifactCatalog } from './artifact-catalog'
 import { syncArtifactDirectory } from './artifact-store'
 import type { ArtifactGenerations } from './artifact-generations'
 
-interface Cursor { key: string; generation: number; staging?: string }
+interface Cursor { key: string; generation: number; staging?: string; flat?: boolean }
 export interface GenerationSweepResult {
   examined: number
   collected: number
@@ -12,19 +12,23 @@ export interface GenerationSweepResult {
   young: number
   failed: number
   hasMore: boolean
+  flatBytes: number
+  flatCollected: number
   errors: Array<Cursor & { code: string }>
   stopped: boolean
 }
 
-/** Bounded, resumable discovery; only the catalog's retirement transaction authorizes deletion. */
+/** Bounded, resumable discovery; only catalog transactions authorize deletion. */
 export class ArtifactGenerationSweeper {
   private cursor?: Cursor
   private pending?: Promise<GenerationSweepResult>
   private stopped = false
   private closing?: Promise<void>
 
-  constructor(private readonly disk: Pick<ArtifactGenerations, 'root' | 'collect'>,
-    private readonly catalog: Pick<MysqlArtifactCatalog, 'retireGeneration'>) {}
+  constructor(private readonly disk: Pick<ArtifactGenerations, 'root' | 'collect' | 'collectLegacyFlat'>,
+    private readonly catalog: Pick<MysqlArtifactCatalog, 'retireGeneration'>,
+    private readonly flatCatalog?: Pick<MysqlArtifactCatalog, 'authorizeFlatArchive'>,
+    private readonly onFlatCollected?: (key: string, bytes: number) => void) {}
 
   sweep(limit = 64, graceMs = 60 * 60_000): Promise<GenerationSweepResult> {
     if (this.stopped) throw new Error('generation sweeper closed')
@@ -86,15 +90,13 @@ export class ArtifactGenerationSweeper {
     }
   }
 
-  private async *candidates(after?: Cursor): AsyncGenerator<Cursor & { modified: number }> {
-    if (!after?.staging) yield* this.generations(after)
-    if (this.stopped) return
+  private async *stagingCandidates(afterName?: string): AsyncGenerator<Cursor & { modified: number }> {
     const directory = join(this.disk.root, 'staging')
     const entries = (await this.entries(directory)).filter((entry) => entry.isDirectory())
       .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
     for (const entry of entries) {
       if (this.stopped) return
-      if (after?.staging && entry.name <= after.staging) continue
+      if (afterName && entry.name <= afterName) continue
       const match = /^gen-([a-f0-9]{64})-g-([1-9][0-9]*)-([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})$/.exec(entry.name)
       if (!match || !Number.isSafeInteger(Number(match[2]))) continue
       try {
@@ -107,20 +109,69 @@ export class ArtifactGenerationSweeper {
     }
   }
 
-  private async collect(candidate: Cursor): Promise<boolean> {
-    if (!candidate.staging) return this.disk.collect(candidate.key, candidate.generation, this.catalog)
+  /** Only canonical key directories with regular top-level flat files are candidates. */
+  private async *flatCandidates(afterKey?: string): AsyncGenerator<Cursor & { modified: number }> {
+    const root = join(this.disk.root, 'artifacts')
+    const prefixes = (await this.entries(root)).filter((entry) => entry.isDirectory() && /^[a-f0-9]{2}$/.test(entry.name))
+      .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+    for (const prefix of prefixes) {
+      if (this.stopped) return
+      if (afterKey && prefix.name < afterKey.slice(0, 2)) continue
+      const bucket = join(root, prefix.name)
+      const keys = (await this.entries(bucket)).filter((entry) => entry.isDirectory() &&
+        /^[a-f0-9]{64}$/.test(entry.name) && entry.name.startsWith(prefix.name))
+        .sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+      for (const entry of keys) {
+        if (this.stopped) return
+        if (afterKey && entry.name <= afterKey) continue
+        const directory = join(bucket, entry.name)
+        let found = false
+        let modified = 0
+        for (const name of ['manifest.json', 'units.bin']) {
+          try {
+            const info = await lstat(join(directory, name))
+            if (!info.isFile()) continue
+            found = true
+            modified = Math.max(modified, info.mtimeMs)
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+          }
+        }
+        if (found) yield { key: entry.name, generation: 0, flat: true, modified }
+      }
+    }
+  }
+
+  private async *candidates(after?: Cursor): AsyncGenerator<Cursor & { modified: number }> {
+    if (!after?.staging && !after?.flat) yield* this.generations(after)
+    if (this.stopped) return
+    if (!after?.flat) yield* this.stagingCandidates(after?.staging)
+    if (this.stopped) return
+    yield* this.flatCandidates(after?.flat ? after.key : undefined)
+  }
+
+  private async collect(candidate: Cursor): Promise<{ collected: boolean; flatBytes: number }> {
+    if (candidate.flat) {
+      if (!this.flatCatalog) return { collected: false, flatBytes: 0 }
+      const flatBytes = await this.disk.collectLegacyFlat(candidate.key, this.flatCatalog)
+      return { collected: flatBytes > 0, flatBytes }
+    }
+    if (!candidate.staging)
+      return { collected: await this.disk.collect(candidate.key, candidate.generation, this.catalog), flatBytes: 0 }
     // Retirement is irreversible and fences renew/complete before touching another process's staging.
     // Ready, unknown and live generations remain protected, regardless of directory age.
-    if (!await this.catalog.retireGeneration(candidate.key, candidate.generation)) return false
+    if (!await this.catalog.retireGeneration(candidate.key, candidate.generation))
+      return { collected: false, flatBytes: 0 }
     const directory = join(this.disk.root, 'staging')
     await rm(join(directory, candidate.staging), { recursive: true, force: true })
     await syncArtifactDirectory(directory)
-    return true
+    return { collected: true, flatBytes: 0 }
   }
 
   private async run(limit: number, graceMs: number): Promise<GenerationSweepResult> {
     const result: GenerationSweepResult = { examined: 0, collected: 0, protected: 0,
-      young: 0, failed: 0, hasMore: false, errors: [], stopped: this.stopped }
+      young: 0, failed: 0, hasMore: false, flatBytes: 0, flatCollected: 0,
+      errors: [], stopped: this.stopped }
     if (this.stopped) return result
     const cutoff = Date.now() - graceMs
     for await (const candidate of this.candidates(this.cursor)) {
@@ -129,8 +180,15 @@ export class ArtifactGenerationSweeper {
       if (candidate.modified > cutoff) result.young++
       else {
         try {
-          if (await this.collect(candidate)) result.collected++
+          const outcome = await this.collect(candidate)
+          if (outcome.collected) result.collected++
           else result.protected++
+          result.flatBytes += outcome.flatBytes
+          if (outcome.flatBytes > 0) {
+            result.flatCollected++
+            // Observability only: a later pass can recompute the pending bytes.
+            try { this.onFlatCollected?.(candidate.key, outcome.flatBytes) } catch { /* best effort */ }
+          }
         } catch (error) {
           const code = (error as NodeJS.ErrnoException)?.code
           result.failed++
@@ -139,7 +197,8 @@ export class ArtifactGenerationSweeper {
         }
       }
       // Advance past protected/failed candidates too; retry them on the next complete pass.
-      this.cursor = { key: candidate.key, generation: candidate.generation, staging: candidate.staging }
+      this.cursor = { key: candidate.key, generation: candidate.generation,
+        staging: candidate.staging, flat: candidate.flat }
       if (this.stopped) { result.stopped = true; return result }
       if (result.examined >= limit) { result.hasMore = true; return result }
     }

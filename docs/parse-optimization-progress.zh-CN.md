@@ -114,8 +114,8 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
 
 **仍可在代码层继续（本地可验证）**
 
-1. 旧 flat 离线包的导入与回收对账：catalog 后端目前直接重建派生 generation，旧 flat 文件仍由 TTL 回收，
-   尚未像模型产物那样做两遍校验后导入；generation 高水位归档与目录最终清理也仍待实施。
+1. 旧 flat 离线包的回收对账：派生产物现已在 catalog 冷构建前经两遍校验导入旧 flat 离线包，
+   剩余是导入后旧 flat 文件的最终清理与回收对账；generation 高水位归档与目录最终清理也仍待实施。
 2. 跨进程软水位回收的一致性：共享预留账本已覆盖「尚未落盘字节」的准入、启动过期行对账与优雅关闭释放；
    高水位触发的回收仍由单个实例扫描并裁决，多实例下重复扫描/回收、generation 高水位归档与目录最终清理
    仍待实施。
@@ -140,7 +140,8 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
 local 后端以及高水位触发的回收仍是进程内状态。历史库按实例共享，尚无多用户归属。已支持打开清单时的条件失效、单条记录损坏的
 按代次撤销/重建、已打开视图的 single-flight 修复，以及旧扁平产物两遍校验后的导入；普通 IO 错误不误判为损坏，
 旧 generation 目录不会被修复路径删除。离线包在 catalog 后端已发布为独立 generation 并持有独立读租约，
-帧/清单损坏按确切代次撤下并由视图单次重建；local 后端仍用旧 flat 布局，旧 flat 离线包不会被 catalog 后端导入（留待 TTL 回收）。原文件与产物字节已纳入
+帧/清单损坏按确切代次撤下并由视图单次重建；旧 flat 离线包在冷构建前经完整身份/权威清单比对与
+两遍逐帧校验后导入为 generation，不重建也不删除旧文件。local 后端仍用旧 flat 布局。原文件与产物字节已纳入
 上传准入配额，产物写入增量预留，上传临时文件逐块保护，DOCX scratch 接入预算，压力下闲置派生产物回收、高低水位、
 共享 staging 对账与后台 generation 回收均已接入；共享准入与启动/关闭对账已落地，generation 高水位归档、
 目录最终清理与软水位回收的跨进程一致性仍待实施；显式保存的原文件不会被自动删除。客户端仍保留小 DOCX 全量本地渲染。DOCX 已移除全量 document.xml、
@@ -807,5 +808,34 @@ Android 续传/版本目录与目标硬件压测仍未完成，整体目标保�
   `/tmp/genoffice-shared-admission-local-full.log`。类型检查、改动文件 ESLint、`git diff --check` 通过。
 
 共享账本只解决「在途写入」的可见性；水位回收仍由本地扫描触发，跨进程重复回收、generation 高水位归档、
-目录最终清理、旧 flat 离线包导入、备份恢复与目标硬件压测仍未完成，整体目标保持未完成。
+目录最终清理、旧 flat 离线包导入后的最终清理对账、备份恢复与目标硬件压测仍未完成，整体目标保持未完成。
+本节由后续「旧 flat 离线包导入」检查点取代。
+
+
+### 旧 flat 离线包两遍校验导入（2026-11-07）
+
+- `ArtifactSession.importLegacyBundle` 与主产物 `importLegacy` 对称：catalog 后端冷构建前先查旧
+  `artifacts/<prefix>/<bundleKey>/manifest.json + units.bin`。除完整 identity 比对（含绑定模型的
+  generation key 与内容摘要）外，还把 `bundle` 记录当作客户端权威清单校验：schema/artifactKey/
+  modelArtifactKey/fileId/format/inventory、资源哈希与 totalBytes、页面/字体资源计数，并要求
+  `bundle:layout` 与每个 `bundle:part:*` 帧和清单项双向完备、内容与哈希一致。
+- 两遍逐帧 gzip/sha256 校验后才写入 generation：第一遍同时完成清单交叉核对，第二遍才复制；
+  任一帧损坏、清单不符、结构缺失、generation-only 目录或身份不匹配均回退真实 `runBundleBuild`。
+  导入不重新哈希原 ZIP、不 fork 模型读租约、不重新解析源文件，也不删除旧 flat 文件（仍由 TTL/回收裁决）。
+- 关键前提：`ArtifactReader.contentDigest` 只依赖记录 `(id, rawLength, sha256)`，模型 flat 导入为
+  generation 后摘要不变，因此 catalog 后端 `bundleIdentity()` 计算出的 key 与历史 flat 离线包一致；
+  模型换代后 key 改变，旧包不会被误导入。`ArtifactStore.stats.legacyBundleImports` 随 health 暴露。
+- 新增 `artifact-legacy-bundle.test.ts` 10 项：导入且不重建/不重解析、真实 `writeOfflineBundle`
+  产物（含 STORE/DEFLATE 与非 ASCII 媒体路径）逐帧一致、并发只导入一次、单帧损坏、清单与派生记录
+  不一致、多余/缺失派生记录、损坏 manifest/过期 schema/错误 key、generation-only 目录、identity 不匹配。
+  `offline-bundle-catalog-mysql.test.ts` 新增 1 项真实 SQL HTTP 集成：生成模型后注入历史 flat 包，
+  经 `/v2/.../bundle` 导入为 SQL generation 1，health 计数为 1，layout.json 的 ETag 与清单哈希一致。
+- 不带隔离 MySQL 的**串行全量** 219 项通过 / 38 项可选跳过 / 0 失败
+  （`/tmp/genoffice-legacy-bundle-local-full.log`）；带隔离真实 MySQL 的串行全量
+  **258 项 / 39 文件全部通过、无跳过**（`exit=0`，`/tmp/genoffice-legacy-bundle-mysql-full.log`）。
+  类型检查、改动文件 ESLint、`git diff --check` 通过。测试库全部删除，专用 MySQL 正常退出并清理目录。
+
+导入只解决「不重复构建」；旧 flat 文件在导入后的最终清理与回收对账、generation 高水位归档、
+目录最终清理、软水位回收跨进程一致性、解析中增量首屏、备份恢复与目标硬件压测仍未完成，
+整体目标保持未完成。
 

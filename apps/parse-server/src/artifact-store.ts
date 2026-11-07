@@ -387,6 +387,7 @@ export class ArtifactStore {
     sourceParsesStarted: 0,
     sharedWaiters: 0,
     legacyImports: 0,
+    legacyBundleImports: 0,
     evicted: 0,
     evictedBytes: 0,
   }

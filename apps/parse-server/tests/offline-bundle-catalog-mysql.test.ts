@@ -1,12 +1,19 @@
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, open, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, open, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import mysql, { type Connection, type RowDataPacket } from 'mysql2/promise'
 import { afterEach, describe, expect, it } from 'vitest'
+import JSZip from 'jszip'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import type { OfflineBundleManifest } from '@genoffice/parse-contract'
 import { createParseServer, type ParseServer } from '../src/server'
+import { MODEL_SCHEMA_VERSION } from '../src/artifact-session'
+import {
+  ArtifactReader, ArtifactStore, artifactKey, type ArtifactIdentity,
+} from '../src/artifact-store'
+import { writeOfflineBundle } from '../src/offline-bundle'
+import { DEFAULT_LIMITS } from '../src/limits'
 
 // Explicit opt-in socket must refer to an isolated test instance, never a production server.
 const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
@@ -164,5 +171,89 @@ describe.skipIf(!socketPath)('catalog-backed offline bundle over HTTP', () => {
     )
     expect(Number(rows.find((row) => options(row).purpose === 'offline-bundle')!.ready_generation))
       .toBe(generation)
+  }, 20_000)
+
+  it('imports a pre-generation flat offline bundle as SQL generation 1', async () => {
+    const h = await setup()
+    // Only the model generation exists; the derived bundle has not been requested yet.
+    const before = await h.rows()
+    expect(before).toHaveLength(1)
+    const model = before[0]
+    expect(Number(model.ready_generation)).toBe(1)
+
+    const modelReader = await ArtifactReader.openDirectory(
+      join(h.dataDir, model.storage_path), model.artifact_key,
+    )
+    const modelIdentity = (typeof model.identity === 'string'
+      ? JSON.parse(model.identity) : model.identity) as ArtifactIdentity
+    const document = (await modelReader.read('document')) as unknown as {
+      layout: Parameters<typeof writeOfflineBundle>[2]
+    }
+    const external = (await modelReader.read('external-media')) as string[]
+    const bundleIdentity: ArtifactIdentity = {
+      ...modelIdentity,
+      options: {
+        purpose: 'offline-bundle',
+        modelArtifactKey: model.artifact_key,
+        modelContentDigest: modelReader.contentDigest,
+      },
+    }
+    const bundleKey = artifactKey(bundleIdentity)
+
+    // Seed a genuinely historical flat bundle written by the real writer.
+    const legacySource = join(h.dataDir, 'legacy-source.pptx')
+    const zip = await JSZip.loadAsync(await createBlankPptx())
+    zip.file('ppt/media/legacy.bin', Buffer.from('legacy media'), { compression: 'STORE' })
+    await writeFile(legacySource, await zip.generateAsync({ type: 'nodebuffer' }))
+    const legacyStore = new ArtifactStore(h.dataDir)
+    await legacyStore.getOrBuild(bundleIdentity, (writer) => writeOfflineBundle(
+      writer,
+      {
+        path: legacySource,
+        fileId: h.fileId,
+        artifactKey: bundleKey,
+        modelArtifactKey: model.artifact_key,
+        modelSchemaVersion: MODEL_SCHEMA_VERSION,
+        parserVersion: document.layout.parserVersion,
+        parserFingerprint: 'bundle-catalog-test',
+        limits: DEFAULT_LIMITS,
+      },
+      document.layout,
+      new Set(external),
+      (id) => modelReader.describe(id),
+    ))
+
+    const response = await h.request(`/v2/sessions/${h.sessionId}/bundle`)
+    expect(response.status, await response.clone().text()).toBe(200)
+    const manifest = await response.json() as OfflineBundleManifest
+    expect(manifest.artifactKey).toBe(bundleKey)
+    expect(manifest.resources.map((resource) => resource.path))
+      .toContain('parts/ppt/media/legacy.bin')
+
+    const rows = await h.rows()
+    expect(rows).toHaveLength(2)
+    const bundle = rows.find((row) => options(row).purpose === 'offline-bundle')!
+    expect(bundle.artifact_key).toBe(bundleKey)
+    expect(Number(bundle.ready_generation)).toBe(1)
+    expect(bundle.storage_path).toMatch(/\/g-1$/)
+
+    const health = (await (await h.request('/v1/health')).json()) as {
+      errors: number
+      artifacts: { legacyBundleImports: number }
+    }
+    expect(health.artifacts.legacyBundleImports).toBe(1)
+    expect(health.errors).toBe(0)
+
+    const layout = manifest.resources.find((resource) => resource.path === 'layout.json')!
+    const layoutResponse = await h.request(
+      `/v2/sessions/${h.sessionId}/bundle/resources/layout.json`,
+    )
+    expect(layoutResponse.status).toBe(200)
+    // The imported frame keeps the exact hash declared by the authoritative inventory.
+    expect(layoutResponse.headers.get('etag')).toBe(`"${layout.sha256}"`)
+
+    // The import does not delete the old flat files; retirement/GC owns them.
+    await expect(stat(join(h.dataDir, 'artifacts', bundleKey.slice(0, 2), bundleKey,
+      'manifest.json'))).resolves.toBeDefined()
   }, 20_000)
 })

@@ -26,6 +26,63 @@ import { chunkDir, removeChunks } from './docx-chunks'
 
 export const MODEL_SCHEMA_VERSION = 2
 
+/** Records physically owned by an offline-bundle artifact; the rest come from the model. */
+function bundleDerivedId(path: string): string | null {
+  if (path === 'layout.json') return 'bundle:layout'
+  if (path.startsWith('parts/')) return `bundle:part:${path.slice(6)}`
+  return null
+}
+
+function isDerivedRecord(id: string): boolean {
+  return id === 'bundle:layout' || id.startsWith('bundle:part:')
+}
+
+/** A legacy flat bundle may only be trusted if its authoritative manifest is intact. */
+function isLegacyBundleManifest(
+  value: unknown,
+  identity: ArtifactIdentity,
+  key: string,
+): value is OfflineBundleManifest {
+  const manifest = value as Partial<OfflineBundleManifest> | null
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) return false
+  const options = identity.options as { purpose?: unknown; modelArtifactKey?: unknown } | null
+  if (
+    manifest.bundleSchemaVersion !== 1 ||
+    manifest.modelSchemaVersion !== MODEL_SCHEMA_VERSION ||
+    manifest.artifactKey !== key ||
+    manifest.modelArtifactKey !== options?.modelArtifactKey ||
+    options?.purpose !== 'offline-bundle' ||
+    manifest.fileId !== identity.fileId ||
+    manifest.format !== 'pptx' ||
+    manifest.inventory !== 'ppt-media-v1' ||
+    !Number.isSafeInteger(manifest.unitCount) || (manifest.unitCount ?? -1) < 0 ||
+    !Array.isArray(manifest.fonts) ||
+    !Array.isArray(manifest.externalResources) ||
+    !Array.isArray(manifest.resources) || !manifest.resources.length ||
+    !Number.isSafeInteger(manifest.totalBytes)
+  ) return false
+  let total = 0
+  let layouts = 0
+  let pages = 0
+  let fonts = 0
+  for (const resource of manifest.resources) {
+    if (!resource || typeof resource !== 'object') return false
+    if (
+      typeof resource.path !== 'string' || !validBundlePath(resource.path) ||
+      !Number.isSafeInteger(resource.size) || resource.size < 0 ||
+      typeof resource.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(resource.sha256)
+    ) return false
+    total += resource.size
+    if (resource.path === 'layout.json') layouts++
+    else if (/^layout\/(0|[1-9]\d*)\.json$/.test(resource.path)) pages++
+    else if (/^fonts\/font-(0|[1-9]\d*)\.sfnt$/.test(resource.path)) fonts++
+    else if (!resource.path.startsWith('parts/')) return false
+  }
+  // The inventory must fully describe the layout, every page and every font.
+  return total === manifest.totalBytes && layouts === 1 &&
+    pages === manifest.unitCount && fonts === manifest.fonts.length
+}
+
 /** Explicit wire conversion: optional object fields are omitted; runtime objects are rejected. */
 export function modelDto(value: unknown): JsonValue {
   if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
@@ -253,6 +310,88 @@ export class ArtifactSession {
     return true
   }
 
+  /**
+   * Import a pre-generation flat offline bundle, symmetric to importLegacy.
+   * The bundle manifest is the client's authoritative download inventory, so
+   * its declared derived records and hashes are cross-checked against the
+   * stored frames. Two passes keep a damaged frame from leaving a half-written
+   * generation; any confirmed mismatch falls back to a real bundle build.
+   */
+  static async importLegacyBundle(
+    store: ArtifactStore,
+    identity: ArtifactIdentity,
+    writer: ArtifactWriter,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const key = artifactKey(identity)
+    let legacy: ArtifactReader | null
+    try { legacy = await store.find(key) }
+    catch (error) {
+      if (error instanceof ArtifactCorruptionError) return false
+      throw error
+    }
+    if (!legacy) return false
+    // find() enforces artifactKey(manifest.identity) === key; compare the whole
+    // identity so a stale model generation/digest can never be imported.
+    if (canonicalJson(legacy.manifest.identity) !== canonicalJson(identity)) return false
+
+    const records = legacy.manifest.records
+    const ids = new Set(records.map((record) => record.id))
+    if (!records.length || !ids.has('bundle') || !ids.has('bundle:layout')) return false
+    let manifest: OfflineBundleManifest
+    try { manifest = (await legacy.read('bundle')) as unknown as OfflineBundleManifest }
+    catch (error) {
+      if (error instanceof ArtifactCorruptionError) return false
+      throw error
+    }
+    if (!isLegacyBundleManifest(manifest, identity, key)) return false
+
+    // Every derived frame must be declared, and every declared derived resource
+    // must have a frame; otherwise a client could be told to fetch a missing part.
+    const declared = new Map<string, OfflineBundleResource>()
+    for (const resource of manifest.resources) {
+      const id = bundleDerivedId(resource.path)
+      if (!id) continue  // model-owned layout/ and fonts/ resources live elsewhere
+      if (declared.has(id) || !ids.has(id)) return false
+      declared.set(id, resource)
+    }
+    if (!declared.has('bundle:layout')) return false
+    for (const id of ids) if (isDerivedRecord(id) && !declared.has(id)) return false
+
+    // Pass 1: verify every gzip/sha256 frame and cross-check the inventory
+    // BEFORE writing anything into the immutable generation.
+    for (const entry of records) {
+      signal?.throwIfAborted()
+      let value: JsonValue | Buffer
+      try { value = await legacy.read(entry.id) }
+      catch (error) {
+        if (error instanceof ArtifactCorruptionError) return false
+        throw error
+      }
+      const resource = declared.get(entry.id)
+      if (!resource) continue
+      if (entry.id === 'bundle:layout') {
+        const described = legacy.describe(entry.id)
+        if (described.size !== resource.size || described.sha256 !== resource.sha256) return false
+      } else {
+        const info = value as unknown as Partial<OfflineBundleResource> | null
+        if (
+          !info || typeof info !== 'object' || Array.isArray(info) ||
+          info.path !== resource.path || info.size !== resource.size ||
+          info.sha256 !== resource.sha256
+        ) return false
+      }
+    }
+    // Pass 2: only now copy verified frames. A late read error propagates so
+    // the coordinator discards staging rather than publishing a partial bundle.
+    for (const entry of records) {
+      signal?.throwIfAborted()
+      const value = await legacy.read(entry.id)
+      await writer.append(entry.id, value as JsonValue | Uint8Array)
+    }
+    return true
+  }
+
   static async open(
     store: ArtifactStore,
     input: ArtifactSessionInput,
@@ -457,6 +596,13 @@ export class ArtifactSession {
           async (writer, signal) => {
             this.store.stats.buildsStarted++
             this.store.markRunning(key)
+            // A verified old flat bundle becomes a generation without re-hashing
+            // the source ZIP or forking the model pin. Any mismatch rebuilds it.
+            if (await ArtifactSession.importLegacyBundle(this.store, identity, writer, signal)) {
+              this.store.stats.legacyBundleImports++
+              this.store.markAdmitted(key)
+              return
+            }
             await this.runBundleBuild(identity, writer, signal)
           })
         await ensurePublished()

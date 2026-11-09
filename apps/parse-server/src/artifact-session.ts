@@ -23,6 +23,7 @@ import { DocxSession } from './docx-session'
 import type { PptxFontSummary, PptxLayoutInfo, PptxLayoutSlide } from './pptx-core'
 import { refreshDocxResourceUrls } from './resource-urls'
 import { chunkDir, removeChunks } from './docx-chunks'
+import type { BuildPreviewEvent } from './artifact-preview'
 
 export const MODEL_SCHEMA_VERSION = 2
 
@@ -189,63 +190,93 @@ export class ArtifactSession {
   /** Shared source build used by both storage backends; signal belongs to the build, never a viewer. */
   static async build(store: ArtifactStore, input: ArtifactSessionInput, writer: ArtifactWriter,
     queue?: ParseQueue, signal?: AbortSignal, onAdmission?: () => void): Promise<void> {
+    const key = artifactKey(this.identity(input))
+    const notify = (event: BuildPreviewEvent): void => {
+      // Observation only: a broken observer must never fail a build or a lease.
+      // The observer lives on the parent-process store, never on the cloned input.
+      try { store.previewObserver?.(key, event) } catch { /* ignore */ }
+    }
     const build = async () => {
-      signal?.throwIfAborted()
-      store.markRunning(artifactKey(this.identity(input)))
-      // Canonical origin and no signing secret: deployment URLs never enter the shared artifact.
-      const canonicalInput = {
-        ...input,
-        signal,
-        baseUrl: 'http://artifact.invalid',
-        mediaSecret: undefined,
-      }
-      const chunksDir = chunkDir(input.chunkRoot, input.id)
-      store.stats.sourceParsesStarted++
-      let parser: PptxSession | DocxSession | undefined
-      const scratch = input.format === 'docx' ? store.scratchReservation() : undefined
       try {
-        await removeChunks(chunksDir)
         signal?.throwIfAborted()
-        parser =
-          input.format === 'pptx'
-            ? await PptxSession.open(canonicalInput)
-            : await DocxSession.open({
-                ...canonicalInput,
-                chunksDir,
-                reserveStorage: scratch?.reserve,
-              })
-        signal?.throwIfAborted()
-        const document: StoredDocument = { model: parser.model, fonts: parser.fonts }
-        if (parser instanceof PptxSession) document.layout = await parser.layoutInfo()
-        else await writer.append('styles', modelDto(await parser.styleContext()))
-        await writer.append('document', modelDto(document))
-        const external = new Set<string>()
-        for (let index = 0; index < (parser.model.unitCount ?? 0); index++) {
-          signal?.throwIfAborted()
-          const unit =
-            parser instanceof PptxSession
-              ? await parser.layoutModel(String(index))
-              : await parser.unit(String(index))
-          signal?.throwIfAborted()
-          await writer.append(`unit:${index}`, canonicalResources(modelDto(unit), input.fileId))
-          if (input.format === 'pptx')
-            for (const url of externalMedia(unit as PptxLayoutSlide)) external.add(url)
+        store.markRunning(artifactKey(this.identity(input)))
+        // Canonical origin and no signing secret: deployment URLs never enter the shared artifact.
+        const canonicalInput = {
+          ...input,
+          signal,
+          baseUrl: 'http://artifact.invalid',
+          mediaSecret: undefined,
         }
-        for (const font of parser.fonts) {
-          signal?.throwIfAborted()
-          const bytes = await parser.fontBytes(font.id)
-          if (!bytes) throw new Error(`missing embedded font: ${font.id}`)
-          await writer.append(`font:${font.id}`, bytes)
-        }
-        signal?.throwIfAborted()
-        if (input.format === 'pptx') await writer.append('external-media', [...external].sort())
-      } finally {
+        const chunksDir = chunkDir(input.chunkRoot, input.id)
+        store.stats.sourceParsesStarted++
+        let parser: PptxSession | DocxSession | undefined
+        const scratch = input.format === 'docx' ? store.scratchReservation() : undefined
         try {
-          await parser?.dispose()
           await removeChunks(chunksDir)
+          signal?.throwIfAborted()
+          parser =
+            input.format === 'pptx'
+              ? await PptxSession.open(canonicalInput)
+              : await DocxSession.open({
+                  ...canonicalInput,
+                  chunksDir,
+                  reserveStorage: scratch?.reserve,
+                })
+          signal?.throwIfAborted()
+          const document: StoredDocument = { model: parser.model, fonts: parser.fonts }
+          let styles: JsonValue | undefined
+          if (parser instanceof PptxSession) document.layout = await parser.layoutInfo()
+          else {
+            styles = modelDto(await parser.styleContext())
+            await writer.append('styles', styles)
+          }
+          // Publish the exact canonical bytes to the observer as well: a preview
+          // record is never a separate, possibly divergent rendering of a unit.
+          const canonicalDocument = modelDto(document)
+          await writer.append('document', canonicalDocument)
+          notify({
+            type: 'document',
+            format: input.format,
+            unitCount: parser.model.unitCount ?? 0,
+            document: canonicalDocument,
+            ...(styles !== undefined ? { styles } : {}),
+          })
+          const external = new Set<string>()
+          for (let index = 0; index < (parser.model.unitCount ?? 0); index++) {
+            signal?.throwIfAborted()
+            const unit =
+              parser instanceof PptxSession
+                ? await parser.layoutModel(String(index))
+                : await parser.unit(String(index))
+            signal?.throwIfAborted()
+            const canonicalUnit = canonicalResources(modelDto(unit), input.fileId)
+            await writer.append(`unit:${index}`, canonicalUnit)
+            notify({ type: 'unit', index, unit: canonicalUnit, unitsProduced: index + 1 })
+            if (input.format === 'pptx')
+              for (const url of externalMedia(unit as PptxLayoutSlide)) external.add(url)
+          }
+          for (const font of parser.fonts) {
+            signal?.throwIfAborted()
+            const bytes = await parser.fontBytes(font.id)
+            if (!bytes) throw new Error(`missing embedded font: ${font.id}`)
+            await writer.append(`font:${font.id}`, bytes)
+          }
+          signal?.throwIfAborted()
+          if (input.format === 'pptx') await writer.append('external-media', [...external].sort())
         } finally {
-          await scratch?.release()
+          try {
+            await parser?.dispose()
+            await removeChunks(chunksDir)
+          } finally {
+            await scratch?.release()
+          }
         }
+        // Every frame is committed, but the manifest has not been published and
+        // the catalog has not been completed: `done` is never `ready`.
+        notify({ type: 'done' })
+      } catch (error) {
+        notify({ type: 'failed' })
+        throw error
       }
     }
     const done = queue ? queue.submit(build, input.workerRssMb ?? 4096, signal).done : build()

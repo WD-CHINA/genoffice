@@ -41,6 +41,8 @@ export function validateRuntimeOptions(options: ParseServerOptions): void {
   integer('generationRetainCount', 4, 1, 64)
   integer('readyEvictionIdleMs', 60_000, 0, 2_147_483_647)
   integer('readyEvictionBatchSize', 16, 1, 4096)
+  integer('previewMaxUnits', 8, 1, 64)
+  integer('previewTtlMs', 60_000, 1000, MAX_TIMER)
   integer('sessionTtlMs', 900_000, 0, Number.MAX_SAFE_INTEGER)
   integer('contentTtlMs', 604_800_000, 0, Number.MAX_SAFE_INTEGER)
   integer('maxStoreBytes', 20 * 1024 ** 3, 0, Number.MAX_SAFE_INTEGER)

@@ -1,4 +1,5 @@
 import type { StorageBudget, StorageReservation } from './storage-budget'
+import type { BuildPreviewEvent } from './artifact-preview'
 import { createHash, randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, unlink, utimes } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
@@ -342,6 +343,12 @@ export async function syncArtifactDirectory(directory: string): Promise<void> {
 
 /** Local-disk backend. Cross-process job leases belong to the catalog, not this store. */
 export class ArtifactStore {
+  /**
+   * Parent-process observer for committed build frames. Deliberately a property
+   * of this object rather than the session input: inputs are structured-cloned
+   * into the isolated parse worker, where a function cannot be sent.
+   */
+  previewObserver?: (key: string, event: BuildPreviewEvent) => void
   private readonly building = new Map<string, Promise<ArtifactReader>>()
   private readonly ownedTasks = new Map<Promise<unknown>, string>()
   private readonly buildingFiles = new Map<string, string>()

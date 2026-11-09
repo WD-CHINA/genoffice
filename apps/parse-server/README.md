@@ -366,3 +366,28 @@ Multiple instances race on the same SQL rows: compare-and-clear plus
 irreversible retirement make duplicate passes harmless, but the pressure target
 itself is per-process, so a shared fleet may over-reclaim. This is derived-cache
 eviction, not a source or library retention policy.
+
+## Incremental first frame while a build is running
+
+`src/artifact-preview.ts` keeps a bounded, in-process snapshot of units whose
+gzip+sha256 frames have already been committed by `ArtifactWriter.append`. The
+observer is attached to the parent-process `ArtifactStore` (`previewObserver`),
+never to `ArtifactSessionInput`, because inputs are structured-cloned into the
+isolated parse worker. A snapshot never writes SQL, never touches a published
+generation, and never marks an artifact ready: `complete` here means "all frames
+written", not "manifest published".
+
+A building v2 session advertises `features.incrementalPreview` and returns
+`previewable`, `complete: false`, `progress`, and `availableUnits` from
+`GET /v2/sessions/:id`. `GET .../document`, `GET .../units?cursor=` and
+`GET .../units/:unitId` serve only committed units; uncommitted units answer
+`202` with `state: 'pending'`, `code: 'unit_pending'`, `retryAfterMs` and
+`pollAfterMs`. Without a snapshot the existing `409 session_not_ready` remains,
+offline bundle requests stay closed while building, and `state` never becomes
+`ready` before the full manifest. Failed builds drop the snapshot immediately.
+
+Configure with `previewMaxUnits` / `previewTtlMs` (or
+`PARSE_SERVER_PREVIEW_MAX_UNITS` / `PARSE_SERVER_PREVIEW_TTL_MS`);
+`/v1/health.maintenance.incrementalPreview` reports retained snapshots. The
+preview lives only in the build owner's process: a multi-instance fleet still
+needs cross-node task-state mapping before every waiter can see the first frame.

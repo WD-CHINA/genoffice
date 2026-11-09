@@ -42,6 +42,8 @@ const server = await createParseServer({
   gcIntervalMs: numberEnv('PARSE_SERVER_GC_INTERVAL_MS'),
   readyEvictionIdleMs: numberEnv('PARSE_SERVER_READY_EVICTION_IDLE_MS'),
   readyEvictionBatchSize: numberEnv('PARSE_SERVER_READY_EVICTION_BATCH_SIZE'),
+  previewMaxUnits: numberEnv('PARSE_SERVER_PREVIEW_MAX_UNITS'),
+  previewTtlMs: numberEnv('PARSE_SERVER_PREVIEW_TTL_MS'),
   mysql: mysqlConfigFromEnv() ?? undefined,
 })
 

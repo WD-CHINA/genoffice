@@ -313,6 +313,8 @@ export function Slides({
   }, [deck, images, page])
   useEffect(() => {
     let cancelled = false
+    // A late incremental frame must never overwrite the complete deck.
+    let openedDeck = false
     const revoked: string[] = []
     const stageTiming = createViewerTiming('pptx')
     timing.current = stageTiming
@@ -378,6 +380,12 @@ export function Slides({
               fonts: REMOTE_FONTS,
               onStatus: (text) => {
                 if (!cancelled) setLoadingStatus(text)
+              },
+              onPreviewFrame: (frame) => {
+                if (cancelled || openedDeck || deckRef.current) return
+                setPage(0)
+                setLoadingStatus('解析中，仅首屏已可预览…')
+                setDeck(frame.deck)
               },
             })
         : createPptxSession()
@@ -505,6 +513,7 @@ export function Slides({
       }
       allUrls.current = keys
       for (const key of keys) thumbsStarted.current.delete(key)
+      openedDeck = true
       setDeck(data)
     })().catch((e) => {
       if (!cancelled) setError(e.message)
@@ -748,6 +757,11 @@ export function Slides({
             开始放映
           </ControlButton>
         </ViewerBar>
+        {deck.preview && (
+          <p className="viewer-status" role="status">
+            解析中，仅首屏已可预览；其余页面将在解析完成后可用…
+          </p>
+        )}
         {error && (
           <p className="viewer-error" role="alert">
             {error}

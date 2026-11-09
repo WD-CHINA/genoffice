@@ -17,6 +17,7 @@ import { ArtifactGenerations } from './artifact-generations'
 import { ArtifactGenerationSweeper } from './artifact-generation-sweeper'
 import { ArtifactCollectionService } from './artifact-collection-service'
 import { ArtifactReadyEviction } from './artifact-ready-eviction'
+import { PreviewRegistry } from './artifact-preview'
 import { parserFingerprint } from './parser-fingerprint'
 import { refreshDocxResourceUrls } from './resource-urls'
 import { randomUUID } from 'node:crypto'
@@ -110,6 +111,10 @@ export interface ParseServerOptions {
   readyEvictionIdleMs?: number
   /** Maximum ready generations examined per pressure pass. */
   readyEvictionBatchSize?: number
+  /** First-frame preview units retained per in-flight build (in-process only). */
+  previewMaxUnits?: number
+  /** Retention for a completed preview snapshot; failed builds are dropped at once. */
+  previewTtlMs?: number
   /** MySQL persistence for file metadata and sessions; unset = filesystem only. */
   mysql?: MysqlConfig
   /**
@@ -148,6 +153,7 @@ interface Context {
   sharedArtifacts?: { catalog: MysqlArtifactCatalog; disk: ArtifactGenerations; coordinator: ArtifactCoordinator }
   generationCollection?: ArtifactCollectionService
   readyEviction?: ArtifactReadyEviction
+  previews: PreviewRegistry
   storageBudget: StorageBudget
   sharedAdmission?: SqlStorageReservations
   library: LibraryStore
@@ -297,6 +303,7 @@ function capabilitiesOf(ctx: Context): Capabilities {
       asyncSessions: true,
       historyLibrary: true,
       offlineBundles: true,
+      incrementalPreview: true,
     },
   }
 }
@@ -551,6 +558,9 @@ async function handleCreateSession(
 function pendingBody(ctx: Context, record: PendingSession) {
   const phase = ctx.artifacts.phase(record.artifactKey)
   if (phase === 'building') ctx.pendingViews.observeBuilding(record.id)
+  // `state` deliberately stays queued/building: previewable is a capability of
+  // an in-flight job, never an alternative to the full-manifest `ready` state.
+  const preview = record.error ? undefined : ctx.previews.get(record.artifactKey)
   return {
     sessionId: record.id,
     jobId: record.jobId,
@@ -558,6 +568,21 @@ function pendingBody(ctx: Context, record: PendingSession) {
     state: record.error ? 'failed' : record.state === 'building' ? 'building' : phase,
     pollAfterMs: 500,
     ...(record.error ? { error: record.error } : {}),
+    ...(preview?.previewable
+      ? {
+          previewable: true,
+          complete: false,
+          progress: {
+            unitsProduced: preview.unitsProduced,
+            unitCount: preview.unitCount,
+            percent: Math.min(
+              99,
+              Math.floor((100 * preview.unitsProduced) / Math.max(1, preview.unitCount)),
+            ),
+          },
+          availableUnits: { from: 0, to: preview.cachedUntil },
+        }
+      : {}),
   }
 }
 
@@ -949,6 +974,91 @@ async function handleAsyncSession(
   if (req.method === 'GET' && root) {
     sendJson(res, 200, pendingBody(ctx, current))
     return
+  }
+  // Incremental first frame: only units whose gzip+sha256 frames are already
+  // committed to the writer may be read. This never touches a ready generation,
+  // never marks anything ready, and never satisfies an offline bundle request.
+  const preview = current.error ? undefined : ctx.previews.get(current.artifactKey)
+  if (req.method === 'GET' && preview?.previewable) {
+    await pinResponseFile(ctx, current.fileId, res)
+    if (parts[3] === 'document' && parts.length === 4) {
+      sendJson(res, 200, {
+        state: 'building',
+        model: preview.document.model,
+        fonts: preview.document.fonts,
+        ...(preview.format === 'pptx'
+          ? { layout: preview.document.layout }
+          : { styles: preview.styles }),
+        complete: false,
+        unitsProduced: preview.unitsProduced,
+        unitCount: preview.unitCount,
+      })
+      return
+    }
+    if (parts[3] === 'units' && parts.length === 4) {
+      const rawLimit = Number(url.searchParams.get('limit') ?? 100)
+      const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(500, Math.trunc(rawLimit))) : 100
+      const cursor = url.searchParams.get('cursor')
+      const start = cursor === null ? 0 : Number.parseInt(cursor, 10)
+      if (!Number.isInteger(start) || start < 0 || start > preview.unitCount)
+        throw new HttpError(400, 'invalid_request', 'invalid unit cursor')
+      const end = Math.min(preview.cachedUntil, start + limit)
+      const items = []
+      for (let index = start; index < end; index++)
+        items.push({
+          id: String(index),
+          kind: preview.document.model.unitKind,
+          index,
+          anchor: String(index),
+        })
+      sendJson(res, 200, {
+        state: 'building',
+        items,
+        ...(end < preview.cachedUntil ? { next: String(end) } : {}),
+        complete: false,
+        unitsProduced: preview.unitsProduced,
+        unitCount: preview.unitCount,
+        availableUnits: { from: 0, to: preview.cachedUntil },
+        // `complete: false` is the only offline-completion signal; a building
+        // listing must never be mistaken for the final manifest.
+        pending: {
+          from: Math.max(start, preview.cachedUntil),
+          to: preview.unitCount,
+          code: 'unit_pending',
+          retryAfterMs: 500,
+          pollAfterMs: 500,
+        },
+      })
+      return
+    }
+    if (parts[3] === 'units' && parts.length === 5) {
+      const unitId = decodeURIComponent(parts[4])
+      const index = /^(0|[1-9]\d*)$/.test(unitId) ? Number(unitId) : -1
+      if (!Number.isSafeInteger(index) || index < 0 || index >= preview.unitCount)
+        throw new HttpError(400, 'invalid_request', 'invalid unit id')
+      if (index >= preview.cachedUntil) {
+        res.setHeader('Retry-After', '1')
+        sendJson(res, 202, {
+          state: 'pending',
+          code: 'unit_pending',
+          unitId,
+          availableUnits: { from: 0, to: preview.cachedUntil },
+          unitsProduced: preview.unitsProduced,
+          unitCount: preview.unitCount,
+          complete: false,
+          retryAfterMs: 500,
+          pollAfterMs: 500,
+        })
+        return
+      }
+      // Canonical records carry no deployment origin or expiring signature.
+      sendJson(
+        res,
+        200,
+        refreshDocxResourceUrls(preview.units[index], current.fileId, baseUrlOf(req, ctx), ctx.token),
+      )
+      return
+    }
   }
   throw new HttpError(409, 'session_not_ready', 'wait for the session to become ready')
 }
@@ -1578,7 +1688,11 @@ async function route(
         sharedReservedBytes: await ctx.storageBudget.sharedReservedBytes(),
         coordination: ctx.sharedAdmission ? 'shared' : 'instance',
       },
-      maintenance: { gcTasks: ctx.gcFlights.size, generationCollection: ctx.generationCollection?.snapshot },
+      maintenance: {
+        gcTasks: ctx.gcFlights.size,
+        generationCollection: ctx.generationCollection?.snapshot,
+        incrementalPreview: ctx.previews.stats(),
+      },
       readyEviction: ctx.readyEviction?.snapshot ?? null,
       restore: ctx.restoreReport ? {
         checkedAt: ctx.restoreReport.checkedAt,
@@ -1823,6 +1937,13 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     sharedAdmission,
   )
   const artifacts: ArtifactStore = new ArtifactStore(options.dataDir, undefined, storageBudget)
+  const previews = new PreviewRegistry({
+    maxUnits: options.previewMaxUnits ?? 8,
+    ttlMs: options.previewTtlMs ?? 60_000,
+  })
+  // The observer is attached to this parent-process object: session inputs are
+  // structured-cloned into the isolated worker and cannot carry a function.
+  artifacts.previewObserver = (key, event) => previews.report(key, event)
   // Only aged, recognizable temporary paths are eligible. Journal ownership
   // protects restart recovery before any resumed job is allowed to run.
   await store.cleanupTemp(60 * 60_000)
@@ -1843,6 +1964,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     sessionDisposals: new Set(),
     sessionDisposalByHandle: new WeakMap(),
     storageBudget,
+    previews,
     ...(sharedAdmission ? { sharedAdmission } : {}),
     library,
     files,
@@ -2000,6 +2122,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     ctx.closing = true
     clearInterval(sweeper)
     clearInterval(gcTimer)
+    ctx.previews.clear()
     ctx.readyEviction?.close()
     const collectionClosed = ctx.generationCollection?.close()
     const coordinatorClosed = ctx.sharedArtifacts?.coordinator.close()

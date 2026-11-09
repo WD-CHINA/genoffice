@@ -1,11 +1,23 @@
-import { openServerSession, openingStateText } from './server-session'
+import { openServerSession, openingStateText, type PreviewNotice } from './server-session'
 import type { PptxDeck } from './pptx-session'
 
+/** A first frame published while the v2 job is still building; never a complete deck. */
+export interface PreviewFrame {
+  deck: PptxDeck & { preview: true }
+  unitsProduced: number
+  unitCount: number
+  complete: false
+}
 export interface RemoteTarget {
   server: string
   fileId: string
   token?: string
   onStatus?: (text: string) => void
+  /**
+   * Optional incremental first frame. The full deck still arrives through
+   * `open()`; this callback only lets the UI show slide 0 before `ready`.
+   */
+  onPreviewFrame?: (frame: PreviewFrame) => void
   /** Metric-compatible faces bundled with the Viewer (loaded by Slides). */
   fonts?: PptxDeck['fonts']
 }
@@ -102,6 +114,61 @@ export function createRemotePptxSession(target: RemoteTarget) {
     return unit
   }
 
+  let previewSent = false
+  /**
+   * Fetch the already-committed first unit while the shared build is still
+   * running. Preview records are never cached into `units`: the ready path
+   * keeps its own v1 rendering contract and remains authoritative.
+   */
+  const prefetchPreview = async (notice: PreviewNotice): Promise<void> => {
+    if (closed || previewSent || !target.onPreviewFrame || notice.availableUnits.to < 1) return
+    previewSent = true
+    try {
+      // `json()` already prefixes `base`; keep the root relative to it.
+      const root = `${notice.endpoint}/${encodeURIComponent(notice.sessionId)}`
+      const info = await json<{ model: { unitCount?: number }; fonts?: PptxDeck['fonts'] }>(
+        `${root}/document`,
+      )
+      const first = await json<RemoteUnit>(`${root}/units/0`)
+      if (closed) return
+      const total = Math.max(1, notice.unitCount || info.model.unitCount || 1)
+      const widthPx = Number(first.slide?.widthPx) || 960
+      const heightPx = Number(first.slide?.heightPx) || 540
+      // Non-placeholder blank pages keep the lazy loader from asking the server
+      // for units that have not been committed yet (it would answer 202 pending).
+      const blank = {
+        widthPx,
+        heightPx,
+        nodes: [],
+        background: { kind: 'solid', color: '#ffffff' },
+      }
+      // A malformed or pending first frame must not produce a deck that crashes
+      // the viewer's playback lookups; the ready path will replace it anyway.
+      const firstSlide = first.slide ?? blank
+      const firstPlayback = first.playback ?? EMPTY_PLAYBACK
+      const deck: PreviewFrame['deck'] = {
+        slides: Array.from({ length: total }, (_, index) => (index === 0 ? firstSlide : blank)),
+        playback: Array.from({ length: total }, (_, index) =>
+          index === 0 ? firstPlayback : EMPTY_PLAYBACK,
+        ),
+        measurements: first.measurements ?? [],
+        fonts: [...(target.fonts ?? []), ...(info.fonts ?? [])],
+        fallbacks: [],
+        media: [],
+        timings: {},
+        preview: true,
+      }
+      target.onPreviewFrame({
+        deck,
+        unitsProduced: notice.unitsProduced,
+        unitCount: total,
+        complete: false,
+      })
+    } catch {
+      // A preview is best-effort: a lost or unsupported frame must not fail open().
+    }
+  }
+
   return {
     async open(_bytes: ArrayBuffer, _width = 960): Promise<PptxDeck> {
       if (closed) throw new Error('Presentation closed')
@@ -114,6 +181,7 @@ export function createRemotePptxSession(target: RemoteTarget) {
         width: _width,
         signal: abort.signal,
         onState: (state) => target.onStatus?.(openingStateText(state)),
+        onPreview: (notice) => void prefetchPreview(notice),
       })
       sessionId = created.sessionId
       if (closed) {

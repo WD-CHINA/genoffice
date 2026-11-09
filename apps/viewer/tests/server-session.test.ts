@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { openServerSession } from '../src/web/server-session.ts'
+import { openServerSession, openingStateText, type PreviewNotice } from '../src/web/server-session.ts'
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -116,7 +116,7 @@ test('closing a remote deck at the ready boundary does not resurrect heartbeat t
   const { createRemotePptxSession } = await import('../src/web/pptx-remote-session.ts')
   context.mock.timers.enable({ apis: ['setInterval'] })
   const calls: string[] = []
-  let session: ReturnType<typeof createRemotePptxSession>
+  const session = createRemotePptxSession({ server: 'http://parse', fileId: 'file' })
   context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
     calls.push(`${init.method ?? 'GET'} ${url}`)
     if (init.method === 'DELETE') return new Response(null, { status: 204 })
@@ -132,7 +132,6 @@ test('closing a remote deck at the ready boundary does not resurrect heartbeat t
     response.json = async () => body
     return response
   })
-  session = createRemotePptxSession({ server: 'http://parse', fileId: 'file' })
   try {
     await assert.rejects(session.open(new ArrayBuffer(0)), /Presentation closed/)
     assert.deepEqual(calls, [
@@ -141,6 +140,134 @@ test('closing a remote deck at the ready boundary does not resurrect heartbeat t
     ])
     context.mock.timers.tick(60 * 60_000)
     assert.equal(calls.length, 2)
+  } finally {
+    session.close()
+    context.mock.timers.reset()
+  }
+})
+
+test('previewable is a building capability, notified once, and never ends the wait early', async (context) => {
+  const states: string[] = []
+  const notices: PreviewNotice[] = []
+  let polls = 0
+  context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    if (init.method === 'POST')
+      return json({ sessionId: 'preview', state: 'building', previewable: true, pollAfterMs: 1,
+        progress: { unitsProduced: 1, unitCount: 3, percent: 33 },
+        availableUnits: { from: 0, to: 1 } }, 202)
+    return json(++polls === 1
+      ? { sessionId: 'preview', state: 'building', previewable: true, pollAfterMs: 1,
+          progress: { unitsProduced: 2, unitCount: 3, percent: 66 },
+          availableUnits: { from: 0, to: 2 } }
+      : { sessionId: 'preview', state: 'ready', model: { unitCount: 3 }, fonts: [] })
+  })
+  const result = await openServerSession<{
+    sessionId: string; state?: string; model: { unitCount: number }
+  }>({
+    server: 'http://parse',
+    fileId: 'file',
+    onState: (state) => states.push(state),
+    onPreview: (notice) => notices.push(notice),
+  })
+  assert.deepEqual(states, ['previewable', 'previewable'])
+  assert.equal(notices.length, 1)
+  assert.deepEqual(notices[0], {
+    sessionId: 'preview',
+    endpoint: '/v2/sessions',
+    unitsProduced: 1,
+    unitCount: 3,
+    availableUnits: { from: 0, to: 1 },
+  })
+  assert.equal(result.state, 'ready')
+  assert.equal(result.model.unitCount, 3)
+  assert.match(openingStateText('previewable'), /首屏/)
+  assert.match(openingStateText('queued'), /排队/)
+})
+
+const firstUnit = {
+  slide: { widthPx: 960, heightPx: 540, nodes: [], background: { kind: 'solid', color: '#fff' } },
+  playback: { transition: 'none', animations: [], keys: [], links: [], runLinks: [] },
+  measurements: [],
+}
+
+test('remote sessions fetch and expose the committed first frame while still building', async (context) => {
+  const { createRemotePptxSession } = await import('../src/web/pptx-remote-session.ts')
+  context.mock.timers.enable({ apis: ['setInterval'] })
+  const frames: Array<{ deck: any; complete: boolean; unitCount: number }> = []
+  const urls: string[] = []
+  let polls = 0
+  context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    urls.push(`${init.method ?? 'GET'} ${url}`)
+    if (init.method === 'DELETE') return new Response(null, { status: 204 })
+    if (init.method === 'POST')
+      return json({ sessionId: 'frame', state: 'building', previewable: true, pollAfterMs: 1,
+        progress: { unitsProduced: 1, unitCount: 3, percent: 33 },
+        availableUnits: { from: 0, to: 1 } }, 202)
+    if (url.endsWith('/document'))
+      return json({ state: 'building', model: { unitCount: 3 }, fonts: [], layout: {},
+        complete: false, unitsProduced: 1, unitCount: 3 })
+    if (url.endsWith('/units/0')) return json(firstUnit)
+    if (url.endsWith('/v2/sessions/frame'))
+      return json(++polls === 1
+        ? { sessionId: 'frame', state: 'building', previewable: true, pollAfterMs: 1,
+            progress: { unitsProduced: 1, unitCount: 3, percent: 33 },
+            availableUnits: { from: 0, to: 1 } }
+        : { sessionId: 'frame', state: 'ready', model: { unitCount: 3 }, fonts: [] })
+    return json(firstUnit)
+  })
+  const session = createRemotePptxSession({
+    server: 'http://parse', fileId: 'file',
+    onPreviewFrame: (frame) => frames.push(frame),
+  })
+  try {
+    const deck = await session.open(new ArrayBuffer(0))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(deck.slides.length, 3, 'the ready deck remains the complete one')
+    assert.equal(frames.length, 1)
+    assert.equal(frames[0].complete, false)
+    assert.equal(frames[0].unitCount, 3)
+    assert.equal(frames[0].deck.preview, true)
+    assert.equal(frames[0].deck.slides.length, 3)
+    assert.equal(frames[0].deck.slides[1].placeholder, undefined,
+      'uncommitted pages must not trigger lazy unit requests')
+    assert.ok(urls.includes('GET http://parse/v2/sessions/frame/document'))
+    assert.ok(urls.includes('GET http://parse/v2/sessions/frame/units/0'))
+    assert.ok(urls.includes('GET http://parse/v1/sessions/frame/units/0'),
+      'the ready path keeps its original v1 contract')
+  } finally {
+    session.close()
+    context.mock.timers.reset()
+  }
+})
+
+test('a failed first-frame prefetch never fails the authoritative ready path', async (context) => {
+  const { createRemotePptxSession } = await import('../src/web/pptx-remote-session.ts')
+  context.mock.timers.enable({ apis: ['setInterval'] })
+  const frames: unknown[] = []
+  let polls = 0
+  context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    if (init.method === 'DELETE') return new Response(null, { status: 204 })
+    if (init.method === 'POST')
+      return json({ sessionId: 'fragile', state: 'building', previewable: true, pollAfterMs: 1,
+        progress: { unitsProduced: 1, unitCount: 1, percent: 99 },
+        availableUnits: { from: 0, to: 1 } }, 202)
+    if (url.endsWith('/document')) return json({ message: 'preview unavailable' }, 503)
+    if (url.endsWith('/v2/sessions/fragile'))
+      return json(++polls === 1
+        ? { sessionId: 'fragile', state: 'building', previewable: true, pollAfterMs: 1,
+            progress: { unitsProduced: 1, unitCount: 1, percent: 99 },
+            availableUnits: { from: 0, to: 1 } }
+        : { sessionId: 'fragile', state: 'ready', model: { unitCount: 1 }, fonts: [] })
+    return json(firstUnit)
+  })
+  const session = createRemotePptxSession({
+    server: 'http://parse', fileId: 'file', onPreviewFrame: (frame) => frames.push(frame),
+  })
+  try {
+    const deck = await session.open(new ArrayBuffer(0))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    assert.equal(deck.slides.length, 1)
+    assert.equal(frames.length, 0)
   } finally {
     session.close()
     context.mock.timers.reset()

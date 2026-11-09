@@ -61,6 +61,8 @@ export interface Capabilities {
     asyncSessions?: boolean
     historyLibrary?: boolean
     offlineBundles?: boolean
+    /** Building sessions may expose already-committed units before `ready`. */
+    incrementalPreview?: boolean
   }
 }
 

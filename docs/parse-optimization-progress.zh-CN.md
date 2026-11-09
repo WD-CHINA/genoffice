@@ -120,7 +120,10 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
    的跨进程共享**：各实例的 `pressureTarget` 与待回收字节是进程内状态，多实例可能重复扫描或超额回收
    （不影响正确性，但回收量不是全局精确目标）；flat 冗余字节仍只由 GC 报告并催促后台扫描，不在准入锁内
    做 SQL 授权。正常容量下 ready 产物保留，显式保存的原文件永不被压力回收。
-2. 解析中的增量首屏（当前仍全量 ready 后才发布）、复杂 PPTX/DOCX round-trip 与真实 GB 正文压测记录。
+2. 解析中的增量首屏已落地（见末尾检查点）：构建中已提交单元可预览、未生成单元返回明确
+   `pending` 与重试建议、只有完整 manifest 才能判定离线完成，完整产物仍全部校验后整体发布。
+   仍待复杂 PPTX/DOCX round-trip、真实 GB 正文压测记录，以及预览快照的跨节点共享
+   （当前是构建进程内内存状态）、Web 首屏字体度量/在线回源的进一步完善。
 3. 最后一个等待者取消后的共享任务调度策略、SQL/IO 关闭宽限期硬超时、跨节点任务状态映射。
 4. 部分离线的在线回源（未缓存资源在线取、断网显示尚未离线就绪）、Android 本地读租约，
    以及真机容量/弱网/长时稳定性压测。按 artifactKey 的版本目录、整包缓存配额与清理入口、
@@ -169,7 +172,8 @@ generation 落盘后，由后台扫描只删除顶层两个文件，并在 healt
 不合格 ready 由 `invalidateReady` 撤下后才允许启动。当前演练校验的是同一 dataDir 上的还原结果，
 不是跨机器/跨介质恢复，也不自动执行备份拷贝；清单不含会话、读租约、staging 与共享预留等临时态。客户端仍保留小 DOCX 全量本地渲染。DOCX 已移除全量 document.xml、
 slices、blocks 与 parsedChunks 的持有，使用正文双遍流读取、最多 200 块一批落盘；辅助 parts、元数据索引和单个
-XML 块仍在内存，单块上限 64 Mi UTF-16 字符。产物仍构建完后整体发布，尚无解析中的增量首屏。独立进程隔离及采样式
+XML 块仍在内存，单块上限 64 Mi UTF-16 字符。完整产物仍在全部校验后整体发布；解析中只暴露已逐帧提交单元的
+进程内只读预览，不写 SQL、不改 generation、不等于 ready，也不允许离线完成判定。独立进程隔离及采样式
 RSS 限制已验证；Linux cgroup 内核硬限制、真实 GB 正文压测、500 阅读会话压测未完成。
 Android 真机（AGS5-W00 / Android 12 / API 31）已通过 33 项 instrumentation 与真实解析服务端
 联调，覆盖 PPTX 离线包完整性、取消、空间检查、断点续传、按 artifactKey 的版本目录、
@@ -1086,5 +1090,49 @@ Android 续传/版本目录与目标硬件压测仍未完成，整体目标保�
 - 边界：压力目标仍是**进程内**状态，多实例可能重复扫描或超额回收，但共享 SQL 目录行 +
   compare-and-clear + 不可逆退役保证并发正确性；软压力回收是异步的，硬上限/物理空间不足
   仍在同一轮 fail-closed 返回 507，不因「将来可回收」放行写入；正常容量不撤任何 ready；
-  部分离线在线回源、解析中增量首屏、真实跨机器恢复与目标环境压测仍未完成。整体方案保持未完成。
+  部分离线在线回源、解析中增量首屏的跨节点共享、真实跨机器恢复与目标环境压测仍未完成。
+  整体方案保持未完成。
+
+### 解析中的增量首屏（2026-11-09）
+
+- **预览快照**：新增 `src/artifact-preview.ts`。`PreviewRegistry` 只在**构建进程内存**里保存
+  有界快照（默认每 key 8 个单元 / 2 MiB、最多 16 个 key、60 秒 TTL），按 artifactKey 索引。
+  每条记录必须来自 `ArtifactWriter.append` 已提交的 canonical（无部署 origin、无签名）帧，
+  且严格按 `index === unitsProduced` 顺序推进；`get()` 返回深拷贝，消费方无法修改已发布单元。
+  `done` 只表示所有帧写完（manifest 尚未发布），`failed` 立即丢弃快照。观察者挂在父进程
+  `ArtifactStore.previewObserver` 上，**不进入 `ArtifactSessionInput`**：输入会被结构化克隆到
+  独立解析子进程，函数无法跨 IPC（本轮实测发现并修正了 `could not be cloned`）。
+- **HTTP 契约**：`GET /v2/sessions/:id` 在 building 时新增 `previewable / complete:false /
+  progress(unitsProduced,unitCount,percent) / availableUnits`，**state 仍是 building 而非 ready**。
+  `GET .../document` 返回 model/fonts/layout 或 styles；`GET .../units?cursor` 只列已提交范围并
+  附 `pending{from,to,code:'unit_pending',retryAfterMs,pollAfterMs}`；`GET .../units/:unitId`
+  已提交单元返回 200（按响应时重写部署 URL/签名），未提交单元返回 **202 `unit_pending` +
+  Retry-After**，非法 id 400。无预览快照时保持既有 409 `session_not_ready`；bundle 在 building
+  期间仍 409，`complete:false` 明确不能用于离线完成判定。capabilities 增
+  `features.incrementalPreview`，`/v1/health.maintenance.incrementalPreview` 暴露快照统计。
+  配置 `previewMaxUnits`（默认 8）/`previewTtlMs`（默认 60 s）与
+  `PARSE_SERVER_PREVIEW_MAX_UNITS` / `PARSE_SERVER_PREVIEW_TTL_MS` 纳入启动校验。
+- **Web**：`openServerSession` 识别 `previewable`（仍轮询到 ready，只通知一次 `onPreview`），
+  等待状态新增「解析中，首屏已可预览…」；`createRemotePptxSession` 在 building 期间预取
+  `document` + `units/0` 并经 `onPreviewFrame` 交出只含首屏的 `preview` deck（其余页为
+  **非 placeholder 空白页**，避免懒加载请求未产出单元）；`slides.tsx` 提前显示该 deck 并提示
+  「仅首屏已可预览」，用 `openedDeck` 防止迟到的预览覆盖完整 deck。预览单元**不写入** v1
+  `fetchUnit` 缓存，ready 路径保持原有渲染契约。
+- 验证：组件/HTTP 测试 `tests/artifact-incremental-preview.test.ts` **11 项通过**（真实 3 页 PPTX、
+  gate 在第二个单元帧之前，覆盖 previewable 状态、document/列表/pending 范围、已提交单元与
+  ready 后字节一致、构建失败立即撤预览且绝不宣称 ready、缓存命中无预览、配置校验）；
+  真实隔离 MySQL catalog `artifact-preview-mysql.test.ts` **2 项通过**（building 期间
+  `parse_artifacts.ready_generation IS NULL`、`parse_jobs.state='building'/progress=0`，
+  释放后 g-1 ready 且 `units/2` 可读；失败构建不留 ready 指针/预览/残缺单元）。
+  viewer `node:test` **69 项通过**（新增 previewable 轮询、首屏预取与失败降级；测试中抓到并
+  修正了预取 URL 重复拼接 base 的真实缺陷）。串行全量回归：带隔离真实 MySQL
+  **49 文件 / 342 项全通过、无跳过**（`/tmp/genoffice-preview-mysql-full-final.log`）；
+  不带 MySQL **41 文件通过 / 8 文件跳过、283 项通过 / 59 项可选跳过 / 0 失败**
+  （`/tmp/genoffice-preview-local-full-final.log`）。parse-server 与 viewer typecheck、
+  改动文件 ESLint、`git diff --check` 均通过。
+- 边界：预览是**构建进程内**内存状态，多实例部署下只有持有构建租约的节点能提供预览，
+  跨节点任务状态映射仍未实施；快照不持久化，进程重启即消失（完整产物仍从 generation 读）。
+  Web 首屏预览未经 `measureWidths`，字体度量在 ready 后才完全校正；DOCX 首屏与 `layout`
+  服务端排版路径仍沿用既有 ready 后加载，在线回源、部分离线闭环与目标环境压测仍未完成。
+  整体方案保持未完成。
 

@@ -1,4 +1,13 @@
-export type OpeningState = 'queued' | 'building'
+export type OpeningState = 'queued' | 'building' | 'previewable'
+/** First-frame capability reported while a v2 job is still building. */
+export interface PreviewNotice {
+  sessionId: string
+  /** Endpoint actually in use; v1 fallbacks never report a preview. */
+  endpoint: string
+  unitsProduced: number
+  unitCount: number
+  availableUnits: { from: number; to: number }
+}
 export interface ServerSessionTarget {
   server: string
   fileId: string
@@ -6,12 +15,18 @@ export interface ServerSessionTarget {
   width?: number
   signal?: AbortSignal
   onState?: (state: OpeningState) => void
+  /** Fires once when the server first reports committed preview units. */
+  onPreview?: (preview: PreviewNotice) => void
 }
 interface Status {
   sessionId: string
   state?: 'ready' | OpeningState | 'failed'
   pollAfterMs?: number
   error?: { message?: string; code?: string }
+  previewable?: boolean
+  unitCount?: number
+  progress?: { unitsProduced: number; unitCount: number; percent: number }
+  availableUnits?: { from: number; to: number }
 }
 function aborted(signal?: AbortSignal): void {
   if (signal?.aborted) throw new DOMException('Document opening cancelled', 'AbortError')
@@ -69,6 +84,7 @@ export async function openServerSession<T extends { sessionId: string }>(
     let body = (await response.json()) as Status & T
     id = body.sessionId
     if (!id || typeof id !== 'string') throw new Error('解析服务未返回有效会话')
+    let previewNotified = false
     for (;;) {
       aborted(target.signal)
       if (body.state === 'failed')
@@ -76,7 +92,19 @@ export async function openServerSession<T extends { sessionId: string }>(
       if (body.state === 'ready' || (!body.state && response.status !== 202)) return body
       if (body.state !== 'queued' && body.state !== 'building')
         throw new Error('解析服务返回了未知会话状态')
-      target.onState?.(body.state)
+      // `previewable` describes a building job, not a new terminal state: keep
+      // polling until the full manifest makes the session ready.
+      target.onState?.(body.previewable ? 'previewable' : body.state)
+      if (body.previewable && !previewNotified && endpoint === '/v2/sessions') {
+        previewNotified = true
+        target.onPreview?.({
+          sessionId: id,
+          endpoint,
+          unitsProduced: body.progress?.unitsProduced ?? 0,
+          unitCount: body.progress?.unitCount ?? body.unitCount ?? 0,
+          availableUnits: body.availableUnits ?? { from: 0, to: 0 },
+        })
+      }
       const delay = Math.min(
         5000,
         Math.max(100, Number.isFinite(body.pollAfterMs) ? body.pollAfterMs! : 500),
@@ -103,5 +131,7 @@ export async function openServerSession<T extends { sessionId: string }>(
   }
 }
 export function openingStateText(state: OpeningState): string {
-  return state === 'queued' ? '正在排队等待解析…' : '正在解析文档…'
+  if (state === 'queued') return '正在排队等待解析…'
+  if (state === 'previewable') return '解析中，首屏已可预览…'
+  return '正在解析文档…'
 }

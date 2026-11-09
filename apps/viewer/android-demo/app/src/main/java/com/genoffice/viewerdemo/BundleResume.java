@@ -37,6 +37,18 @@ final class BundleResume {
         this.maxBytes = maxBytes;
     }
 
+    private BundleResume(File exactDir, long maxBytes, boolean exact) {
+        this.dir = exactDir;
+        this.maxBytes = maxBytes;
+    }
+
+    /** Exact directory, used when the cache owns the resume state. */
+    static BundleResume at(File dir) { return at(dir, DEFAULT_MAX_BYTES); }
+
+    static BundleResume at(File dir, long maxBytes) {
+        return new BundleResume(dir, maxBytes, true);
+    }
+
     File dir() { return dir; }
 
     /** Stable per-resource key; identity itself is compared via the meta record. */

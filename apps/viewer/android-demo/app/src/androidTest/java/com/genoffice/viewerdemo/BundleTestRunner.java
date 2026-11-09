@@ -31,10 +31,13 @@ public final class BundleTestRunner extends InstrumentationTestRunner {
         File root = new File(getTargetContext().getCacheDir(), "backend-probe-" + java.util.UUID.randomUUID());
         try {
             String fileId = arguments.getString("fileId");
-            BundleStore store = new BundleStore(root, fileId);
+            BundleCache cache = new BundleCache(root);
             String key = null;
+            BundleStore store = null;
             for (int attempt = 0; attempt < 2; attempt++) {
-                new BundleDownloader(arguments.getString("server"), arguments.getString("token"), fileId, store, stage -> {}).run();
+                new BundleDownloader(arguments.getString("server"), arguments.getString("token"), fileId,
+                        cache.resolve(fileId), stage -> {}, File::getUsableSpace, cache).run();
+                store = cache.resolve(fileId);
                 store.verifyIntegrity();
                 JSONObject manifest = store.manifest();
                 if (!manifest.getBoolean("sourceVerified")) throw new IOException("real backend unexpectedly used legacy downloads");
@@ -43,7 +46,12 @@ public final class BundleTestRunner extends InstrumentationTestRunner {
                 if (manifest.getJSONArray("fonts").length() != 1 || !store.fontFile("embed:0").isFile()) throw new IOException("embedded font identity/path mapping failed");
                 if (manifest.getInt("unitCount") != 1) throw new IOException("unexpected slide count");
                 if (!store.partFile("ppt/media/inventory-only.bin").isFile()) throw new IOException("unused inventory resource was omitted");
+                JSONObject pointer = cache.current(fileId);
+                if (pointer == null || !key.equals(pointer.getString("artifactKey")))
+                    throw new IOException("versioned cache pointer does not reference the active generation");
             }
+            if (cache.versionCount() != 1) throw new IOException("cached reopen must not create another generation directory");
+            verifyCacheCleanup(cache, fileId, key, result);
             verifyResume(arguments.getString("server"), arguments.getString("token"), fileId, store, root, result);
             LocalAssetServer replay = new LocalAssetServer(getTargetContext().getAssets(), store);
             try {
@@ -92,8 +100,8 @@ public final class BundleTestRunner extends InstrumentationTestRunner {
         }
         if (targets.isEmpty()) throw new IOException("real backend has no resumable media resource");
 
-        BundleStore store = new BundleStore(new File(root, "resume-files"), fileId);
-        BundleResume resume = new BundleResume(store.dir());
+        BundleCache cache = new BundleCache(new File(root, "resume-files"));
+        BundleResume resume = cache.resume(fileId);
         long totalPrefix = 0;
         for (JSONObject target : targets) {
             String path = target.getString("path");
@@ -116,21 +124,44 @@ public final class BundleTestRunner extends InstrumentationTestRunner {
             resume.record(path, size, target.getString("sha256"), artifactKey);
             totalPrefix += prefix;
         }
-        BundleDownloader download = new BundleDownloader(server, token, fileId, store, stage -> {});
+        BundleDownloader download = new BundleDownloader(server, token, fileId, cache.resolve(fileId),
+                stage -> {}, File::getUsableSpace, cache);
         download.run();
         if (download.rangeResumes() != targets.size())
             throw new IOException("real backend did not resume every seeded resource: " + download.rangeResumes());
         // STORE parts honour 206; DEFLATE parts are streamed inflated and fall back to a full 200.
         if (download.rangeResponses() < 1)
             throw new IOException("real backend returned no ranged 206 response");
-        store.verifyIntegrity();
+        BundleStore published = cache.resolve(fileId);
+        published.verifyIntegrity();
         for (JSONObject target : targets)
-            if (store.resourceFile(target.getString("path")).length() != target.getLong("size"))
+            if (published.resourceFile(target.getString("path")).length() != target.getLong("size"))
                 throw new IOException("resumed resource has wrong size");
         if (resume.dir().exists()) throw new IOException("resume state was not cleared after publish");
         result.putBoolean("resumeVerified", true);
         result.putInt("rangeResponses", download.rangeResponses());
         result.putLong("resumedPrefixBytes", totalPrefix);
+    }
+
+    /** Real-device check: the cleanup entry drops inactive versions but never the active one. */
+    private void verifyCacheCleanup(BundleCache cache, String fileId, String key, Bundle result) throws Exception {
+        char[] inactiveKey = new char[64];
+        java.util.Arrays.fill(inactiveKey, '0');
+        BundleStore inactive = cache.versionStore(fileId, new String(inactiveKey));
+        if (!inactive.dir().mkdirs() && !inactive.dir().isDirectory())
+            throw new IOException("cannot seed inactive generation");
+        try (OutputStream out = new FileOutputStream(new File(inactive.dir(), "old.bin"))) {
+            out.write(new byte[4096]);
+        }
+        long freed = cache.clearInactive(fileId, key);
+        if (freed <= 0 || inactive.dir().exists())
+            throw new IOException("cleanup did not remove the inactive generation");
+        if (!key.equals(cache.current(fileId).getString("artifactKey")))
+            throw new IOException("cleanup changed the active generation pointer");
+        cache.resolve(fileId).verifyIntegrity();
+        result.putBoolean("versionedCache", true);
+        result.putLong("cacheBytes", cache.usedBytes());
+        result.putLong("cleanupBytes", freed);
     }
 
     private static void delete(File file) {

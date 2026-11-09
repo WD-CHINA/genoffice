@@ -7,7 +7,7 @@
 1. **下载**：设置页填写解析服务地址和文件 ID（sha256）。创建 v2 异步会话并等待 ready，
    仅 404/405 回退 v1。优先读取 `/v2/sessions/<id>/bundle` 权威清单，按声明的大小和
    SHA-256 下载模型、嵌入字体及全部 `ppt/media` 资源（包括未引用媒体），逐文件验证后
-   原子发布至 `files/bundles/<fileId>/`。现代包保留模型内部路径，字体按 `resourcePath`
+   原子发布到按 artifactKey 区分的版本目录（见「版本目录与缓存配额」）。现代包保留模型内部路径，字体按 `resourcePath`
    定位；仅清单接口 404/405 时使用旧版资源发现及 URL 改写流程。
 2. **离线排版**：viewer 走 `pptx-model-session` + `pptx-model-worker`：排版引擎在 Worker 里
    把解析模型排成渲染树，字宽由浏览器 canvas 实测回填。宽度回传只重建**依赖这些 key 的页**；
@@ -60,7 +60,9 @@ adb shell am start -n com.genoffice.viewerdemo/.MainActivity \
 - 放映按当前放映页保留相邻页，淘汰离屏模型、渲染树和无引用的文字测量缓存；高清图片也按当前页窗口回收。
 - 在线会话每分钟续期，下载大媒体期间也会续期；媒体签名默认有效期为 12 小时，超时需要重新打开。
 - 淘汰后回访需要重新拉取该页模型（本地/局域网很快，公网有明显延迟）。
-- 会话/离线包按 `fileId` 存放，没有做空间回收与多包管理；断点续传的部分文件另有 512 MiB 上界（见下节）。
+- 离线包按 artifactKey 分版本保存、以 `current.json` 指向当前包；缓存有 2 GiB 配额、
+  自动回收与清理入口。Android 本地没有读租约，回收非当前版本时正在回放的旧包需重新打开。
+  断点续传的部分文件另有 512 MiB 上界（见下节）。
 - 演示用途：允许对 `127.0.0.1` 的明文 HTTP；正式产品应使用 HTTPS 服务端。
 
 ## 稳定性回归
@@ -92,13 +94,14 @@ adb shell am instrument -w -e class com.genoffice.viewerdemo.BundleDownloaderTes
 服务端清单包含 artifactKey、modelArtifactKey、解析指纹、模型 schema 和资源源哈希。
 现代包全部资源验证成功后标记 `sourceVerified=true`；兼容旧服务端的包为 false。
 清单版本不支持、哈希错误或非 404/405 错误不会静默回退。清单中的 href 不作为下载地址，
-客户端根据已配置服务地址和受校验的资源路径构造请求。包含外部媒体时目前拒绝完整离线下载，
-部分离线与在线提示仍待实现。当前仍按 fileId 存包；断点续传已接入（见下节），
-版本目录、缓存配额及清理界面待完成。
+客户端根据已配置服务地址和受校验的资源路径构造请求。包含外部媒体时不再直接拒绝，
+而是把包标记为 `offlineScope=partial` 并明确提示「未保证完整离线」（见下节）。
+断点续传、版本目录、缓存配额及清理界面均已接入。
 
-`BundleDownloaderTest` 最新 **24 项**已在
+`BundleDownloaderTest` 最新 **33 项**已在
 **华为 AGS5-W00 真机（Android 12 / API 31 / arm64-v8a）** 全套通过，包含 1 GiB 下载、
-故障恢复与 5 项续传用例；此前 19 项仅在 Android 36.1 只读模拟器执行。
+故障恢复、5 项续传用例，以及 9 项版本目录/配额/清理/部分离线用例（含真实 Activity
+清理按钮交互）；此前 19 项仅在 Android 36.1 只读模拟器执行。
 
 运行本轮测试（需明确指定测试模拟器，避免操作其他设备）：
 
@@ -131,7 +134,7 @@ Activity 销毁时也会取消正在进行的下载，迟到的进度回调不�
 
 现代清单在下载资源前执行整包预检（资源总量、清单及元数据余量），并继续逐写入检查。
 兼容旧服务端时只能逐资源预检。这不是磁盘空间锁，其他进程仍可能同时占用空间；
-缓存配额与清理界面仍待完成。
+另有一层按版本的缓存配额与清理入口，见下节。
 
 本轮空间故障验证使用可注入的空闲探针，不填满设备磁盘：完整 15 项测试通过，
 已知大小资源在预检失败时保留旧包；未知长度媒体在实际写入部分数据后模拟空间耗尽，
@@ -140,7 +143,8 @@ Activity 销毁时也会取消正在进行的下载，迟到的进度回调不�
 ## 断点续传（严格 ETag / Content-Range）
 
 现代清单资源支持跨「下载运行」的断点续传：取消、断网或进程中止后，已接收字节保存在
-应用私有 `bundles/<fileId>.resume/`（**不在 staging 内**，staging 仍按既有语义整体清理）。
+应用私有 `bundle-cache/<fileId>/resume/`（版本化缓存）；兼容旧服务端的 flat 路径仍是
+`bundles/<fileId>.resume/`。二者都**不在 staging 内**，staging 仍按既有语义整体清理。
 
 - 每个部分文件配套一份身份记录 `path / size / sha256 / artifactKey`。下次下载只有四者与
   当前清单完全一致才复用；解析换代、资源哈希或大小变化一律丢弃重下。
@@ -160,6 +164,27 @@ Activity 销毁时也会取消正在进行的下载，迟到的进度回调不�
 服务端对 STORE 媒体返回 `206`、对 DEFLATE 媒体返回 `200`，探针确认 `rangeResponses=1`
 且两个资源最终都完整。
 
+## 版本目录、缓存配额与部分离线
+
+现代清单的包发布到 `files/bundle-cache/<fileId>/versions/<artifactKey>/`，
+`<fileId>/current.json` 是原子写入的当前包引用，记录 artifactKey、offlineScope、
+externalCount、sizeBytes 与 publishedAt。同一文件换代会保留旧版本目录；更新失败不切换
+指针，旧包继续可用。指针损坏时明确提示重新下载，不静默降级到旧代。旧 flat 包
+`files/bundles/<fileId>/` 仍按原布局读取且不改写；无权威清单的旧服务端继续写 flat
+布局，也不更新版本指针。
+
+缓存默认 2 GiB（`BundleCache.DEFAULT_MAX_BYTES`，可构造注入）。单个包超过配额时在下载
+资源之前拒绝；发布成功后按最老优先回收非当前版本、staging、resume 与中断备份，当前版本
+和旧 flat 包永不自动删除。设置页显示缓存大小与历史版本数，并提供
+「清理离线缓存（保留当前包）」按钮；下载进行中不可触发清理。Android 本地没有读租约，
+若旧版本正在回放，回收后需要重新打开当前包。
+
+含外部媒体的清单不再直接拒绝：本地声明资源仍全部逐文件校验并发布，manifest 写入
+`offlineScope=partial` 与 `externalResources`，`complete` 标记只表示**本地资源**完整。
+设置页、下载完成提示和打开离线包时都明确说明「N 个外部资源需联网，未保证完整离线」；
+`offlineScope` 与外链数量不一致的包会被校验拒绝，不能伪装成完整离线。
+在线回源取未缓存资源尚未实现：断网时这些资源不可用，本项不等于完整离线闭环。
+
 ## 真实服务端联调回归
 
 先构建主 APK 和测试 APK，再明确指定专用测试设备：
@@ -171,11 +196,14 @@ ANDROID_SERIAL=<test-emulator> npm run test:android-backend -w @genoffice/viewer
 脚本启动临时解析服务、上传含嵌入字体及未引用媒体的 PPTX，安装测试 APK，下载两次，
 验证源哈希与本地模型/字体回放，并检查源解析仅一次；结束清理反向端口和临时服务数据。
 离线清单按需构建为独立辅助产物，正常在线预览不会提前遍历媒体计算哈希。
-脚本额外断言 `resumeVerified=true` 与 `rangeResponses>=1`：在真机上预置半个媒体文件，
-确认下载器对真实服务端的 `If-Range` / `206` 链路确实续传。
+脚本额外断言 `versionedCache=true`、`cleanupBytes>0`、`resumeVerified=true` 与
+`rangeResponses>=1`：确认两次缓存打开只产生一个 generation 目录、清理入口只删非当前版本，
+并在真机上预置半个媒体文件验证对真实服务端的 `If-Range` / `206` 链路确实续传。
 
 本轮在华为 AGS5-W00 真机（Android 12 / API 31 / arm64-v8a）执行，输出
-`ok / sourceHashesVerified / cachedSecondDownload / realBackendRangeResume` 均为 true，
-`sourceParses=1`；服务端日志对 STORE 媒体记录 `206`、对 DEFLATE 媒体记录 `200`。
+`ok / sourceHashesVerified / cachedSecondDownload / versionedCacheAndCleanup /
+realBackendRangeResume` 均为 true，`sourceParses=1`；探针报告 `cacheBytes=962057`、
+`cleanupBytes=4096`、`resumedPrefixBytes=163840`、`rangeResponses=1`，
+服务端日志对 STORE 媒体记录 `206`、对 DEFLATE 媒体记录 `200`。
 Gradle 构建需把 `JAVA_HOME` 指向 JDK 17（默认 GraalVM 21 的 jlink 会令
 AGP 8.10.1 的 `androidJdkImage` 变换失败）。

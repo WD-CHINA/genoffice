@@ -41,6 +41,11 @@ final class BundleStore {
         this.fileId = fileId;
     }
 
+    /** Explicit directory, used by BundleCache for versioned and staging bundles. */
+    static BundleStore at(File dir, String fileId) {
+        return new BundleStore(dir, fileId, true);
+    }
+
     BundleStore staging() {
         return new BundleStore(new File(dir.getPath() + ".download"), fileId, true);
     }
@@ -116,6 +121,12 @@ final class BundleStore {
         catch (IOException | JSONException failure) { return false; }
     }
 
+    /** Lightweight presence check for the UI thread; verifyIntegrity() does the full hash pass. */
+    boolean isSealed() {
+        File complete = new File(dir, "complete");
+        return manifestFile().isFile() && complete.isFile() && complete.length() == 64;
+    }
+
     /** Hash local bytes on the download/verification thread, never on the UI thread. */
     void seal(JSONObject manifest) throws IOException, JSONException {
         manifest.put("bundleSchemaVersion", 1);
@@ -179,6 +190,14 @@ final class BundleStore {
             throw new IOException("unsupported offline bundle version or identity");
         int count = manifest.getInt("unitCount");
         if (count <= 0 || count > 100000) throw new IOException("invalid offline slide count");
+        // A bundle with external references must never be presented as fully offline.
+        String scope = manifest.optString("offlineScope", "complete");
+        if (!"complete".equals(scope) && !"partial".equals(scope))
+            throw new IOException("unsupported offline scope");
+        JSONArray external = manifest.optJSONArray("externalResources");
+        int externalCount = external == null ? 0 : external.length();
+        if (("partial".equals(scope)) != (externalCount > 0))
+            throw new IOException("offline scope does not match external resources");
         JSONArray resources = manifest.getJSONArray("resources");
         if (resources.length() > 100000) throw new IOException("too many offline resources");
         Set<String> paths = new HashSet<>();
@@ -228,6 +247,24 @@ final class BundleStore {
     int unitCount() {
         try {
             return manifest().optInt("unitCount");
+        } catch (IOException | JSONException e) {
+            return 0;
+        }
+    }
+
+    /** Local resources are complete, but external references can still require a network. */
+    boolean claimsFullOffline() {
+        try {
+            return "complete".equals(manifest().optString("offlineScope", "complete"));
+        } catch (IOException | JSONException e) {
+            return false;
+        }
+    }
+
+    int externalResourceCount() {
+        try {
+            JSONArray external = manifest().optJSONArray("externalResources");
+            return external == null ? 0 : external.length();
         } catch (IOException | JSONException e) {
             return 0;
         }

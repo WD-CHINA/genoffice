@@ -45,8 +45,10 @@ final class BundleDownloader {
     private final String fileId;
     private BundleStore store;
     private final Listener listener;
-    private final BundleSpace space;
-    private final BundleResume resume;
+    private final BundleSpace.Probe probe;
+    private final BundleCache cache;
+    private BundleSpace space;
+    private BundleResume resume;
     private final Set<String> partsSeen = new HashSet<>();
     private String sessionId;
     private String sessionApi = "/v1/sessions";
@@ -92,12 +94,18 @@ final class BundleDownloader {
 
 
     BundleDownloader(String server, String token, String fileId, BundleStore store, Listener listener) {
-        this(server, token, fileId, store, listener, File::getUsableSpace);
+        this(server, token, fileId, store, listener, File::getUsableSpace, null);
     }
 
     BundleDownloader(String server, String token, String fileId, BundleStore store, Listener listener, BundleSpace.Probe probe) {
-        this.space = new BundleSpace(store.dir(), probe);
-        this.resume = new BundleResume(store.dir());
+        this(server, token, fileId, store, listener, probe, null);
+    }
+
+    /** With a cache, declared bundles are published under their artifactKey and pointed to atomically. */
+    BundleDownloader(String server, String token, String fileId, BundleStore store, Listener listener,
+                     BundleSpace.Probe probe, BundleCache cache) {
+        this.probe = probe;
+        this.cache = cache;
         this.server = normalizeServerUrl(server);
         this.token = token == null ? "" : token.trim();
         this.fileId = fileId;
@@ -109,19 +117,14 @@ final class BundleDownloader {
         runner = Thread.currentThread();
         checkCancelled();
         listener.stage("准备离线包…");
-        BundleStore destination = store;
-        destination.recoverPrevious();
-        store = destination.staging();
-        store.reset();
         ScheduledExecutorService heartbeat = Executors.newSingleThreadScheduledExecutor(task -> {
             Thread thread = new Thread(task, "bundle-heartbeat");
             thread.setDaemon(true);
             return thread;
         });
+        BundleStore destination = store;
+        BundleStore staging = null;
         try {
-            //noinspection ResultOfMethodCallIgnored
-            store.dir().mkdirs();
-            space.require(0);
             JSONObject created = openSession();
             heartbeat.scheduleWithFixedDelay(() -> {
                 try { requestJson(server + "/v1/sessions/" + encode(sessionId), "GET", null); }
@@ -130,9 +133,34 @@ final class BundleDownloader {
             JSONObject model = created.optJSONObject("model");
             if (model != null && !"pptx".equals(model.optString("format", "pptx")))
                 throw new IOException("离线包目前仅支持 PPTX");
-            JSONObject manifest = downloadDeclaredBundle();
+            // The authoritative manifest identifies the generation before any staging is chosen.
+            JSONObject declared = fetchDeclaredManifest();
+            if (cache != null && declared != null) {
+                destination = cache.versionStore(fileId, declared.getString("artifactKey"));
+                staging = cache.stagingStore(fileId);
+                resume = cache.resume(fileId);
+            } else {
+                // Without an authoritative manifest there is no artifactKey to version by:
+                // keep the pre-versioning flat layout and leave the current pointer untouched.
+                destination = cache == null ? store : cache.legacy(fileId);
+                staging = destination.staging();
+                resume = new BundleResume(destination.dir());
+            }
+            space = new BundleSpace(staging.dir(), probe);
+            File versionParent = destination.dir().getParentFile();
+            if (versionParent != null && !versionParent.isDirectory()
+                    && !versionParent.mkdirs() && !versionParent.isDirectory())
+                throw new IOException("cannot create offline version directory");
+            destination.recoverPrevious();
+            staging.reset();
+            //noinspection ResultOfMethodCallIgnored
+            staging.dir().mkdirs();
+            space.require(0);
+            store = staging;
+
+            JSONObject manifest;
             int count;
-            if (manifest == null) {
+            if (declared == null) {
                 JSONArray fonts = created.optJSONArray("fonts");
                 String sessionPath = server + "/v1/sessions/" + encode(sessionId);
                 JSONObject layout = requestJson(sessionPath + "/layout", "GET", null);
@@ -166,7 +194,15 @@ final class BundleDownloader {
                 manifest.put("createdAt", System.currentTimeMillis());
                 manifest.put("parts", partsDownloaded);
                 manifest.put("sourceVerified", false);
-            } else { count = manifest.getInt("unitCount"); }
+            } else {
+                manifest = declared;
+                count = downloadDeclaredResources(manifest);
+                manifest.put("sourceVerified", true);
+                manifest.put("createdAt", System.currentTimeMillis());
+                manifest.put("parts", partsDownloaded);
+                JSONArray external = manifest.optJSONArray("externalResources");
+                manifest.put("offlineScope", external != null && external.length() > 0 ? "partial" : "complete");
+            }
             listener.stage("正在校验离线资源…");
             checkCancelled();
             store.seal(manifest);
@@ -177,16 +213,27 @@ final class BundleDownloader {
             // Publication is the commit point. Never hold the UI cancellation lock
             // while filesystem replacement/backup cleanup is in progress.
             store.publishTo(destination);
+            if (cache != null && declared != null) {
+                JSONObject record = cache.commit(fileId, destination, manifest);
+                // Reclaim inactive versions only after the new pointer is durable.
+                cache.trim(fileId, record.getString("artifactKey"));
+            }
             // Publication is committed: nothing is left to resume for this bundle.
             resume.clear();
             synchronized (lifecycle) { finished = true; }
-            listener.stage("离线包完成：共 " + count + " 页、" + partsDownloaded + " 个媒体文件");
+            String text = "离线包完成：共 " + count + " 页、" + partsDownloaded + " 个媒体文件";
+            JSONArray external = manifest.optJSONArray("externalResources");
+            if (external != null && external.length() > 0)
+                text += "；部分离线：" + external.length() + " 个外部资源需联网，未保证完整离线";
+            listener.stage(text);
         } finally {
             heartbeat.shutdownNow();
             boolean interrupted = Thread.interrupted();
             try { closeSession(); }
             finally {
-                store.reset();
+                // Only the staging directory may be discarded. Resetting `store` before it was
+                // swapped would delete the user's already published offline bundle.
+                if (staging != null) staging.reset();
                 store = destination;
                 runner = null;
                 synchronized (lifecycle) { finished = true; }
@@ -195,7 +242,8 @@ final class BundleDownloader {
         }
     }
 
-    private JSONObject downloadDeclaredBundle() throws IOException, JSONException {
+    /** Fetch and fully validate the authoritative manifest; 404/405 keeps the legacy flow. */
+    private JSONObject fetchDeclaredManifest() throws IOException, JSONException {
         listener.stage("正在准备离线资源清单…");
         String root = "/v2/sessions/" + encode(sessionId) + "/bundle";
         JSONObject manifest;
@@ -216,9 +264,13 @@ final class BundleDownloader {
                 || !"ppt-media-v1".equals(manifest.optString("inventory"))) throw new IOException("不支持的离线清单版本或资源身份");
         int count = manifest.getInt("unitCount");
         if (count <= 0 || count > 100000) throw new IOException("无效的离线页数");
-        String artifactKey = manifest.getString("artifactKey");
         JSONArray external = manifest.getJSONArray("externalResources");
-        if (external.length() > 0) throw new IOException("包含外部媒体，暂不支持保证完整离线");
+        if (external.length() > 10000) throw new IOException("外部资源数量过多");
+        for (int index = 0; index < external.length(); index++) {
+            Object value = external.get(index);
+            if (!(value instanceof String) || ((String) value).isEmpty() || ((String) value).length() > 4096)
+                throw new IOException("外部资源标识无效");
+        }
         JSONArray resources = manifest.getJSONArray("resources");
         if (resources.length() > 100000) throw new IOException("离线资源数量过多");
         Set<String> paths = new HashSet<>();
@@ -227,7 +279,6 @@ final class BundleDownloader {
             checkCancelled();
             JSONObject resource = resources.getJSONObject(index);
             String path = resource.getString("path");
-            store.resourceFile(path);
             if (!paths.add(path) || !(path.equals("layout.json") || path.matches("layout/(0|[1-9][0-9]*)\\.json")
                     || path.startsWith("parts/ppt/media/") || path.matches("fonts/[^/]+\\.sfnt")))
                 throw new IOException("离线资源路径无效或重复");
@@ -242,8 +293,20 @@ final class BundleDownloader {
         JSONArray fonts = manifest.getJSONArray("fonts");
         for (int index = 0; index < fonts.length(); index++) if (!paths.contains(fonts.getJSONObject(index).getString("resourcePath")))
             throw new IOException("离线清单缺少字体");
+        return manifest;
+    }
+
+    private int downloadDeclaredResources(JSONObject manifest) throws IOException, JSONException {
+        String root = "/v2/sessions/" + encode(sessionId) + "/bundle";
+        String artifactKey = manifest.getString("artifactKey");
+        int count = manifest.getInt("unitCount");
+        JSONArray resources = manifest.getJSONArray("resources");
+        // Each resource still validates its own path against the staging root before writing.
+        for (int index = 0; index < resources.length(); index++) store.resourceFile(resources.getJSONObject(index).getString("path"));
         listener.stage("检查离线包空间并核验服务端资源…");
-        space.require(total + manifest.toString().getBytes(StandardCharsets.UTF_8).length + 65536L);
+        long incoming = manifest.getLong("totalBytes") + manifest.toString().getBytes(StandardCharsets.UTF_8).length + 65536L;
+        if (cache != null) cache.require(incoming);
+        space.require(incoming);
         for (int index = 0; index < resources.length(); index++) {
             checkCancelled();
             JSONObject resource = resources.getJSONObject(index);
@@ -255,10 +318,7 @@ final class BundleDownloader {
                     path, resource.getLong("size"), resource.getString("sha256"), artifactKey);
             if (path.startsWith("parts/")) partsDownloaded++;
         }
-        manifest.put("sourceVerified", true);
-        manifest.put("createdAt", System.currentTimeMillis());
-        manifest.put("parts", partsDownloaded);
-        return manifest;
+        return count;
     }
 
     // ── session / units ──────────────────────────────────────────────────────

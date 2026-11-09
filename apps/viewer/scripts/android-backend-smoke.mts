@@ -88,6 +88,8 @@ try {
   await writeFile(report, output)
   assert.match(output, /INSTRUMENTATION_RESULT: result=ok/)
   assert.match(output, /INSTRUMENTATION_RESULT: sourceVerified=true/)
+  assert.match(output, /INSTRUMENTATION_RESULT: versionedCache=true/)
+  assert.match(output, /INSTRUMENTATION_RESULT: cleanupBytes=[1-9]/)
   assert.match(output, /INSTRUMENTATION_RESULT: resumeVerified=true/)
   assert.match(output, /INSTRUMENTATION_RESULT: rangeResponses=[1-9]/)
   const health = (await (
@@ -107,6 +109,7 @@ try {
       realBackend: true,
       sourceHashesVerified: true,
       cachedSecondDownload: true,
+      versionedCacheAndCleanup: true,
       realBackendRangeResume: true,
       sourceParses: health.artifacts.sourceParsesStarted,
       report,

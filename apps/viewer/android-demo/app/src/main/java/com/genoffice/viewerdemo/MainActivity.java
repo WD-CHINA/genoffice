@@ -28,7 +28,11 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import org.json.JSONObject;
+
+import java.io.File;
 import java.io.IOException;
+import java.util.Locale;
 
 /**
  * Offline viewer demo:
@@ -51,6 +55,8 @@ public class MainActivity extends Activity {
     private Button downloadButton;
     private Button openButton;
     private Button cancelButton;
+    private Button cleanupButton;
+    private BundleCache cache;
     private volatile BundleDownloader activeDownload;
 
     private LocalAssetServer server;
@@ -65,6 +71,7 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         WebView.setWebContentsDebuggingEnabled(true);
+        cache = new BundleCache(getFilesDir());
         showSetup();
     }
 
@@ -126,6 +133,11 @@ public class MainActivity extends Activity {
         });
         root.addView(cancelButton, matchWrapTop(dp(8)));
 
+        cleanupButton = new Button(this);
+        cleanupButton.setText("清理离线缓存（保留当前包）");
+        cleanupButton.setOnClickListener(v -> cleanupCache());
+        root.addView(cleanupButton, matchWrapTop(dp(8)));
+
         status = new TextView(this);
         status.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         status.setPadding(0, dp(20), 0, 0);
@@ -145,6 +157,8 @@ public class MainActivity extends Activity {
         if (server != null) serverInput.setText(server);
         if (fileId != null) fileInput.setText(fileId);
         if (token != null) tokenInput.setText(token);
+        // The status line must describe the intent's fileId, not the last saved preference.
+        updateStatus(fileInput.getText().toString().trim());
         if (intent.getBooleanExtra("download", false)) startDownload();
         else if (intent.getBooleanExtra("open", false)) {
             String current = fileId != null ? fileId : fileInput.getText().toString().trim();
@@ -154,14 +168,49 @@ public class MainActivity extends Activity {
 
     private void updateStatus(String fileId) {
         if (status == null) return;
+        String size = String.format(Locale.US, "%.1f MiB", cache.usedBytes() / (1024.0 * 1024.0));
         if (fileId == null || fileId.isEmpty()) {
-            status.setText("尚未下载离线包。");
+            status.setText("尚未下载离线包；缓存共 " + size + "。");
             return;
         }
-        BundleStore store = new BundleStore(getFilesDir(), fileId);
-        status.setText(store.isComplete()
-                ? "已有离线包：" + store.unitCount() + " 页，可直接离线打开。"
-                : "没有找到 " + fileId.substring(0, Math.min(12, fileId.length())) + " 的离线包。");
+        BundleStore store = cache.resolve(fileId);
+        if (!store.isSealed()) {
+            status.setText("没有找到 " + fileId.substring(0, Math.min(12, fileId.length()))
+                    + " 的离线包；缓存共 " + size + "。");
+            return;
+        }
+        StringBuilder text = new StringBuilder("已有离线包：")
+                .append(store.unitCount()).append(" 页，可直接离线打开。");
+        if (!store.claimsFullOffline())
+            text.append(" 部分离线：").append(store.externalResourceCount())
+                    .append(" 个外部资源需联网，未保证完整离线。");
+        text.append(" 缓存共 ").append(size).append(" / 配额 ")
+                .append(cache.maxBytes() / (1024 * 1024)).append(" MiB，历史版本 ")
+                .append(cache.versionCount()).append(" 个。");
+        status.setText(text.toString());
+    }
+
+    /** Manual cleanup: inactive generations, staging, partial transfers and interrupted backups. */
+    private void cleanupCache() {
+        if (activeDownload != null) {
+            Toast.makeText(this, "下载进行中，暂不能清理缓存", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        String fileId = fileInput.getText().toString().trim();
+        JSONObject current = cache.current(fileId);
+        String key = current == null ? null : current.optString("artifactKey", null);
+        setBusy(true);
+        setStatus("正在清理离线缓存…");
+        new Thread(() -> {
+            long freed = cache.clearInactive(fileId, key);
+            runOnUiThread(() -> {
+                if (destroyed) return;
+                setBusy(false);
+                updateStatus(fileId);
+                Toast.makeText(this, "已清理 " + String.format(Locale.US, "%.1f MiB",
+                        freed / (1024.0 * 1024.0)) + " 非当前缓存", Toast.LENGTH_SHORT).show();
+            });
+        }, "bundle-cleanup").start();
     }
 
     private EditText field(String hint, String value) {
@@ -218,9 +267,9 @@ public class MainActivity extends Activity {
                 .apply();
         final int generation = ++downloadGeneration;
         BundleDownloader download = new BundleDownloader(serverUrl, token, fileId,
-                new BundleStore(getFilesDir(), fileId), text -> runOnUiThread(() -> {
+                cache.resolve(fileId), text -> runOnUiThread(() -> {
                     if (!destroyed && generation == downloadGeneration && activeDownload != null && !activeDownload.isCancelled()) setStatus(text);
-                }));
+                }), File::getUsableSpace, cache);
         activeDownload = download;
         setBusy(true);
         setStatus("连接解析服务…");
@@ -251,6 +300,7 @@ public class MainActivity extends Activity {
     private void setBusy(boolean busy) {
         if (downloadButton != null) downloadButton.setEnabled(!busy);
         if (openButton != null) openButton.setEnabled(!busy);
+        if (cleanupButton != null) cleanupButton.setEnabled(!busy);
         if (cancelButton != null) cancelButton.setEnabled(busy && activeDownload != null);
     }
 
@@ -265,12 +315,15 @@ public class MainActivity extends Activity {
         setBusy(true);
         setStatus("正在校验离线资源…");
         new Thread(() -> {
-            BundleStore store = new BundleStore(getFilesDir(), fileId);
+            BundleStore store = cache.resolve(fileId);
             try {
                 store.verifyIntegrity();
                 runOnUiThread(() -> {
                     if (destroyed || generation != openGeneration) return;
                     setBusy(false);
+                    if (!store.claimsFullOffline())
+                        Toast.makeText(this, "部分离线：" + store.externalResourceCount()
+                                + " 个外部资源需联网，未保证完整离线", Toast.LENGTH_LONG).show();
                     showCached(store);
                 });
             } catch (IOException failure) {

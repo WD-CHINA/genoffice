@@ -120,9 +120,11 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
    并回收可重建产物的策略尚未实现。
 2. 解析中的增量首屏（当前仍全量 ready 后才发布）、复杂 PPTX/DOCX round-trip 与真实 GB 正文压测记录。
 3. 最后一个等待者取消后的共享任务调度策略、SQL/IO 关闭宽限期硬超时、跨节点任务状态映射。
-4. 按 artifactKey 的版本目录、整包缓存配额与清理入口；部分离线提示（当前含外链媒体直接
-   拒绝完整离线）。断点续传（ETag/Content-Range 严格校验）已落地并在真机验收，见末尾检查点；
-   续传部分文件已有 512 MiB 上界，但这不是整包配额管理。
+4. 部分离线的在线回源（未缓存资源在线取、断网显示尚未离线就绪）、Android 本地读租约，
+   以及真机容量/弱网/长时稳定性压测。按 artifactKey 的版本目录、整包缓存配额与清理入口、
+   部分离线的显式标记已落地并在真机验收，见末尾检查点；断点续传（ETag/Content-Range
+   严格校验）与其 512 MiB 部分文件上界也已落地。当前部分离线只标记并提示，不含在线回源，
+   不能宣称完整离线闭环。
 5. 备份清单与恢复演练：现有 `parse_artifact_archives` 墓碑只覆盖已归档 key 的高水位与计数，
    尚需 MySQL/原文件/产物目录的一致备份清单，恢复后依赖对账与 generation 文件存在性校验
    （未通过不得标记 ready），以及损坏 generation 的更广泛故障注入和并发修复压测。
@@ -158,10 +160,12 @@ generation 落盘后，由后台扫描只删除顶层两个文件，并在 healt
 slices、blocks 与 parsedChunks 的持有，使用正文双遍流读取、最多 200 块一批落盘；辅助 parts、元数据索引和单个
 XML 块仍在内存，单块上限 64 Mi UTF-16 字符。产物仍构建完后整体发布，尚无解析中的增量首屏。独立进程隔离及采样式
 RSS 限制已验证；Linux cgroup 内核硬限制、真实 GB 正文压测、500 阅读会话压测未完成。
-Android 真机（AGS5-W00 / Android 12 / API 31）已通过 24 项 instrumentation 与真实解析服务端
-联调，覆盖 PPTX 离线包完整性、取消、空间检查与断点续传；尚未做真机容量、弱网或长时稳定性
-压测，也不代表 PDF/DOCX 移动端闭环。nginx 配置已补路由，但本机没有 nginx 可执行文件，
-尚未执行 `nginx -t`。
+Android 真机（AGS5-W00 / Android 12 / API 31）已通过 33 项 instrumentation 与真实解析服务端
+联调，覆盖 PPTX 离线包完整性、取消、空间检查、断点续传、按 artifactKey 的版本目录、
+缓存配额/清理入口与部分离线标记；旧 flat 包仍按原布局兼容。部分离线的在线回源、
+Android 本地读租约（回收旧版本时正在回放的旧包需重新打开）、真机容量/弱网/长时稳定性
+压测仍未完成，也不代表 PDF/DOCX 移动端闭环。nginx 配置已补路由，但本机没有 nginx
+可执行文件，尚未执行 `nginx -t`。
 
 
 ### Web 有界缓存后续实现约束
@@ -952,5 +956,42 @@ Android 续传/版本目录与目标硬件压测仍未完成，整体目标保�
   `/tmp/genoffice-android-resume-realdevice-final.log`、
   `/tmp/genoffice-android-realdevice-backend-final.log`。真机验证的是 PPTX 离线链路，
   不代表真机容量、弱网、长时稳定性或 Android 其它格式闭环；版本目录、整包缓存配额与
-  清理入口、部分离线提示仍未完成，整体方案保持未完成。
+  清理入口、部分离线提示由下一检查点取代，整体方案保持未完成。
+
+
+### Android 版本目录、缓存配额、清理入口与部分离线标记（2026-11-09）
+
+- **版本目录与当前包引用**：新增 `BundleCache`。现代清单的包发布到
+  `files/bundle-cache/<fileId>/versions/<artifactKey>/`，`current.json` 以临时文件 +
+  rename 原子写入，记录 fileId/artifactKey/offlineScope/externalCount/sizeBytes/publishedAt。
+  `commit` 只在目录路径与清单 identity、scope、resources 完全一致且封印存在时登记指针，
+  不重复哈希大媒体；`resolve` 严格校验指针，损坏时返回明确不可用的目录而不静默降级旧代。
+  旧 `files/bundles/<fileId>/` flat 包继续按原布局读取，无权威清单的旧服务端仍写 flat
+  且不更新指针。更新失败保留旧指针与旧版本目录。
+- **整包配额**：默认 2 GiB，可构造注入。单包超过配额在下载资源前拒绝；发布成功后按最老优先
+  回收非当前版本、staging、resume 与中断备份，当前版本和旧 flat 包永不自动删除；符号链接
+  不递归、不计字节。设置页显示缓存大小/历史版本数，新增「清理离线缓存（保留当前包）」按钮，
+  下载中不可触发。`BundleResume.at` 让续传部分文件也归入配额统计。
+- **部分离线**：含外部媒体不再直接拒绝，本地声明资源仍逐文件校验并发布；manifest 写入
+  `offlineScope=partial` 与 `externalResources`，`BundleStore.validate` 要求 scope 与外链数量
+  一致，不能伪装完整离线。设置页、下载完成提示与打开离线包时都明确说明外链需联网；
+  在线回源取未缓存资源仍未实现。
+- **下载流程接线**：`BundleDownloader` 拆为「先取并完整校验权威清单 → 按 artifactKey 选
+  版本目标与独立 staging/resume → 下载 → seal → publish → commit → trim」，失败时只清理
+  staging，不触碰已发布包；修复 intent 传入 fileId 后状态仍按旧偏好显示的 UI 缺陷。
+- 新增 9 项 instrumentation 用例：两代共存与指针切换、更新失败保留旧指针、配额回收只删
+  非当前版本、清理入口删除 staging/resume/备份但保留当前、超配额下载前拒绝、部分离线
+  指针与完成文案、损坏指针与不匹配 commit 不激活、旧 flat 包兼容、真实 Activity 清理按钮。
+  Fixture 支持可变 artifactKey 与 fileId。
+- 验证：华为 AGS5-W00 真机全套 **33 项 / 27.3 秒通过**（日志
+  `/tmp/genoffice-android-versioned-cache-tests.log`）；首次运行暴露版本父目录未创建导致
+  `renameTo` 失败（6 项错误），补齐 `mkdirs` 后复跑通过；UI 用例暴露 intent 状态未刷新，
+  修正后复跑通过。`test:android-backend` 真实解析服务端联调通过，
+  `versionedCache=true / cleanupBytes=4096 / cacheBytes=962057 / resumeVerified=true /
+  rangeResponses=1 / sourceParses=1`（`/tmp/genoffice-android-versioned-backend-final.log`）。
+  viewer typecheck、脚本 ESLint、`git diff --check` 通过。
+- 边界：Android 本地没有读租约，回收旧版本时正在回放的旧包需重新打开；配额是应用私有
+  字节预算，不是跨应用磁盘预留；在线回源、真机容量/弱网/长时稳定性、PDF/DOCX 移动闭环
+  仍未完成。服务端软水位跨进程一致性、压力下主动撤下 ready、备份恢复演练、
+  解析中增量首屏及目标环境压测继续保留，整体方案保持未完成。
 

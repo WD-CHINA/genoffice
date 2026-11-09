@@ -417,13 +417,18 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
             BundleStore store = new BundleStore(root, "test-file");
             try { new BundleDownloader(fixture.url(), "", "test-file", store, text -> {}).run(); fail("unsupported schema must fail"); }
             catch (IOException expected) { assertTrue(expected.getMessage().contains("版本")); }
-            fixture.bundleVersion = 1;
-            fixture.externalBundleMedia = true;
-            try { new BundleDownloader(fixture.url(), "", "test-file", store, text -> {}).run(); fail("external media cannot promise full offline"); }
-            catch (IOException expected) { assertTrue(expected.getMessage().contains("外部媒体")); }
             assertEquals(0, fixture.bundleResourceRequests);
             assertEquals(0, fixture.layoutRequests);
             assertFalse(store.isComplete());
+            // External resources no longer abort the download, but the bundle must say "partial".
+            fixture.bundleVersion = 1;
+            fixture.externalBundleMedia = true;
+            new BundleDownloader(fixture.url(), "", "test-file", store, text -> {}).run();
+            assertTrue("local resources are still complete", store.isComplete());
+            assertFalse("external references must never claim full offline", store.claimsFullOffline());
+            assertEquals(1, store.externalResourceCount());
+            assertEquals("partial", store.manifest().getString("offlineScope"));
+            assertEquals(0, fixture.layoutRequests);
         }
     }
 
@@ -551,6 +556,264 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
         assertFalse(resume.dir().exists());
     }
 
+    // ── versioned cache, quota and partial offline ────────────────────────────
+
+    private static String key(char value) {
+        char[] chars = new char[64];
+        Arrays.fill(chars, value);
+        return new String(chars);
+    }
+
+    private void downloadVersioned(Fixture fixture, BundleCache cache, String artifactKey,
+                                   java.util.List<String> stages) throws Exception {
+        fixture.bundleKey = artifactKey;
+        BundleDownloader.Listener listener = stages == null ? text -> {} : stages::add;
+        new BundleDownloader(fixture.url(), "", "test-file", cache.resolve("test-file"),
+                listener, File::getUsableSpace, cache).run();
+    }
+
+    public void testVersionedPublishKeepsGenerationsAndSwitchesCurrent() throws Exception {
+        try (Fixture fixture = new Fixture(4096)) {
+            fixture.declaredBundle = true;
+            BundleCache cache = new BundleCache(root, 64L * 1024 * 1024);
+            downloadVersioned(fixture, cache, key('a'), null);
+            org.json.JSONObject first = cache.current("test-file");
+            assertNotNull(first);
+            assertEquals(key('a'), first.getString("artifactKey"));
+            assertEquals("complete", first.getString("offlineScope"));
+            BundleStore active = cache.resolve("test-file");
+            active.verifyIntegrity();
+            assertTrue(active.dir().getPath().contains("versions"));
+            downloadVersioned(fixture, cache, key('b'), null);
+            assertEquals(key('b'), cache.current("test-file").getString("artifactKey"));
+            assertEquals(2, cache.versionCount());
+            cache.versionStore("test-file", key('a')).verifyIntegrity();
+            cache.resolve("test-file").verifyIntegrity();
+            assertFalse(cache.stagingStore("test-file").dir().exists());
+        }
+    }
+
+    public void testFailedUpdateKeepsCurrentPointerAndOldVersion() throws Exception {
+        try (Fixture fixture = new Fixture(4096)) {
+            fixture.declaredBundle = true;
+            BundleCache cache = new BundleCache(root, 64L * 1024 * 1024);
+            downloadVersioned(fixture, cache, key('a'), null);
+            long publishedAt = cache.current("test-file").getLong("publishedAt");
+            fixture.bundleKey = key('b');
+            fixture.corruptBundleBytes = true;
+            try {
+                new BundleDownloader(fixture.url(), "", "test-file", cache.resolve("test-file"),
+                        text -> {}, File::getUsableSpace, cache).run();
+                fail("corrupt resource must fail the update");
+            } catch (IOException expected) {
+                assertTrue(expected.getMessage().contains("SHA-256"));
+            }
+            assertEquals(key('a'), cache.current("test-file").getString("artifactKey"));
+            assertEquals(publishedAt, cache.current("test-file").getLong("publishedAt"));
+            cache.resolve("test-file").verifyIntegrity();
+            assertFalse(cache.versionStore("test-file", key('b')).isSealed());
+            assertFalse(cache.stagingStore("test-file").dir().exists());
+        }
+    }
+
+    public void testCacheQuotaEvictsOldestInactiveVersionsButKeepsCurrent() throws Exception {
+        try (Fixture fixture = new Fixture(4096)) {
+            fixture.declaredBundle = true;
+            BundleCache cache = new BundleCache(root, 64L * 1024 * 1024);
+            downloadVersioned(fixture, cache, key('a'), null);
+            downloadVersioned(fixture, cache, key('b'), null);
+            downloadVersioned(fixture, cache, key('c'), null);
+            assertEquals(3, cache.versionCount());
+            long before = cache.usedBytes();
+            BundleCache constrained = new BundleCache(root, before / 3);
+            long freed = constrained.trim("test-file", key('c'));
+            assertTrue("inactive versions must be reclaimed", freed > 0);
+            assertEquals(1, constrained.versionCount());
+            assertEquals(key('c'), constrained.current("test-file").getString("artifactKey"));
+            constrained.resolve("test-file").verifyIntegrity();
+            assertTrue(constrained.usedBytes() < before);
+        }
+    }
+
+    public void testClearInactiveRemovesStagingResumeAndBackupButKeepsCurrent() throws Exception {
+        try (Fixture fixture = new Fixture(4096)) {
+            fixture.declaredBundle = true;
+            BundleCache cache = new BundleCache(root, 64L * 1024 * 1024);
+            downloadVersioned(fixture, cache, key('a'), null);
+            File staging = cache.stagingStore("test-file").dir();
+            assertTrue(staging.isDirectory() || staging.mkdirs());
+            try (FileOutputStream out = new FileOutputStream(new File(staging, "leftover.bin"))) {
+                out.write(new byte[8192]);
+            }
+            File backup = new File(cache.container("test-file"), "staging.previous");
+            assertTrue(backup.isDirectory() || backup.mkdirs());
+            try (FileOutputStream out = new FileOutputStream(new File(backup, "old.bin"))) {
+                out.write(new byte[4096]);
+            }
+            BundleResume resume = cache.resume("test-file");
+            assertTrue(resume.dir().isDirectory() || resume.dir().mkdirs());
+            try (FileOutputStream out = new FileOutputStream(resume.part(BundleResume.key("parts/a.bin")))) {
+                out.write(new byte[4096]);
+            }
+            resume.record("parts/a.bin", 8192, BundleResume.sha256Hex(new byte[8192]), key('a'));
+            long freed = cache.clearInactive("test-file", key('a'));
+            assertTrue("temporary state must be reclaimed", freed >= 8192);
+            assertFalse(staging.exists());
+            assertFalse(backup.exists());
+            assertFalse(resume.dir().exists());
+            assertEquals(key('a'), cache.current("test-file").getString("artifactKey"));
+            cache.resolve("test-file").verifyIntegrity();
+        }
+    }
+
+    public void testCacheQuotaRejectsOversizedDeclaredBundleBeforeDownloading() throws Exception {
+        try (Fixture fixture = new Fixture(4096)) {
+            fixture.declaredBundle = true;
+            BundleCache cache = new BundleCache(root, 1024);
+            fixture.bundleKey = key('a');
+            try {
+                new BundleDownloader(fixture.url(), "", "test-file", cache.resolve("test-file"),
+                        text -> {}, File::getUsableSpace, cache).run();
+                fail("a bundle larger than the cache quota must be rejected");
+            } catch (IOException expected) {
+                assertTrue(expected.getMessage().contains("配额"));
+            }
+            assertNull(cache.current("test-file"));
+            assertEquals(0, fixture.bundleResourceRequests);
+            assertFalse(cache.stagingStore("test-file").dir().exists());
+            assertTrue(fixture.deleted);
+        }
+    }
+
+    public void testPartialOfflinePointerAndCompletionMessageAreExplicit() throws Exception {
+        try (Fixture fixture = new Fixture(4096)) {
+            fixture.declaredBundle = true;
+            fixture.externalBundleMedia = true;
+            BundleCache cache = new BundleCache(root, 64L * 1024 * 1024);
+            java.util.List<String> stages = new java.util.ArrayList<>();
+            downloadVersioned(fixture, cache, key('a'), stages);
+            BundleStore store = cache.resolve("test-file");
+            store.verifyIntegrity();
+            assertFalse(store.claimsFullOffline());
+            assertEquals(1, store.externalResourceCount());
+            org.json.JSONObject pointer = cache.current("test-file");
+            assertEquals("partial", pointer.getString("offlineScope"));
+            assertEquals(1, pointer.getInt("externalCount"));
+            assertTrue(stages.toString().contains("部分离线"));
+            assertTrue(stages.toString().contains("未保证完整离线"));
+        }
+    }
+
+    public void testCorruptPointerAndMismatchedCommitNeverActivateABundle() throws Exception {
+        try (Fixture fixture = new Fixture(4096)) {
+            fixture.declaredBundle = true;
+            BundleCache cache = new BundleCache(root, 64L * 1024 * 1024);
+            downloadVersioned(fixture, cache, key('a'), null);
+            File pointer = new File(cache.container("test-file"), "current.json");
+            org.json.JSONObject record = new org.json.JSONObject(readText(pointer));
+            record.put("fileId", "another-file");
+            try (FileOutputStream out = new FileOutputStream(pointer)) {
+                out.write(record.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            assertNull(cache.current("test-file"));
+            assertFalse("corrupt pointer must not silently activate an older bundle",
+                    cache.resolve("test-file").isSealed());
+            BundleStore published = cache.versionStore("test-file", key('a'));
+            published.verifyIntegrity();
+            try {
+                cache.commit("test-file", cache.stagingStore("test-file"), published.manifest());
+                fail("staging must not become the current bundle");
+            } catch (IOException expected) { }
+            org.json.JSONObject bad = new org.json.JSONObject(published.manifest().toString())
+                    .put("artifactKey", "not-a-key");
+            try {
+                cache.commit("test-file", published, bad);
+                fail("invalid artifactKey must be rejected");
+            } catch (IllegalArgumentException expected) { }
+        }
+    }
+
+    public void testLegacyFlatBundleStillResolvesWithoutVersionPointer() throws Exception {
+        try (Fixture fixture = new Fixture(4096)) {
+            BundleStore flat = new BundleStore(root, "test-file");
+            new BundleDownloader(fixture.url(), "", "test-file", flat, text -> {}).run();
+            BundleCache cache = new BundleCache(root, 64L * 1024 * 1024);
+            BundleStore resolved = cache.resolve("test-file");
+            resolved.verifyIntegrity();
+            assertEquals(flat.dir().getAbsolutePath(), resolved.dir().getAbsolutePath());
+            assertTrue(resolved.claimsFullOffline());
+            assertNull(cache.current("test-file"));
+            assertEquals(0, cache.versionCount());
+        }
+    }
+
+    public void testCleanupButtonRemovesInactiveVersionsButKeepsCurrent() throws Exception {
+        android.content.Context context = getInstrumentation().getTargetContext();
+        android.content.SharedPreferences preferences = context.getSharedPreferences("viewer-demo", 0);
+        String oldServer = preferences.getString("server", null);
+        String oldFile = preferences.getString("fileId", null);
+        String oldToken = preferences.getString("token", null);
+        String fileId = "instrumentation-cache-" + java.util.UUID.randomUUID();
+        BundleCache cache = new BundleCache(context.getFilesDir());
+        try (Fixture fixture = new Fixture(4096)) {
+            fixture.declaredBundle = true;
+            fixture.declaredFileId = fileId;
+            for (char value : new char[] { 'a', 'b' }) {
+                fixture.bundleKey = key(value);
+                new BundleDownloader(fixture.url(), "", fileId, cache.resolve(fileId), text -> {},
+                        File::getUsableSpace, cache).run();
+            }
+            assertEquals(2, cache.versionCount());
+            android.content.Intent intent = new android.content.Intent(context, MainActivity.class)
+                    .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    .putExtra("server", fixture.url()).putExtra("fileId", fileId);
+            MainActivity activity = (MainActivity) getInstrumentation().startActivitySync(intent);
+            try {
+                awaitContains(activity, "历史版本 2 个");
+                getInstrumentation().runOnMainSync(() -> {
+                    android.widget.Button button = (android.widget.Button) findText(
+                            activity.findViewById(android.R.id.content), "清理离线缓存（保留当前包）");
+                    assertNotNull(button);
+                    assertTrue(button.isEnabled());
+                    button.performClick();
+                });
+                awaitContains(activity, "历史版本 1 个");
+                assertEquals(1, cache.versionCount());
+                assertEquals(key('b'), cache.current(fileId).getString("artifactKey"));
+                cache.resolve(fileId).verifyIntegrity();
+            } finally {
+                getInstrumentation().runOnMainSync(activity::finish);
+                getInstrumentation().waitForIdleSync();
+            }
+        } finally {
+            preferences.edit().putString("server", oldServer).putString("fileId", oldFile)
+                    .putString("token", oldToken).commit();
+            delete(new File(new File(context.getFilesDir(), "bundle-cache"), BundleStore.safe(fileId)));
+        }
+    }
+
+    private void awaitContains(MainActivity activity, String fragment) {
+        java.util.concurrent.atomic.AtomicBoolean found = new java.util.concurrent.atomic.AtomicBoolean();
+        long deadline = android.os.SystemClock.uptimeMillis() + 5000;
+        while (!found.get() && android.os.SystemClock.uptimeMillis() < deadline) {
+            getInstrumentation().runOnMainSync(() -> found.set(
+                    containsText(activity.findViewById(android.R.id.content), fragment)));
+            android.os.SystemClock.sleep(10);
+        }
+        assertTrue("UI must show: " + fragment, found.get());
+    }
+
+    private static boolean containsText(android.view.View view, String fragment) {
+        if (view instanceof android.widget.TextView
+                && ((android.widget.TextView) view).getText().toString().contains(fragment)) return true;
+        if (view instanceof android.view.ViewGroup) {
+            android.view.ViewGroup group = (android.view.ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++)
+                if (containsText(group.getChildAt(index), fragment)) return true;
+        }
+        return false;
+    }
+
     private static String readText(File file) throws IOException {
         try (FileInputStream in = new FileInputStream(file)) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -574,6 +837,8 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
         final java.util.concurrent.CountDownLatch partStarted = new java.util.concurrent.CountDownLatch(1);
         volatile boolean declaredBundle, corruptBundleBytes, externalBundleMedia;
         volatile boolean ignoreRange, wrongEtag, wrongContentRange;
+        volatile String bundleKey = key('a');
+        volatile String declaredFileId = "test-file";
         volatile int abortAfterBytes, rangeRequests, fullRequests;
         volatile String lastRange, lastIfRange;
         volatile int bundleStatus = 200, bundleVersion = 1;
@@ -700,11 +965,10 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
                     resources.put(new org.json.JSONObject().put("path", path).put("size", data.length).put("sha256", hash.toString()).put("href", "http://untrusted.example/resource"));
                     total += data.length;
                 }
-                char[] key = new char[64]; Arrays.fill(key, 'a');
                 org.json.JSONArray external = new org.json.JSONArray();
                 if (externalBundleMedia) external.put("https://example.test/external.mp4");
                 return new org.json.JSONObject().put("bundleSchemaVersion", bundleVersion).put("modelSchemaVersion", 2)
-                    .put("fileId", "test-file").put("artifactKey", new String(key)).put("modelArtifactKey", new String(key)).put("format", "pptx")
+                    .put("fileId", declaredFileId).put("artifactKey", bundleKey).put("modelArtifactKey", bundleKey).put("format", "pptx")
                     .put("parserVersion", "fixture").put("parserFingerprint", "fixture-build").put("inventory", "ppt-media-v1")
                     .put("unitCount", 1).put("fonts", new org.json.JSONArray()).put("totalBytes", total)
                     .put("resources", resources).put("externalResources", external).toString();

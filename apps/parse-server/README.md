@@ -292,3 +292,49 @@ hard OS/SQL IO timeouts or enable generation-backed parsing/HTTP readers.
 ### Staged catalog HTTP backend
 
 `createParseServer({ mysql, dataDir, artifactBackend: 'catalog' })` opts the primary model session paths into SQL build coordination, immutable generations and view read leases. The default remains `local`. Real MySQL HTTP tests cover cold 202, cached 201 and restored PPTX rendering without another source parse. This is a staged integration option: auxiliary offline bundles still use the local artifact layout; legacy migration, corrupt-ready repair, cross-node task state and global resource admission are incomplete. It does not yet authorize shared-root multi-instance production deployment. There is no CLI environment switch at this checkpoint.
+
+
+## Consistent backup manifest and restore drill
+
+Persistence is not a backup. `src/backup-manifest.ts` writes a versioned, SHA-256
+sealed manifest covering the durable subset of a deployment: MySQL directory rows
+(`parse_files`, `library_entries`, `parse_artifacts` with ready pointers and
+identity-derived keys, jobs, retirements, flat archives and high-water tombstones),
+content-addressed source bytes, `meta/*.json`, `library.json`, and every canonical
+`g-N` generation's `manifest.json` / `units.bin`. Sessions, read leases, storage
+reservations, staging and scratch are intentionally excluded as transient state.
+
+The catalog is read inside `START TRANSACTION WITH CONSISTENT SNAPSHOT`; files are
+hashed while that transaction is open; a **separate** pool connection then re-reads
+the critical rows (a repeatable-read snapshot cannot observe later commits). If
+they changed, no manifest is produced and the operator must retry. The manifest
+digest is `sha256(canonicalJson(...))`, so tampering or truncation is rejected.
+
+Recovery is a drill, not just a file copy:
+
+```sh
+# snapshot (read-only); MYSQL_DATABASE selects the MySQL catalog, otherwise filesystem mode
+PARSE_SERVER_DATA_DIR=/srv/parse MYSQL_DATABASE=genoffice \
+  npm run backup:check -w @genoffice/parse-server -- snapshot \
+  --data-dir=/srv/parse --out=/backup/genoffice-manifest.json
+
+# verify AFTER restoring the files and database; exits non-zero unless ok && readyAllowed
+PARSE_SERVER_DATA_DIR=/srv/parse MYSQL_DATABASE=genoffice \
+  npm run backup:check -w @genoffice/parse-server -- verify \
+  --data-dir=/srv/parse --in=/backup/genoffice-manifest.json --deep
+```
+
+`verify` reconciles source rows, saved history, references, tombstones and
+artifact dependencies; proves each file's size and hash; and opens every live
+ready pointer through `ArtifactGenerations.open` (plus per-frame gzip/sha256 with
+`--deep`). Missing sources or lost history are fatal. A generation that cannot be
+proven is withdrawn with the catalog's compare-and-clear `invalidateReady`, so the
+service rebuilds it instead of advertising unverified bytes. `--no-invalidate`
+is a read-only drill and fails closed if a bad ready pointer remains.
+
+`createParseServer({ ..., restoreCheck: { manifest, deep } })` runs the same drill
+before listening and refuses to start on source/catalog loss or an unverified
+ready pointer; `/v1/health` exposes `restore` with the result and counts. This is
+a same-directory restore verification, not an off-site backup/copy mechanism:
+scheduling, retention, off-host media and a full cross-machine recovery exercise
+still belong to deployment.

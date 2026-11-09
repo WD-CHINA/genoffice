@@ -125,9 +125,10 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
    部分离线的显式标记已落地并在真机验收，见末尾检查点；断点续传（ETag/Content-Range
    严格校验）与其 512 MiB 部分文件上界也已落地。当前部分离线只标记并提示，不含在线回源，
    不能宣称完整离线闭环。
-5. 备份清单与恢复演练：现有 `parse_artifact_archives` 墓碑只覆盖已归档 key 的高水位与计数，
-   尚需 MySQL/原文件/产物目录的一致备份清单，恢复后依赖对账与 generation 文件存在性校验
-   （未通过不得标记 ready），以及损坏 generation 的更广泛故障注入和并发修复压测。
+5. 备份清单与恢复演练已落地并在隔离真实 MySQL 验收（见末尾检查点）：一致快照、依赖对账、
+   generation 文件存在性/哈希/逐帧校验、不合格 ready 按确切代次撤下，以及启动门禁。仍需
+   损坏 generation 的更广泛故障注入与并发修复压测、真实备份介质上的异地恢复（当前演练在
+   同一目录上做「还原后校验」而非跨机器恢复）、以及备份调度与保留策略。
 
 **依赖部署 / 目标环境，不能由本机代码改动代替**
 
@@ -155,8 +156,12 @@ generation 落盘后，由后台扫描只删除顶层两个文件，并在 healt
 且磁盘已清空的 key，压缩退休/flat 明细后登记高水位墓碑并删除目录行，从而解除原文件外键引用。墓碑永久
 保留，重新 claim 从高水位继续编号，不会复用 g-1。压力路径不同步删除 flat（避免 SQL 授权与准入锁嵌套），
 只报告待清理字节并催促后台扫描，故 flat 释放仍受默认 1 小时宽限。正常 ready 产物仍保守保护原文件，
-压力下主动撤下 ready 回收可重建产物、软水位回收的跨进程一致性与一致备份清单仍待实施；
-显式保存的原文件不会被自动删除。客户端仍保留小 DOCX 全量本地渲染。DOCX 已移除全量 document.xml、
+压力下主动撤下 ready 回收可重建产物、软水位回收的跨进程一致性仍待实施；显式保存的原文件
+不会被自动删除。一致备份清单与恢复演练已作为独立运维入口落地：`backup-manifest.ts` 在 MySQL
+一致性快照事务内读取持久目录行（含墓碑与 identity 派生校验）、逐文件流式哈希，并用独立连接
+复核关键行；`verifyRestore` 做依赖对账、原文件/索引硬校验、generation 存在性与逐帧校验，
+不合格 ready 由 `invalidateReady` 撤下后才允许启动。当前演练校验的是同一 dataDir 上的还原结果，
+不是跨机器/跨介质恢复，也不自动执行备份拷贝；清单不含会话、读租约、staging 与共享预留等临时态。客户端仍保留小 DOCX 全量本地渲染。DOCX 已移除全量 document.xml、
 slices、blocks 与 parsedChunks 的持有，使用正文双遍流读取、最多 200 块一批落盘；辅助 parts、元数据索引和单个
 XML 块仍在内存，单块上限 64 Mi UTF-16 字符。产物仍构建完后整体发布，尚无解析中的增量首屏。独立进程隔离及采样式
 RSS 限制已验证；Linux cgroup 内核硬限制、真实 GB 正文压测、500 阅读会话压测未完成。
@@ -992,6 +997,47 @@ Android 续传/版本目录与目标硬件压测仍未完成，整体目标保�
   viewer typecheck、脚本 ESLint、`git diff --check` 通过。
 - 边界：Android 本地没有读租约，回收旧版本时正在回放的旧包需重新打开；配额是应用私有
   字节预算，不是跨应用磁盘预留；在线回源、真机容量/弱网/长时稳定性、PDF/DOCX 移动闭环
-  仍未完成。服务端软水位跨进程一致性、压力下主动撤下 ready、备份恢复演练、
-  解析中增量首屏及目标环境压测继续保留，整体方案保持未完成。
+  仍未完成。服务端软水位跨进程一致性、压力下主动撤下 ready、解析中增量首屏及目标环境
+  压测继续保留；备份恢复演练由下一检查点取代，整体方案保持未完成。
+
+
+### 一致备份清单与恢复演练（2026-11-09）
+
+- **清单**：新增 `src/backup-manifest.ts`。在 `START TRANSACTION WITH CONSISTENT SNAPSHOT`
+  内读取持久目录行（`parse_files` / `library_entries` / `parse_artifacts` 含 ready 指针与
+  identity 派生 key / jobs / retirements / flat archives / 高水位墓碑 / pending sessions 的
+  源文件引用），事务保持打开时逐文件流式哈希 `files/`、源索引、历史索引与所有规范
+  `g-N` 的 `manifest.json`/`units.bin`；随后用**独立连接**复核关键行（同一快照事务内重读
+  看不到并发提交），变化即拒绝产出清单并要求重试。清单以 `canonicalJson` + SHA-256 封印，
+  不含会话、读租约、共享预留、staging 与 scratch 等临时态。file 模式用 `meta/*.json` +
+  `library.json` 作为等价索引。
+- **恢复演练**：`verifyRestore` 校验清单自身结构与摘要，重读活动目录行做依赖对账
+  （源索引、保存历史、引用、目录行/高水位不倒退、墓碑不丢失、派生明细父行、identity）；
+  交叉核对「目录行 ↔ 文件清单」，catalogued source 必须确有源字节与索引且哈希一致，
+  避免一个本就不一致的系统被备份成「通过」的清单；逐文件校验 size/SHA-256，原文件与索引
+  失败为硬错误，generation 文件失败只记为可重建告警。每个活动 ready 指针都经
+  `ArtifactGenerations.open` 校验路径、manifest SHA、字节与 unitCount，`--deep` 再逐帧
+  gunzip/sha256（可发现「清单是在帧损坏后生成」的全文件哈希盲点）。不合格指针由
+  `invalidateReady` 按确切代次撤下，撤下后再读目录确认同代次未被并发重新广告；
+  只读演练或撤下失败即 `ok=false / readyAllowed=false`，未通过检查的结果不得宣称 ready。
+  恢复后新增的文件与新产物记为告警，后者现场哈希并比对注册摘要。
+- **接线**：`createParseServer` 增加 `restoreCheck`，在监听端口前用短连接池执行演练，
+  硬失败拒绝启动，已撤下的可重建产物按正常链路重建；`/v1/health` 暴露 `restore`
+  （ok/readyAllowed/digest/counts/blockedReady/errors/warnings）。新增
+  `scripts/backup-check.mts` 与 `npm run backup:check`，提供 `snapshot` / `verify`
+  运维子命令（`--deep`、`--no-invalidate`），`verify` 未通过返回非零退出码。
+- 验证：组件测试 `backup-manifest.test.ts` **17 项通过**（含并发拒绝、清单篡改、源/索引
+  缺失与同长度篡改、目录行↔文件清单交叉校验、可重建产物告警、注入 catalog 快照下的
+  撤下/只读失败闭合/并发清空/撤下后被重新广告、深校验帧损坏、依赖与墓碑丢失）；
+  真实 MySQL `backup-manifest-mysql.test.ts` **6 项通过**（一致清单 + 启动门禁 health、
+  撤下坏 ready 后 v2 重建到 g-2 并读 unit、源丢失拒绝启动、并发写入者使快照失败、
+  墓碑丢失与摘要篡改、深校验撤下真实 SQL ready）。CLI 在临时 file 模式目录实测
+  `snapshot`→`verify` 均返回 ok/readyAllowed=true。带隔离真实 MySQL 的**串行全量
+  309 项 / 45 文件通过、无跳过**（`/tmp/genoffice-backup-mysql-full-final.log`）；
+  不带 MySQL 的串行全量 **258 项通过 / 51 项可选 MySQL 跳过 / 0 失败**
+  （`/tmp/genoffice-backup-local-full-final.log`）。类型检查、改动文件 ESLint 与
+  `git diff --check` 通过。
+- 边界：演练校验的是同一 dataDir 上的还原结果，不自动复制/上传备份，也不覆盖跨机器恢复、
+  备份介质、调度与保留策略；清单生成需要短暂的目录行静默窗口，构建/上传并发变化会要求重试。
+  损坏 generation 的更广泛故障注入与并发修复压测仍未完成。整体方案保持未完成。
 

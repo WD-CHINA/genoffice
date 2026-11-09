@@ -46,6 +46,7 @@ import {
 } from './telemetry'
 import { ContentStore, UploadTooLargeError, type StoredFile } from './storage'
 import { MysqlDatabase, type MysqlConfig } from './mysql'
+import { verifyRestore, type BackupManifest, type RestoreReport } from './backup-manifest'
 
 export interface ParseServerOptions {
   /** Directory for the content-addressed store, metadata and temp uploads. */
@@ -106,6 +107,12 @@ export interface ParseServerOptions {
   generationRetainCount?: number
   /** MySQL persistence for file metadata and sessions; unset = filesystem only. */
   mysql?: MysqlConfig
+  /**
+   * Recovery drill gate. Before listening, prove a backup manifest's source
+   * bytes, catalog rows and every ready pointer. Lost sources/history abort
+   * startup; unverifiable ready generations are withdrawn for rebuild.
+   */
+  restoreCheck?: { manifest: BackupManifest; deep?: boolean; invalidate?: boolean }
 }
 
 export interface ParseServer {
@@ -170,6 +177,7 @@ interface Context {
   gcIntervalMs: number
   chunkRoot: string
   db?: MysqlDatabase
+  restoreReport?: RestoreReport
 }
 
 const CONTENT_TYPES: Record<DocFormat, string> = {
@@ -1562,6 +1570,16 @@ async function route(
         coordination: ctx.sharedAdmission ? 'shared' : 'instance',
       },
       maintenance: { gcTasks: ctx.gcFlights.size, generationCollection: ctx.generationCollection?.snapshot },
+      restore: ctx.restoreReport ? {
+        checkedAt: ctx.restoreReport.checkedAt,
+        ok: ctx.restoreReport.ok,
+        readyAllowed: ctx.restoreReport.readyAllowed,
+        digest: ctx.restoreReport.digest,
+        counts: ctx.restoreReport.counts,
+        blockedReady: ctx.restoreReport.blockedReady.length,
+        errors: ctx.restoreReport.errors.length,
+        warnings: ctx.restoreReport.warnings.length,
+      } : null,
       childProcesses: isolatedMemory(ctx.processGroup),
       processLimits: {
         rssMb: ctx.workerRssMb,
@@ -1732,6 +1750,25 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
   if (options.storageAdmission !== undefined && !['instance', 'shared'].includes(options.storageAdmission))
     throw new Error('invalid storage admission mode')
   validateRuntimeOptions(options)
+  let restoreReport: RestoreReport | undefined
+  if (options.restoreCheck) {
+    // Gate before any listener, queue or GC is started. Use a short-lived pool
+    // so a failed drill cannot leak database connections or partially started
+    // maintenance work. Source/history loss is fatal; rebuildable generations
+    // are withdrawn by compare-and-clear and rebuilt on the next request.
+    const gateDb = options.mysql ? new MysqlDatabase(options.mysql) : undefined
+    try {
+      restoreReport = await verifyRestore({
+        dataDir: options.dataDir,
+        manifest: options.restoreCheck.manifest,
+        db: gateDb,
+        deep: options.restoreCheck.deep,
+        invalidate: options.restoreCheck.invalidate,
+      })
+    } finally { await gateDb?.close() }
+    if (!restoreReport.ok || !restoreReport.readyAllowed)
+      throw new Error(`restore check failed: ${restoreReport.errors.map((issue) => issue.code).join(',') || 'unverified ready pointers'}`)
+  }
   const limits = resolveLimits(options.limits)
   const db = options.mysql ? new MysqlDatabase(options.mysql) : undefined
   const store = new ContentStore(options.dataDir, db)
@@ -1836,6 +1873,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     gcIntervalMs: options.gcIntervalMs ?? 10 * 60_000,
     chunkRoot: join(options.dataDir, 'chunks'),
     ...(db ? { db, artifactCatalog: new MysqlArtifactCatalog(db) } : {}),
+    ...(restoreReport ? { restoreReport } : {}),
   }
   if (ctx.artifactCatalog) {
     const disk = new ArtifactGenerations(options.dataDir, undefined, storageBudget)

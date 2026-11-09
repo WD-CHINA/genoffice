@@ -25,6 +25,11 @@ export interface ArtifactReadLease {
   owner: string
   leaseUntil: number
 }
+export interface ReadyEvictionCandidate {
+  artifact: ReadyArtifact
+  fileId: string
+  lastAccessAt: number
+}
 export interface ArtifactArchive {
   key: string
   fileId: string
@@ -102,6 +107,76 @@ export class MysqlArtifactCatalog {
         WHERE artifact_key = ?`, [jobs[0]?.state === 'building' ? 'building' : 'failed', expected.key])
       await connection.execute(`UPDATE parse_jobs SET state = 'failed', error_code = 'artifact_corrupt'
         WHERE artifact_key = ? AND state <> 'building'`, [expected.key])
+      return true
+    })
+  }
+
+  /**
+   * Read-only enumeration for capacity-pressure reclaim. The SQL fences live
+   * readers and builders; callers must still prove the source bytes exist on
+   * disk and repeat every fence under the artifact row lock before withdrawing.
+   * `state`/`last_access_at` use the same DB clock as publication and pinning.
+   */
+  async listReadyEvictionCandidates(limit: number, idleMs: number): Promise<ReadyEvictionCandidate[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 4096 ||
+        !Number.isSafeInteger(idleMs) || idleMs < 0 || idleMs > 2_147_483_647)
+      throw new Error('invalid ready eviction query')
+    const [rows] = await this.db.pool.execute<RowDataPacket[]>(`
+      SELECT a.* FROM parse_artifacts a
+      CROSS JOIN (SELECT CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 AS UNSIGNED) AS now_ms) clock
+      WHERE a.ready_generation IS NOT NULL AND a.state <> 'building'
+        AND a.last_access_at + ? <= clock.now_ms
+        AND NOT EXISTS (SELECT 1 FROM parse_artifact_read_leases r
+          WHERE r.artifact_key = a.artifact_key AND r.lease_until > clock.now_ms)
+        AND NOT EXISTS (SELECT 1 FROM parse_jobs j
+          WHERE j.artifact_key = a.artifact_key AND j.state = 'building'
+            AND j.lease_until > clock.now_ms)
+        AND EXISTS (SELECT 1 FROM parse_files f WHERE f.file_id = a.file_id)
+      ORDER BY a.last_access_at ASC, a.artifact_key ASC LIMIT ?`, [idleMs, limit])
+    const candidates: ReadyEvictionCandidate[] = []
+    for (const row of rows) {
+      const artifact = this.ready(row)
+      if (!artifact || typeof row.file_id !== 'string' || row.file_id.length === 0)
+        throw new Error('invalid ready eviction row')
+      candidates.push({ artifact, fileId: row.file_id,
+        lastAccessAt: integer(row.last_access_at) })
+    }
+    return candidates
+  }
+
+  /**
+   * Compare-and-clear a *healthy* ready pointer so its generation bytes can be
+   * rebuilt from the retained source. Unlike invalidateReady this is not
+   * corruption: no job is marked failed, the generation counter is preserved,
+   * and the source file is never deleted. Any live reader or builder vetoes it.
+   */
+  withdrawReady(expected: Readonly<ReadyArtifact>, reason = 'artifact_reclaimed'): Promise<boolean> {
+    if (expected.storagePath !== artifactGenerationPath(expected.key, expected.generation) ||
+        !HASH.test(expected.manifestSha256) || !/^[a-z0-9_]{1,64}$/.test(reason))
+      throw new Error('invalid artifact withdrawal')
+    return this.transaction(async (connection) => {
+      const [rows] = await connection.execute<RowDataPacket[]>(
+        'SELECT * FROM parse_artifacts WHERE artifact_key = ? FOR UPDATE', [expected.key])
+      const row = rows[0]
+      if (!row || row.ready_generation === null) return false
+      const current = this.ready(row)
+      if (!current || current.generation !== expected.generation ||
+          current.manifestSha256 !== expected.manifestSha256 ||
+          current.storagePath !== expected.storagePath ||
+          current.bytes !== expected.bytes || current.unitCount !== expected.unitCount) return false
+      // Publication, readers and collection share this lock order.
+      const [jobs] = await connection.execute<RowDataPacket[]>(
+        'SELECT state, lease_until FROM parse_jobs WHERE artifact_key = ? FOR UPDATE', [expected.key])
+      const now = await this.now(connection)
+      if (jobs.some((job) => job.state === 'building' && integer(job.lease_until ?? 0) > now))
+        return false
+      const [readers] = await connection.execute<RowDataPacket[]>(
+        'SELECT lease_until FROM parse_artifact_read_leases WHERE artifact_key = ? FOR UPDATE',
+        [expected.key])
+      if (readers.some((reader) => integer(reader.lease_until) > now)) return false
+      await connection.execute(`UPDATE parse_artifacts SET state = 'reclaimed',
+        ready_generation = NULL, storage_path = NULL, manifest_sha256 = NULL,
+        bytes = 0, unit_count = 0, error_code = ? WHERE artifact_key = ?`, [reason, expected.key])
       return true
     })
   }

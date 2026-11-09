@@ -16,6 +16,7 @@ import { MysqlArtifactCatalog } from './artifact-catalog'
 import { ArtifactGenerations } from './artifact-generations'
 import { ArtifactGenerationSweeper } from './artifact-generation-sweeper'
 import { ArtifactCollectionService } from './artifact-collection-service'
+import { ArtifactReadyEviction } from './artifact-ready-eviction'
 import { parserFingerprint } from './parser-fingerprint'
 import { refreshDocxResourceUrls } from './resource-urls'
 import { randomUUID } from 'node:crypto'
@@ -105,6 +106,10 @@ export interface ParseServerOptions {
   gcIntervalMs?: number
   /** Generation directories kept per artifact key before high-water archiving. */
   generationRetainCount?: number
+  /** Only ready generations idle for this long may be withdrawn under pressure. */
+  readyEvictionIdleMs?: number
+  /** Maximum ready generations examined per pressure pass. */
+  readyEvictionBatchSize?: number
   /** MySQL persistence for file metadata and sessions; unset = filesystem only. */
   mysql?: MysqlConfig
   /**
@@ -142,6 +147,7 @@ interface Context {
   artifactCatalog?: MysqlArtifactCatalog
   sharedArtifacts?: { catalog: MysqlArtifactCatalog; disk: ArtifactGenerations; coordinator: ArtifactCoordinator }
   generationCollection?: ArtifactCollectionService
+  readyEviction?: ArtifactReadyEviction
   storageBudget: StorageBudget
   sharedAdmission?: SqlStorageReservations
   library: LibraryStore
@@ -1138,6 +1144,9 @@ async function reclaimArtifacts(ctx: Context, bytes: number): Promise<void> {
   // happens here: the SQL retirement/archive transaction must never run under
   // the shared storage admission GET_LOCK.
   ctx.generationCollection?.request(true)
+  // Only a hint: catalog withdraw/retirement transactions run later in the
+  // background sweeper, never while this GET_LOCK is held.
+  if (bytes > 0) ctx.readyEviction?.request(bytes)
   if (bytes <= 0) return
   let freed = 0
   for (const candidate of await ctx.artifacts.evictionCandidates(
@@ -1570,6 +1579,7 @@ async function route(
         coordination: ctx.sharedAdmission ? 'shared' : 'instance',
       },
       maintenance: { gcTasks: ctx.gcFlights.size, generationCollection: ctx.generationCollection?.snapshot },
+      readyEviction: ctx.readyEviction?.snapshot ?? null,
       restore: ctx.restoreReport ? {
         checkedAt: ctx.restoreReport.checkedAt,
         ok: ctx.restoreReport.ok,
@@ -1877,6 +1887,16 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
   }
   if (ctx.artifactCatalog) {
     const disk = new ArtifactGenerations(options.dataDir, undefined, storageBudget)
+    const readyEviction = new ArtifactReadyEviction(ctx.artifactCatalog, disk, {
+      idleMs: options.readyEvictionIdleMs ?? 60_000,
+      batchSize: options.readyEvictionBatchSize ?? 16,
+      sourceExists: async (fileId) => !!(await store.pathOf(fileId)),
+      onReclaimed: (result) => {
+        if (result.withdrawn > 0) logEvent('info', 'ready_generations_reclaimed',
+          { withdrawn: result.withdrawn, collected: result.collected, bytes: result.bytesFreed })
+      },
+    })
+    ctx.readyEviction = readyEviction
     if (options.artifactBackend === 'catalog') {
       ctx.sharedArtifacts = { catalog: ctx.artifactCatalog, disk,
         coordinator: new ArtifactCoordinator(ctx.artifactCatalog, disk) }
@@ -1897,6 +1917,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
           artifacts.stats.archivedKeys++
           artifacts.stats.archivedRetiredRows += archive.retiredGenerations
         },
+        readyEviction,
       },
     ), { intervalMs: ctx.gcIntervalMs })
   }
@@ -1979,6 +2000,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     ctx.closing = true
     clearInterval(sweeper)
     clearInterval(gcTimer)
+    ctx.readyEviction?.close()
     const collectionClosed = ctx.generationCollection?.close()
     const coordinatorClosed = ctx.sharedArtifacts?.coordinator.close()
     for (const entry of ctx.sessions.values()) closeSession(entry.session, ctx)

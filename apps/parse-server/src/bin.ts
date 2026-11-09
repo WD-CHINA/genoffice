@@ -40,6 +40,8 @@ const server = await createParseServer({
   storageHighWaterPercent: numberEnv('PARSE_SERVER_STORAGE_HIGH_WATER_PERCENT', 2, 100),
   storageLowWaterPercent: numberEnv('PARSE_SERVER_STORAGE_LOW_WATER_PERCENT', 1, 99),
   gcIntervalMs: numberEnv('PARSE_SERVER_GC_INTERVAL_MS'),
+  readyEvictionIdleMs: numberEnv('PARSE_SERVER_READY_EVICTION_IDLE_MS'),
+  readyEvictionBatchSize: numberEnv('PARSE_SERVER_READY_EVICTION_BATCH_SIZE'),
   mysql: mysqlConfigFromEnv() ?? undefined,
 })
 

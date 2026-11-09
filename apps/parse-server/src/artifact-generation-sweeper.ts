@@ -3,6 +3,7 @@ import { basename, join } from 'node:path'
 import type { ArtifactArchive, MysqlArtifactCatalog } from './artifact-catalog'
 import { syncArtifactDirectory } from './artifact-store'
 import type { ArtifactGenerations } from './artifact-generations'
+import type { ArtifactReadyEviction } from './artifact-ready-eviction'
 
 interface Cursor {
   key: string
@@ -25,6 +26,9 @@ export interface GenerationSweepResult {
   archivedKeys: number
   retiredRows: number
   highWaterArchived: number
+  readyWithdrawn: number
+  readyCollected: number
+  readyBytes: number
   errors: Array<Cursor & { code: string }>
   stopped: boolean
 }
@@ -37,6 +41,12 @@ export interface SweeperOptions {
   retainGenerations?: number
   archiveCatalog?: Pick<MysqlArtifactCatalog, 'archiveArtifact'>
   onArchived?: (archive: ArtifactArchive) => void
+  /**
+   * Capacity-pressure withdrawal of rebuildable ready generations. Runs first
+   * in each pass, outside the storage admission lock, before old-generation
+   * discovery; its result is folded into this sweep's report.
+   */
+  readyEviction?: Pick<ArtifactReadyEviction, 'run'>
 }
 
 /** Bounded, resumable discovery; only catalog transactions authorize deletion. */
@@ -44,6 +54,7 @@ export class ArtifactGenerationSweeper {
   private readonly retainGenerations: number
   private readonly archiveCatalog?: Pick<MysqlArtifactCatalog, 'archiveArtifact'>
   private readonly onArchived?: (archive: ArtifactArchive) => void
+  private readonly readyEviction?: Pick<ArtifactReadyEviction, 'run'>
   private cursor?: Cursor
   private pending?: Promise<GenerationSweepResult>
   private stopped = false
@@ -60,6 +71,7 @@ export class ArtifactGenerationSweeper {
         this.retainGenerations > 64) throw new Error('invalid generation retention')
     this.archiveCatalog = options.archiveCatalog
     this.onArchived = options.onArchived
+    this.readyEviction = options.readyEviction
   }
 
   sweep(limit = 64, graceMs = 60 * 60_000, options: SweepOptions = {}): Promise<GenerationSweepResult> {
@@ -240,8 +252,24 @@ export class ArtifactGenerationSweeper {
     const result: GenerationSweepResult = { examined: 0, collected: 0, protected: 0,
       young: 0, failed: 0, hasMore: false, flatBytes: 0, flatCollected: 0,
       archivedKeys: 0, retiredRows: 0, highWaterArchived: 0,
+      readyWithdrawn: 0, readyCollected: 0, readyBytes: 0,
       errors: [], stopped: this.stopped }
     if (this.stopped) return result
+    if (this.readyEviction) {
+      try {
+        const reclaimed = await this.readyEviction.run()
+        result.readyWithdrawn = reclaimed.withdrawn
+        result.readyCollected = reclaimed.collected
+        result.readyBytes = reclaimed.bytesFreed
+        if (reclaimed.hasMore) result.hasMore = true
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code
+        result.failed++
+        result.errors.push({ key: 'ready-eviction', generation: 0,
+          code: typeof code === 'string' && /^[a-zA-Z0-9_]{1,64}$/.test(code)
+            ? code : 'ready_eviction_failed' })
+      }
+    }
     const cutoff = Date.now() - graceMs
     for await (const candidate of this.candidates(this.cursor)) {
       if (this.stopped) { result.stopped = true; return result }

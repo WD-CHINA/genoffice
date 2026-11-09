@@ -115,9 +115,11 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
 **仍可在代码层继续（本地可验证）**
 
 1. 跨进程软水位回收的一致性：共享预留账本已覆盖「尚未落盘字节」的准入、启动过期行对账与优雅关闭释放；
-   高水位触发的回收仍由单个实例扫描并裁决，多实例下重复扫描/回收仍待实施。flat 冗余字节只由 GC
-   报告并催促后台扫描，不在准入锁内做 SQL 授权。正常 ready 产物仍保护原文件，压力下主动撤下 ready
-   并回收可重建产物的策略尚未实现。
+   压力下主动撤下 ready 并回收可重建产物已落地（见末尾检查点），撤下候选本身来自共享 SQL 目录行，
+   compare-and-clear 与不可逆退役授权保证多实例并发只撤一次、只删一次。仍待实施的是**压力目标本身
+   的跨进程共享**：各实例的 `pressureTarget` 与待回收字节是进程内状态，多实例可能重复扫描或超额回收
+   （不影响正确性，但回收量不是全局精确目标）；flat 冗余字节仍只由 GC 报告并催促后台扫描，不在准入锁内
+   做 SQL 授权。正常容量下 ready 产物保留，显式保存的原文件永不被压力回收。
 2. 解析中的增量首屏（当前仍全量 ready 后才发布）、复杂 PPTX/DOCX round-trip 与真实 GB 正文压测记录。
 3. 最后一个等待者取消后的共享任务调度策略、SQL/IO 关闭宽限期硬超时、跨节点任务状态映射。
 4. 部分离线的在线回源（未缓存资源在线取、断网显示尚未离线就绪）、Android 本地读租约，
@@ -155,9 +157,13 @@ generation 落盘后，由后台扫描只删除顶层两个文件，并在 healt
 （默认每 key 4 代）与容量高水位只加速旧代候选，删除仍须 SQL 退役授权；目录行最终归档只针对已无 ready
 且磁盘已清空的 key，压缩退休/flat 明细后登记高水位墓碑并删除目录行，从而解除原文件外键引用。墓碑永久
 保留，重新 claim 从高水位继续编号，不会复用 g-1。压力路径不同步删除 flat（避免 SQL 授权与准入锁嵌套），
-只报告待清理字节并催促后台扫描，故 flat 释放仍受默认 1 小时宽限。正常 ready 产物仍保守保护原文件，
-压力下主动撤下 ready 回收可重建产物、软水位回收的跨进程一致性仍待实施；显式保存的原文件
-不会被自动删除。一致备份清单与恢复演练已作为独立运维入口落地：`backup-manifest.ts` 在 MySQL
+只报告待清理字节并催促后台扫描，故 flat 释放仍受默认 1 小时宽限。正常容量下 ready 产物保留；
+共享预算越过高水位时，后台扫描才按最久未访问顺序撤下可重建的 ready 指针并删除其 generation 字节
+（`withdrawReady` 按确切代次 compare-and-clear，事务内再次围栏活跃读租约/构建任务，
+再由不可逆退役授权删盘），准入锁内只登记压力目标并调度，绝不在 GET_LOCK 内跑 SQL；
+撤下还需原文件字节仍在（可重建）。显式保存的原文件、历史记录与 generation 高水位永不被压力回收，
+撤下后下次访问从原文件重建。跨实例的待回收字节目标仍是进程内状态，不保证全局精确回收量。
+一致备份清单与恢复演练已作为独立运维入口落地：`backup-manifest.ts` 在 MySQL
 一致性快照事务内读取持久目录行（含墓碑与 identity 派生校验）、逐文件流式哈希，并用独立连接
 复核关键行；`verifyRestore` 做依赖对账、原文件/索引硬校验、generation 存在性与逐帧校验，
 不合格 ready 由 `invalidateReady` 撤下后才允许启动。当前演练校验的是同一 dataDir 上的还原结果，
@@ -1040,4 +1046,45 @@ Android 续传/版本目录与目标硬件压测仍未完成，整体目标保�
 - 边界：演练校验的是同一 dataDir 上的还原结果，不自动复制/上传备份，也不覆盖跨机器恢复、
   备份介质、调度与保留策略；清单生成需要短暂的目录行静默窗口，构建/上传并发变化会要求重试。
   损坏 generation 的更广泛故障注入与并发修复压测仍未完成。整体方案保持未完成。
+
+### 压力下主动撤下 ready 并回收可重建产物（2026-11-09）
+
+- **两阶段压力路径**：`reclaimArtifacts` 位于 `StorageBudget` 的 `reclaim` 回调中，运行在共享
+  `GET_LOCK` 内。它只做两件事：`readyEviction.request(bytes)`（纯内存，取最大值合并并发压力
+  信号，绝不触 SQL）与 `generationCollection.request(true)`（只调度后台）。所有撤下/退役/删盘
+  SQL 都由后台 `ArtifactGenerationSweeper.sweep` 在锁外执行，沿用「flat 授权不在准入锁内」
+  的既有取舍；`sweep` 结果新增 `readyWithdrawn / readyCollected / readyBytes`。
+- **候选与围栏**：`MysqlArtifactCatalog.listReadyEvictionCandidates` 用 DB 时钟按
+  `last_access_at` 升序枚举 `ready_generation IS NOT NULL` 的行，SQL 内排除活跃读租约、有效
+  building 租约并确认 `parse_files` 行存在；`readyEvictionIdleMs` 默认 60 秒保护刚访问的产物，
+  `readyEvictionBatchSize` 默认 16 限定单轮。`ArtifactReadyEviction.run` 再用
+  `ContentStore.pathOf` 证明源字节仍在（可重建），才调用新增的 `withdrawReady`：事务内
+  `SELECT ... FOR UPDATE`、逐字段 compare-and-clear（generation/storagePath/manifestSha/
+  bytes/unitCount），锁序 artifact→job→readers，重复围栏活跃构建与任意活跃读租约；成功则置
+  `state='reclaimed' / error_code='artifact_reclaimed'`，清空 ready 指针但**保留 generation
+  高水位**，不污染 job、不删原文件、不触碰历史库。随后复用
+  `ArtifactGenerations.collect` 的不可逆 `retireGeneration` 授权删除 `g-N` 目录，只有删盘成功
+  才把字节计入已回收并递减待回收目标；退役被拒时只留孤儿目录给后续扫描。
+- **接线与观测**：`createParseServer` 装配 `ArtifactReadyEviction` 并注入 sweeper；
+  `/v1/health` 新增 `readyEviction`（pendingBytes/rounds/累计撤下与字节/lastResult）；
+  新增 `readyEvictionIdleMs`、`readyEvictionBatchSize` 两个 options 与
+  `PARSE_SERVER_READY_EVICTION_*` 环境变量，纳入 `validateRuntimeOptions`；关闭时先 `close()`
+  停止接收新压力目标。撤下后 `claim` 因 `ready_generation IS NULL` 必然返回 `acquired`，
+  generation 从高水位 +1 重建，历史记录继续显示原文件仍在。
+- 验证：组件测试 `artifact-ready-eviction.test.ts` **14 项通过**（`request` 不触任何 SQL、
+  无压力不扫描、LRU 与达标即停、源缺失/并发撤下失败/退役失败保护与待回收目标保留、
+  逐候选异常隔离、并发 run 合并、hasMore 只在满批有进展时、close、非法参数、
+  撤下结果并入 sweep 报告与异常不中断扫描）；真实 MySQL
+  `artifact-ready-eviction-mysql.test.ts` **6 项通过**（撤下+删盘+退休行+原文件/目录行保留+
+  g-2 重建、读租约与 idle 窗口与陈旧指针拒绝、building 围栏、两个独立连接池并发只撤一次、
+  源字节消失不撤、真实高水位 GC → 后台撤下 → 再次打开 v1 会话重建并读 unit）。
+  端到端用例插入 600 MiB 稀疏源字节并把水位设为 2%/1%，通过 `server.gc()` 触发真实压力回调。
+  串行全量：带隔离真实 MySQL **47 文件 / 329 项通过、无跳过**
+  （`/tmp/genoffice-ready-eviction-mysql-full.log`）；不带 MySQL
+  **272 通过 / 57 项可选跳过 / 0 失败**（`/tmp/genoffice-ready-eviction-local-full.log`）。
+  typecheck、改动文件 ESLint、`git diff --check` 通过。
+- 边界：压力目标仍是**进程内**状态，多实例可能重复扫描或超额回收，但共享 SQL 目录行 +
+  compare-and-clear + 不可逆退役保证并发正确性；软压力回收是异步的，硬上限/物理空间不足
+  仍在同一轮 fail-closed 返回 507，不因「将来可回收」放行写入；正常容量不撤任何 ready；
+  部分离线在线回源、解析中增量首屏、真实跨机器恢复与目标环境压测仍未完成。整体方案保持未完成。
 

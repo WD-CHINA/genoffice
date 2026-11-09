@@ -338,3 +338,31 @@ ready pointer; `/v1/health` exposes `restore` with the result and counts. This i
 a same-directory restore verification, not an off-site backup/copy mechanism:
 scheduling, retention, off-host media and a full cross-machine recovery exercise
 still belong to deployment.
+
+## Capacity pressure: withdrawing rebuildable ready generations
+
+When the shared storage budget crosses its high watermark, `reclaimArtifacts`
+only records a byte target and requests an urgent generation sweep. The
+withdraw/retire transactions never run under the storage admission `GET_LOCK`.
+In the background sweep `ArtifactReadyEviction` enumerates ready rows by
+`last_access_at` (`listReadyEvictionCandidates`) with SQL fences for live read
+leases, live builders and a surviving source row; it then proves the source bytes
+are still on disk, compare-and-clears the exact ready pointer with
+`withdrawReady` (state `reclaimed`, `error_code=artifact_reclaimed`), and deletes
+the generation via the existing irreversible `retireGeneration` authorisation.
+The source file, saved library history and the generation high-water mark are
+never touched; the next open re-parses into a new generation. Normal-capacity
+access withdraws nothing, and hard-cap exhaustion still fails closed with 507
+instead of waiting for asynchronous reclaim.
+
+Configure with `readyEvictionIdleMs` (default 60 s) and
+`readyEvictionBatchSize` (default 16), or
+`PARSE_SERVER_READY_EVICTION_IDLE_MS` / `PARSE_SERVER_READY_EVICTION_BATCH_SIZE`.
+`/v1/health` exposes `readyEviction` (pending bytes, rounds, cumulative counts,
+last result); the sweep report adds `readyWithdrawn`, `readyCollected` and
+`readyBytes`.
+
+Multiple instances race on the same SQL rows: compare-and-clear plus
+irreversible retirement make duplicate passes harmless, but the pressure target
+itself is per-process, so a shared fleet may over-reclaim. This is derived-cache
+eviction, not a source or library retention policy.

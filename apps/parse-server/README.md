@@ -363,9 +363,34 @@ last result); the sweep report adds `readyWithdrawn`, `readyCollected` and
 `readyBytes`.
 
 Multiple instances race on the same SQL rows: compare-and-clear plus
-irreversible retirement make duplicate passes harmless, but the pressure target
-itself is per-process, so a shared fleet may over-reclaim. This is derived-cache
+irreversible retirement make duplicate passes harmless. This is derived-cache
 eviction, not a source or library retention policy.
+
+## Fleet-wide pressure budget
+
+The pressure signal is still recorded in memory (`request()` runs inside the
+storage admission `GET_LOCK` and must never touch SQL), but the **amount the
+whole fleet may reclaim** is shared. `src/storage-pressure.ts` keeps one row per
+deployment in `parse_storage_pressure`: `register()` merges concurrent signals
+with `MAX` (never `SUM`), starts a numbered round after expiry, and returns the
+remaining budget. Before each withdrawal the background sweeper, outside the
+admission lock, issues a single conditional `UPDATE` that atomically pre-charges
+the generation's bytes against `target_bytes - reclaimed_bytes`. Only a
+successful delete keeps the charge; a lost compare-and-clear race, refused
+retirement, missing source or IO error refunds it. A crashed process can only
+leave an over-charge (fewer caches reclaimed), never an under-charge, so no
+claim leases, heartbeats or startup reconciliation are needed. A satisfied
+round gets the shorter cooldown expiry so persistent pressure is re-evaluated
+without waiting for the full round TTL. If the ledger cannot be read, the pass
+fails closed instead of falling back to unbounded per-instance reclamation; the
+hard limit still returns 507 in the same round.
+
+Configure with `pressureRoundMs` (default 5 min) and `pressureCooldownMs`
+(default 30 s), or `PARSE_SERVER_PRESSURE_ROUND_MS` /
+`PARSE_SERVER_PRESSURE_COOLDOWN_MS`. `/v1/health` exposes `sharedPressure`
+(round, target/reclaimed/remaining bytes, expiry). The per-instance 30-second
+soft-pressure backoff is still local jitter; `MAX` merging makes the global
+target independent of how many instances signalled.
 
 ## Incremental first frame while a build is running
 

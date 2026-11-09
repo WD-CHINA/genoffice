@@ -114,12 +114,13 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
 
 **仍可在代码层继续（本地可验证）**
 
-1. 跨进程软水位回收的一致性：共享预留账本已覆盖「尚未落盘字节」的准入、启动过期行对账与优雅关闭释放；
-   压力下主动撤下 ready 并回收可重建产物已落地（见末尾检查点），撤下候选本身来自共享 SQL 目录行，
-   compare-and-clear 与不可逆退役授权保证多实例并发只撤一次、只删一次。仍待实施的是**压力目标本身
-   的跨进程共享**：各实例的 `pressureTarget` 与待回收字节是进程内状态，多实例可能重复扫描或超额回收
-   （不影响正确性，但回收量不是全局精确目标）；flat 冗余字节仍只由 GC 报告并催促后台扫描，不在准入锁内
-   做 SQL 授权。正常容量下 ready 产物保留，显式保存的原文件永不被压力回收。
+1. 跨进程软水位回收的一致性已落地（见末尾检查点）：共享预留账本覆盖「尚未落盘字节」的准入、启动过期行
+   对账与优雅关闭释放；压力下主动撤下 ready 并回收可重建产物、以及**压力目标本身的跨进程共享**均已接入。
+   共享压力账本用单行 SQL 轮次 + 原子逐笔预扣，把整个实例群的回收总量约束为 `MAX(pressureTarget)`，
+   撤下候选仍来自共享 SQL 目录行，compare-and-clear 与不可逆退役授权保证并发只撤一次、只删一次。
+   仍待：软压力 30 秒退避仍是各实例进程内抖动（MAX 合并后不影响总量，但多实例登记时点不同步）、
+   flat 冗余字节仍只由 GC 报告并催促后台扫描，不在准入锁内做 SQL 授权。正常容量下 ready 产物保留，
+   显式保存的原文件永不被压力回收。
 2. 解析中的增量首屏已落地（见末尾检查点）：构建中已提交单元可预览、未生成单元返回明确
    `pending` 与重试建议、只有完整 manifest 才能判定离线完成，完整产物仍全部校验后整体发布。
    仍待复杂 PPTX/DOCX round-trip、真实 GB 正文压测记录，以及预览快照的跨节点共享
@@ -165,7 +166,10 @@ generation 落盘后，由后台扫描只删除顶层两个文件，并在 healt
 （`withdrawReady` 按确切代次 compare-and-clear，事务内再次围栏活跃读租约/构建任务，
 再由不可逆退役授权删盘），准入锁内只登记压力目标并调度，绝不在 GET_LOCK 内跑 SQL；
 撤下还需原文件字节仍在（可重建）。显式保存的原文件、历史记录与 generation 高水位永不被压力回收，
-撤下后下次访问从原文件重建。跨实例的待回收字节目标仍是进程内状态，不保证全局精确回收量。
+撤下后下次访问从原文件重建。各实例的待回收字节不再独立计算：后台扫描在锁外把压力信号登记到
+单行共享轮次账本 `parse_storage_pressure`，逐候选原子预扣，只有删盘成功才计入已回收字节，
+失败归还额度，因此整个实例群每轮回收量 `<= MAX(pressureTarget)`；账本不可用时不回退到进程内
+无界回收（fail-closed），硬上限仍同轮 507。轮次满足后走短冷却过期，可重新评估持续压力。
 一致备份清单与恢复演练已作为独立运维入口落地：`backup-manifest.ts` 在 MySQL
 一致性快照事务内读取持久目录行（含墓碑与 identity 派生校验）、逐文件流式哈希，并用独立连接
 复核关键行；`verifyRestore` 做依赖对账、原文件/索引硬校验、generation 存在性与逐帧校验，
@@ -1087,7 +1091,8 @@ Android 续传/版本目录与目标硬件压测仍未完成，整体目标保�
   （`/tmp/genoffice-ready-eviction-mysql-full.log`）；不带 MySQL
   **272 通过 / 57 项可选跳过 / 0 失败**（`/tmp/genoffice-ready-eviction-local-full.log`）。
   typecheck、改动文件 ESLint、`git diff --check` 通过。
-- 边界：压力目标仍是**进程内**状态，多实例可能重复扫描或超额回收，但共享 SQL 目录行 +
+- 边界：本检查点的压力目标仍是**进程内**状态（该限制已由后续「跨实例共享压力目标」检查点解决），
+  当时多实例可能重复扫描或超额回收，但共享 SQL 目录行 +
   compare-and-clear + 不可逆退役保证并发正确性；软压力回收是异步的，硬上限/物理空间不足
   仍在同一轮 fail-closed 返回 507，不因「将来可回收」放行写入；正常容量不撤任何 ready；
   部分离线在线回源、解析中增量首屏的跨节点共享、真实跨机器恢复与目标环境压测仍未完成。
@@ -1135,4 +1140,46 @@ Android 续传/版本目录与目标硬件压测仍未完成，整体目标保�
   Web 首屏预览未经 `measureWidths`，字体度量在 ready 后才完全校正；DOCX 首屏与 `layout`
   服务端排版路径仍沿用既有 ready 后加载，在线回源、部分离线闭环与目标环境压测仍未完成。
   整体方案保持未完成。
+
+### 跨实例共享压力目标（2026-11-09）
+
+- **新增 `src/storage-pressure.ts`**：`SqlPressureLedger` 用单行 SQL 表
+  `parse_storage_pressure(scope, round, target_bytes, reclaimed_bytes, expires_at_ms,
+  updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数据库名摘要，互不串账）。
+  `register()` 在短事务内先做 no-op upsert 保证行存在，再 `SELECT ... FOR UPDATE`：
+  多实例并发登记用 `MAX` 合并（各实例算的是同一全局水位差，累加会放大 N 倍），过期则递增
+  `round` 并重置计数，旧 round 的迟到 charge 一律作废。`reserve()` 是一条条件
+  `UPDATE ... WHERE round=? AND expires_at_ms>now AND reclaimed_bytes+? <= target_bytes`，
+  按候选逐笔原子预扣；`refund()` 在删盘失败时归还；`state()` 供 health 只读查看。
+  轮次满足后 `reserve` 把过期时间缩短到 cooldown，持续压力无需等满 TTL 即可重新评估。
+- **两阶段约束保持**：`request()` 仍在共享准入 `GET_LOCK` 内且零 SQL；登记、预扣、归还
+  与所有 catalog 撤下/退役/删盘 SQL 都只在后台 sweeper 锁外执行。逐笔预扣使
+  `SUM(已回收) <= MAX(目标)` 全局成立，不需要 claim 行、租约、心跳或启动对账：
+  进程崩溃只会留下「多算、少回收」，绝不会少算导致超发。候选大于剩余共享额度时跳过而非
+  中断整轮扫描；账本读取失败时 **fail-closed**（不回退到进程内无界回收），硬上限仍同轮 507。
+- **接线与观测**：`createParseServer` 在有 MySQL 时装配并 `init()` 账本；`ArtifactReadyEviction`
+  新增可选 `ledger`，结果增 `shared{round,targetBytes,reclaimedBytes}` 与 `sharedExhausted`，
+  共享额度耗尽时清空本地 hint 且 `hasMore=false`。`/v1/health` 新增 `sharedPressure`。
+  配置 `pressureRoundMs`（默认 5 分钟）/`pressureCooldownMs`（默认 30 秒）与
+  `PARSE_SERVER_PRESSURE_ROUND_MS` / `PARSE_SERVER_PRESSURE_COOLDOWN_MS` 纳入启动校验
+  （cooldown 不得大于 round）。
+- 验证：组件测试 `tests/storage-pressure.test.ts` **12 项通过**（MAX 合并、并发原子预扣
+  不超额、refund 与旧/过期 round 拒绝、满足后短冷却过期、双实例竞态只按全局目标撤一次、
+  大目标分工不超额、账本失败闭合、逐笔归还、满足后停止扫描、无账本保留原行为、配置校验）；
+  隔离真实 MySQL `tests/storage-pressure-mysql.test.ts` **4 项通过**（两个独立连接池
+  MAX 合并/并发领取/归还/冷却轮转，以及**3 个真实 generation + 两个实例端到端**：
+  目标只够一个代次时全局只撤一次，`/v1/health.sharedPressure` 与账本一致）。
+  压力相关定向回归 6 文件 / **47 项通过**（含既有 600 MiB 稀疏源高水位 GC → 撤下 →
+  重新打开重建并读 unit）。串行全量回归：带隔离真实 MySQL **51 文件 / 358 项全通过、
+  无跳过**（`/tmp/genoffice-pressure-mysql-final2.log`）；不带 MySQL **42 文件通过 /
+  9 文件跳过、295 项通过 / 63 项可选跳过 / 0 失败**
+  （`/tmp/genoffice-pressure-local-final2.log`）。typecheck、改动文件 ESLint、
+  `git diff --check` 通过。期间把既有 `artifact-preview.test.ts` 损坏修复用例的
+  2 秒轮询上限放宽到 10 秒（有界），避免高负载机器上把「仍在 building」误判为失败；
+  单独与全量复跑均通过，非本检查点语义改动。
+- 边界：软压力 30 秒退避仍是各实例进程内抖动（MAX 合并后不影响全局总量）；
+  flat 冗余字节仍只由 GC 报告并催促后台扫描，不在准入锁内做 SQL 授权；预扣按目录行
+  `bytes` 记账，与磁盘实际释放字节可能有小幅差异；账本是单实例群共享预算，不是跨机房
+  配额协同。跨节点任务状态映射与预览快照共享、最后一个等待者取消、解析产物跨机器恢复、
+  复杂 PPTX/DOCX round-trip 与目标环境压测仍未完成。整体方案保持未完成。
 

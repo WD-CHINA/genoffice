@@ -2,6 +2,7 @@ import { ArtifactCoordinator } from './artifact-coordinator'
 import { ArtifactReadHandle } from './artifact-read-handle'
 import { StorageBudget } from './storage-budget'
 import { SqlStorageReservations } from './storage-reservations'
+import { SqlPressureLedger } from './storage-pressure'
 import { statfs } from 'node:fs/promises'
 import { PendingSessionStore, type PendingSession } from './pending-session-store'
 import { artifactKey } from './artifact-store'
@@ -111,6 +112,10 @@ export interface ParseServerOptions {
   readyEvictionIdleMs?: number
   /** Maximum ready generations examined per pressure pass. */
   readyEvictionBatchSize?: number
+  /** Lifetime of one fleet-wide pressure round; a new round starts after expiry. */
+  pressureRoundMs?: number
+  /** Shorter expiry applied once a shared pressure round is satisfied. */
+  pressureCooldownMs?: number
   /** First-frame preview units retained per in-flight build (in-process only). */
   previewMaxUnits?: number
   /** Retention for a completed preview snapshot; failed builds are dropped at once. */
@@ -156,6 +161,7 @@ interface Context {
   previews: PreviewRegistry
   storageBudget: StorageBudget
   sharedAdmission?: SqlStorageReservations
+  sharedPressure?: SqlPressureLedger
   library: LibraryStore
   files: FileLifecycle
   parseQueue: ParseQueue
@@ -1694,6 +1700,7 @@ async function route(
         incrementalPreview: ctx.previews.stats(),
       },
       readyEviction: ctx.readyEviction?.snapshot ?? null,
+      sharedPressure: (await ctx.sharedPressure?.state()) ?? null,
       restore: ctx.restoreReport ? {
         checkedAt: ctx.restoreReport.checkedAt,
         ok: ctx.restoreReport.ok,
@@ -1913,6 +1920,14 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     const reclaimed = await sharedAdmission.reconcile()
     if (reclaimed > 0) logEvent('info', 'storage_admission_reconciled', { reclaimed })
   }
+  // The pressure ledger needs MySQL but not the admission GET_LOCK: every call
+  // happens later in the background sweeper. A fleet of catalog instances then
+  // shares one reclaim budget instead of each reclaiming the full deficit.
+  const sharedPressure = db ? new SqlPressureLedger(db, {
+    ...(options.pressureRoundMs === undefined ? {} : { roundMs: options.pressureRoundMs }),
+    ...(options.pressureCooldownMs === undefined ? {} : { cooldownMs: options.pressureCooldownMs }),
+  }) : undefined
+  if (sharedPressure) await sharedPressure.init()
   const library = new LibraryStore(options.dataDir, db)
   await library.init()
   const sessionTtlMs = options.sessionTtlMs ?? 15 * 60_000
@@ -2005,6 +2020,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     gcIntervalMs: options.gcIntervalMs ?? 10 * 60_000,
     chunkRoot: join(options.dataDir, 'chunks'),
     ...(db ? { db, artifactCatalog: new MysqlArtifactCatalog(db) } : {}),
+    ...(sharedPressure ? { sharedPressure } : {}),
     ...(restoreReport ? { restoreReport } : {}),
   }
   if (ctx.artifactCatalog) {
@@ -2013,6 +2029,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
       idleMs: options.readyEvictionIdleMs ?? 60_000,
       batchSize: options.readyEvictionBatchSize ?? 16,
       sourceExists: async (fileId) => !!(await store.pathOf(fileId)),
+      ...(ctx.sharedPressure ? { ledger: ctx.sharedPressure } : {}),
       onReclaimed: (result) => {
         if (result.withdrawn > 0) logEvent('info', 'ready_generations_reclaimed',
           { withdrawn: result.withdrawn, collected: result.collected, bytes: result.bytesFreed })

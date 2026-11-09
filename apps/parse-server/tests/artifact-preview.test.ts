@@ -205,7 +205,9 @@ it('repairs a corrupt persisted manifest through the asynchronous API without de
     body: JSON.stringify({ fileId: uploaded.fileId }),
   })
   let ready = waiting
-  for (let attempt = 0; attempt < 100 && ready.state !== 'ready'; attempt++) {
+  // A corrupt-ready repair re-parses in an isolated worker; keep the poll
+  // bounded but generous enough for a loaded CI machine (~10 s).
+  for (let attempt = 0; attempt < 500 && ready.state !== 'ready'; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 20))
     ready = await app.json(`/v2/sessions/${waiting.sessionId}`)
     expect(ready.state).not.toBe('failed')

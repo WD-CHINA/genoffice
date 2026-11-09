@@ -88,6 +88,8 @@ try {
   await writeFile(report, output)
   assert.match(output, /INSTRUMENTATION_RESULT: result=ok/)
   assert.match(output, /INSTRUMENTATION_RESULT: sourceVerified=true/)
+  assert.match(output, /INSTRUMENTATION_RESULT: resumeVerified=true/)
+  assert.match(output, /INSTRUMENTATION_RESULT: rangeResponses=[1-9]/)
   const health = (await (
     await fetch(parser.url + '/v1/health', { headers: { Authorization: `Bearer ${token}` } })
   ).json()) as {
@@ -105,6 +107,7 @@ try {
       realBackend: true,
       sourceHashesVerified: true,
       cachedSecondDownload: true,
+      realBackendRangeResume: true,
       sourceParses: health.artifacts.sourceParsesStarted,
       report,
     }),

@@ -1,6 +1,6 @@
 # 解析优化实施进度
 
-更新：2026-11-07。对应方案：`parse-persistence-optimization.zh-CN.md`。整体目标仍在进行；磁盘持久化已接入实际预览，历史库保存/读取/移除已接入，生产任务与运维尚未完成。
+更新：2026-11-09。对应方案：`parse-persistence-optimization.zh-CN.md`。整体目标仍在进行；磁盘持久化已接入实际预览，历史库保存/读取/移除已接入，生产任务与运维尚未完成。
 
 ## 已落地
 
@@ -120,8 +120,9 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
    并回收可重建产物的策略尚未实现。
 2. 解析中的增量首屏（当前仍全量 ready 后才发布）、复杂 PPTX/DOCX round-trip 与真实 GB 正文压测记录。
 3. 最后一个等待者取消后的共享任务调度策略、SQL/IO 关闭宽限期硬超时、跨节点任务状态映射。
-4. Android 续传（ETag/Content-Range 严格校验）、按 artifactKey 的版本目录、缓存配额与清理入口；
-   部分离线提示（当前含外链媒体直接拒绝完整离线）。
+4. 按 artifactKey 的版本目录、整包缓存配额与清理入口；部分离线提示（当前含外链媒体直接
+   拒绝完整离线）。断点续传（ETag/Content-Range 严格校验）已落地并在真机验收，见末尾检查点；
+   续传部分文件已有 512 MiB 上界，但这不是整包配额管理。
 5. 备份清单与恢复演练：现有 `parse_artifact_archives` 墓碑只覆盖已归档 key 的高水位与计数，
    尚需 MySQL/原文件/产物目录的一致备份清单，恢复后依赖对账与 generation 文件存在性校验
    （未通过不得标记 ready），以及损坏 generation 的更广泛故障注入和并发修复压测。
@@ -131,7 +132,8 @@ P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心�
 6. Linux 委派 cgroup v2 上验证内核 OOM 与进程组清理；8 核 16 GiB 上 2 冷解析 + 20 排队 + 50/500 会话的
    p50/p95、RSS 峰值、CPU、磁盘吞吐和目标延迟基线。
 7. 真实 MySQL 多写入者共享目录、nginx 路由 `nginx -t`、生产容量/配额/备份位置、灰度开关与回滚演练。
-8. Android 真机、Windows 内存采样、PDF/DOCX 移动预览闭环。
+8. Windows 内存采样、PDF/DOCX 移动预览闭环；Android 真机 instrument 与真实服务端的 PPTX
+   离线链路已验收（见末尾检查点），真机容量、弱网与长时压测仍未完成。
 
 ## 当前限制
 
@@ -155,8 +157,11 @@ generation 落盘后，由后台扫描只删除顶层两个文件，并在 healt
 显式保存的原文件不会被自动删除。客户端仍保留小 DOCX 全量本地渲染。DOCX 已移除全量 document.xml、
 slices、blocks 与 parsedChunks 的持有，使用正文双遍流读取、最多 200 块一批落盘；辅助 parts、元数据索引和单个
 XML 块仍在内存，单块上限 64 Mi UTF-16 字符。产物仍构建完后整体发布，尚无解析中的增量首屏。独立进程隔离及采样式
-RSS 限制已验证；Linux cgroup 内核硬限制、真实 GB 正文压测、500 阅读会话压测及 Android 真机未完成。
-nginx 配置已补路由，但本机没有 nginx 可执行文件，尚未执行 `nginx -t`。
+RSS 限制已验证；Linux cgroup 内核硬限制、真实 GB 正文压测、500 阅读会话压测未完成。
+Android 真机（AGS5-W00 / Android 12 / API 31）已通过 24 项 instrumentation 与真实解析服务端
+联调，覆盖 PPTX 离线包完整性、取消、空间检查与断点续传；尚未做真机容量、弱网或长时稳定性
+压测，也不代表 PDF/DOCX 移动端闭环。nginx 配置已补路由，但本机没有 nginx 可执行文件，
+尚未执行 `nginx -t`。
 
 
 ### Web 有界缓存后续实现约束
@@ -916,5 +921,36 @@ Android 续传/版本目录与目标硬件压测仍未完成，整体目标保�
 
 高水位归档与目录最终清理解决的是「旧代次无限堆积」和「目录行永久钉住原文件」；
 软水位回收的跨进程一致性、压力下主动回收可重建产物、备份清单与恢复演练、解析中增量首屏、
-最后一个等待者取消、Android 续传/版本目录以及目标硬件压测仍未完成，整体目标保持未完成。
+最后一个等待者取消、Android 版本目录/整包配额以及目标硬件压测仍未完成，整体目标保持未完成。
+本节由后续「Android 断点续传与真机验收」检查点部分取代。
+
+
+### Android 断点续传与真机验收（2026-11-09）
+
+- 新增 `BundleResume`：应用私有 `bundles/<fileId>.resume/` 保存跨下载运行的部分文件与
+  身份记录（path/size/sha256/artifactKey）；四者与当前权威清单完全一致才复用，按最老优先
+  裁剪、上限 512 MiB，发布成功后清空。staging「失败即整体清理」的既有语义不变。
+- `BundleDownloader` 在权威清单路径改用 `If-Range: "<sha256>"` + `Range: bytes=<offset>-`：
+  `206` 要求 ETag 与清单一致、`Content-Range` 精确为 `bytes <offset>-<size-1>/<size>` 且
+  Content-Length 等于剩余字节；`200` 丢弃部分文件从头下；`416` 仅在 `bytes */<size>` 且已收满
+  时视为完成；其余失败闭合。摘要覆盖已有前缀加新字节，最终仍校验完整文件 SHA-256。
+  兼容旧服务端（无清单）与模型/字体旧流程保持 staging `.tmp`，不续传；整包空间预检仍按
+  清单总量执行，续传节省传输量与时间，不降低首次空间要求。
+- 服务端既有约束由真机联调确认：`openFilePart` 只对 STORE ZIP part 返回 `206`，DEFLATE 媒体
+  经 inflate 流式返回、Range 回退整包 `200`；客户端按 `200` 规则重下，不拼接错误字节。
+  首次探针只统计「是否发出 Range」，会漏判这一退化；收紧为统计通过严格校验的 `206` 响应后
+  才暴露该约束，探针现已同时覆盖两条路径。
+- 华为 AGS5-W00 真机（Android 12 / API 31 / arm64-v8a，77 GiB 可用）验证：改前基线
+  `BundleDownloaderTest` 19 项 / 32.5 秒通过；改后新增 5 项共 **24 项 / 26.7 秒通过**；
+  `test:android-backend` 真实解析服务端联调返回 `ok / sourceHashesVerified /
+  cachedSecondDownload / realBackendRangeResume`，`sourceParses=1`，instrumentation 报告
+  `resumeVerified=true / rangeResponses=1 / resumedPrefixBytes=163840`，服务端日志对 STORE
+  媒体记录 `206`、对 DEFLATE 媒体记录 `200`。viewer typecheck 通过、66 项单测通过，
+  脚本 ESLint 与 `git diff --check` 通过。Gradle 需用 JDK 17（默认 GraalVM 21 的 jlink
+  会令 AGP 8.10.1 的 `androidJdkImage` 变换失败）。
+- 日志：`/tmp/genoffice-android-realdevice-baseline.log`、
+  `/tmp/genoffice-android-resume-realdevice-final.log`、
+  `/tmp/genoffice-android-realdevice-backend-final.log`。真机验证的是 PPTX 离线链路，
+  不代表真机容量、弱网、长时稳定性或 Android 其它格式闭环；版本目录、整包缓存配额与
+  清理入口、部分离线提示仍未完成，整体方案保持未完成。
 

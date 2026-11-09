@@ -7,6 +7,7 @@ import org.json.JSONObject;
 import java.io.BufferedInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -45,6 +46,7 @@ final class BundleDownloader {
     private BundleStore store;
     private final Listener listener;
     private final BundleSpace space;
+    private final BundleResume resume;
     private final Set<String> partsSeen = new HashSet<>();
     private String sessionId;
     private String sessionApi = "/v1/sessions";
@@ -52,6 +54,8 @@ final class BundleDownloader {
     private final Object lifecycle = new Object();
     private final Set<HttpURLConnection> connections = new HashSet<>();
     private volatile boolean cancelled;
+    private volatile int rangeResumes;
+    private volatile int rangeResponses;
     private volatile Thread runner;
     private boolean finished;
     private boolean publishing;
@@ -71,6 +75,12 @@ final class BundleDownloader {
 
     boolean isCancelled() { return cancelled; }
 
+    /** Instrumentation probe: number of resources that actually requested a Range. */
+    int rangeResumes() { return rangeResumes; }
+
+    /** Instrumentation probe: number of responses that passed the strict 206 checks. */
+    int rangeResponses() { return rangeResponses; }
+
     private void checkCancelled() throws IOException {
         if (cancelled || Thread.currentThread().isInterrupted()) throw new IOException("下载已取消");
     }
@@ -87,6 +97,7 @@ final class BundleDownloader {
 
     BundleDownloader(String server, String token, String fileId, BundleStore store, Listener listener, BundleSpace.Probe probe) {
         this.space = new BundleSpace(store.dir(), probe);
+        this.resume = new BundleResume(store.dir());
         this.server = normalizeServerUrl(server);
         this.token = token == null ? "" : token.trim();
         this.fileId = fileId;
@@ -166,6 +177,8 @@ final class BundleDownloader {
             // Publication is the commit point. Never hold the UI cancellation lock
             // while filesystem replacement/backup cleanup is in progress.
             store.publishTo(destination);
+            // Publication is committed: nothing is left to resume for this bundle.
+            resume.clear();
             synchronized (lifecycle) { finished = true; }
             listener.stage("离线包完成：共 " + count + " 页、" + partsDownloaded + " 个媒体文件");
         } finally {
@@ -203,6 +216,7 @@ final class BundleDownloader {
                 || !"ppt-media-v1".equals(manifest.optString("inventory"))) throw new IOException("不支持的离线清单版本或资源身份");
         int count = manifest.getInt("unitCount");
         if (count <= 0 || count > 100000) throw new IOException("无效的离线页数");
+        String artifactKey = manifest.getString("artifactKey");
         JSONArray external = manifest.getJSONArray("externalResources");
         if (external.length() > 0) throw new IOException("包含外部媒体，暂不支持保证完整离线");
         JSONArray resources = manifest.getJSONArray("resources");
@@ -237,7 +251,8 @@ final class BundleDownloader {
             listener.stage("下载并核验资源 " + (index + 1) + " / " + resources.length() + "…");
             StringBuilder encoded = new StringBuilder();
             for (String segment : path.split("/")) { if (encoded.length() > 0) encoded.append('/'); encoded.append(encode(segment).replace("+", "%20")); }
-            downloadFile(server + root + "/resources/" + encoded, store.resourceFile(path), resource.getLong("size"), resource.getString("sha256"));
+            downloadDeclaredFile(server + root + "/resources/" + encoded, store.resourceFile(path),
+                    path, resource.getLong("size"), resource.getString("sha256"), artifactKey);
             if (path.startsWith("parts/")) partsDownloaded++;
         }
         manifest.put("sourceVerified", true);
@@ -393,10 +408,11 @@ final class BundleDownloader {
     }
 
     private void downloadFile(String url, File file) throws IOException {
-        downloadFile(url, file, -1, null);
+        downloadLegacyFile(url, file, -1, null);
     }
 
-    private void downloadFile(String url, File file, long declaredSize, String declaredHash) throws IOException {
+    /** Legacy resource discovery has no declared strong validator, so it never resumes. */
+    private void downloadLegacyFile(String url, File file, long declaredSize, String declaredHash) throws IOException {
         File parent = file.getParentFile();
         if (parent != null && !parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory()) {
             throw new IOException("cannot create " + parent);
@@ -439,6 +455,165 @@ final class BundleDownloader {
             release(connection);
             if (temp.exists()) temp.delete();
         }
+    }
+
+    /**
+     * Resumable transfer for resources named by the authoritative manifest.
+     * The declared SHA-256 is the strong validator: it is sent as If-Range, checked
+     * against the 206 ETag and finally over the complete file. A changed generation
+     * can therefore never be spliced onto bytes received for an older one.
+     */
+    private void downloadDeclaredFile(String url, File file, String path, long size,
+                                      String hash, String artifactKey) throws IOException {
+        File parent = file.getParentFile();
+        if (parent != null && !parent.isDirectory() && !parent.mkdirs() && !parent.isDirectory())
+            throw new IOException("cannot create " + parent);
+        String key = BundleResume.key(path);
+        File partial = resume.acquire(path, size, hash, artifactKey);
+        long offset = partial == null ? 0 : partial.length();
+        boolean published = false;
+        HttpURLConnection connection = open(url, "GET");
+        try {
+            if (offset > 0) {
+                rangeResumes++;
+                connection.setRequestProperty("Range", "bytes=" + offset + "-");
+                connection.setRequestProperty("If-Range", "\"" + hash + "\"");
+            }
+            int code = connection.getResponseCode();
+            boolean cachedComplete = false;
+            if (code == 206) {
+                if (offset <= 0) throw new IOException("服务端返回了意外的分段响应");
+                String etag = connection.getHeaderField("ETag");
+                if (etag == null || !etag.equals("\"" + hash + "\"")) {
+                    resume.discard(key);
+                    throw new IOException("离线资源 ETag 与清单不一致");
+                }
+                try { verifyContentRange(connection.getHeaderField("Content-Range"), offset, size); }
+                catch (IOException invalid) { resume.discard(key); throw invalid; }
+                long expected = connection.getContentLengthLong();
+                if (expected >= 0 && expected != size - offset) {
+                    resume.discard(key);
+                    throw new IOException("服务端续传长度与清单不一致");
+                }
+                rangeResponses++;
+            } else if (code == 200) {
+                // Range ignored, If-Range rejected or resource replaced: discard and start over.
+                if (offset > 0) { resume.discard(key); partial = null; offset = 0; }
+                long expected = connection.getContentLengthLong();
+                if (expected >= 0 && expected != size) throw new IOException("服务端资源长度与清单不一致");
+            } else if (code == 416 && offset > 0 && offset == size
+                    && ("bytes */" + size).equals(connection.getHeaderField("Content-Range"))) {
+                // Everything was already received before the previous attempt stopped.
+                cachedComplete = true;
+            } else {
+                if (code == 416) resume.discard(key);
+                throw httpError(connection, url);
+            }
+
+            space.require(cachedComplete ? 0 : size - offset);
+            MessageDigest digest;
+            try { digest = MessageDigest.getInstance("SHA-256"); }
+            catch (NoSuchAlgorithmException impossible) { throw new IOException(impossible); }
+            if (offset > 0) digestExisting(digest, partial, offset);
+            if (!cachedComplete) {
+                if (!resume.dir().isDirectory() && !resume.dir().mkdirs() && !resume.dir().isDirectory())
+                    throw new IOException("cannot create resume directory");
+                if (partial == null) partial = resume.part(key);
+                long received = offset;
+                try (InputStream in = new BufferedInputStream(connection.getInputStream());
+                     FileOutputStream out = new FileOutputStream(partial, offset > 0)) {
+                    byte[] buffer = new byte[65536];
+                    int n;
+                    while ((n = in.read(buffer)) != -1) {
+                        checkCancelled();
+                        if (n > size - received) {
+                            resume.discard(key);
+                            throw new IOException("服务端资源超出清单大小");
+                        }
+                        space.require(n);
+                        digest.update(buffer, 0, n);
+                        out.write(buffer, 0, n);
+                        received += n;
+                    }
+                    long expected = connection.getContentLengthLong();
+                    if (expected >= 0 && received - offset != expected) throw new IOException("incomplete download");
+                    if (received != size) throw new IOException("服务端资源不完整");
+                    out.getFD().sync();
+                }
+            }
+            if (!hex(digest.digest()).equals(hash)) {
+                resume.discard(key);
+                throw new IOException("服务端资源 SHA-256 校验失败");
+            }
+            checkCancelled();
+            if (!move(partial, file)) throw new IOException("cannot write " + file);
+            resume.discard(key);
+            published = true;
+        } finally {
+            release(connection);
+            if (!published && partial != null && partial.isFile()
+                    && partial.length() > 0 && partial.length() < size) {
+                // Interrupted/cancelled transfer: keep the bytes for the next attempt.
+                try { resume.record(path, size, hash, artifactKey); }
+                catch (IOException ignored) { resume.discard(key); }
+            }
+        }
+    }
+
+    private static void verifyContentRange(String value, long start, long total) throws IOException {
+        if (value == null || !value.startsWith("bytes ")) throw new IOException("离线资源缺少 Content-Range");
+        String[] halves = value.substring(6).split("/", -1);
+        if (halves.length != 2 || !Long.toString(total).equals(halves[1]))
+            throw new IOException("离线资源 Content-Range 总量无效");
+        int dash = halves[0].indexOf('-');
+        if (dash <= 0) throw new IOException("离线资源 Content-Range 格式无效");
+        try {
+            long from = Long.parseLong(halves[0].substring(0, dash));
+            long to = Long.parseLong(halves[0].substring(dash + 1));
+            if (from != start || to != total - 1) throw new IOException("离线资源续传范围无效");
+        } catch (NumberFormatException invalid) {
+            throw new IOException("离线资源 Content-Range 格式无效", invalid);
+        }
+    }
+
+    private static void digestExisting(MessageDigest digest, File file, long bytes) throws IOException {
+        long remaining = bytes;
+        try (InputStream in = new BufferedInputStream(new FileInputStream(file))) {
+            byte[] buffer = new byte[65536];
+            while (remaining > 0) {
+                int n = in.read(buffer, 0, (int) Math.min(buffer.length, remaining));
+                if (n < 0) throw new IOException("续传文件已被截断");
+                digest.update(buffer, 0, n);
+                remaining -= n;
+            }
+        }
+    }
+
+    private static boolean move(File source, File target) throws IOException {
+        if (source.renameTo(target)) return true;
+        // Some filesystems refuse cross-directory rename; copy via a temp file instead.
+        File temp = new File(target.getPath() + ".tmp");
+        try (InputStream in = new FileInputStream(source);
+             FileOutputStream out = new FileOutputStream(temp)) {
+            byte[] buffer = new byte[65536];
+            int n;
+            while ((n = in.read(buffer)) != -1) out.write(buffer, 0, n);
+            out.getFD().sync();
+        }
+        if (!temp.renameTo(target)) {
+            //noinspection ResultOfMethodCallIgnored
+            temp.delete();
+            return false;
+        }
+        //noinspection ResultOfMethodCallIgnored
+        source.delete();
+        return true;
+    }
+
+    private static String hex(byte[] bytes) {
+        StringBuilder out = new StringBuilder();
+        for (byte value : bytes) out.append(String.format(java.util.Locale.US, "%02x", value & 255));
+        return out.toString();
     }
 
     private static final class HttpFailure extends IOException {

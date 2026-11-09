@@ -60,7 +60,7 @@ adb shell am start -n com.genoffice.viewerdemo/.MainActivity \
 - 放映按当前放映页保留相邻页，淘汰离屏模型、渲染树和无引用的文字测量缓存；高清图片也按当前页窗口回收。
 - 在线会话每分钟续期，下载大媒体期间也会续期；媒体签名默认有效期为 12 小时，超时需要重新打开。
 - 淘汰后回访需要重新拉取该页模型（本地/局域网很快，公网有明显延迟）。
-- 会话/离线包按 `fileId` 存放，没有做空间回收与多包管理。
+- 会话/离线包按 `fileId` 存放，没有做空间回收与多包管理；断点续传的部分文件另有 512 MiB 上界（见下节）。
 - 演示用途：允许对 `127.0.0.1` 的明文 HTTP；正式产品应使用 HTTPS 服务端。
 
 ## 稳定性回归
@@ -93,10 +93,12 @@ adb shell am instrument -w -e class com.genoffice.viewerdemo.BundleDownloaderTes
 现代包全部资源验证成功后标记 `sourceVerified=true`；兼容旧服务端的包为 false。
 清单版本不支持、哈希错误或非 404/405 错误不会静默回退。清单中的 href 不作为下载地址，
 客户端根据已配置服务地址和受校验的资源路径构造请求。包含外部媒体时目前拒绝完整离线下载，
-部分离线与在线提示仍待实现。当前仍按 fileId 存包；版本目录、续传、缓存配额及清理界面待完成。
+部分离线与在线提示仍待实现。当前仍按 fileId 存包；断点续传已接入（见下节），
+版本目录、缓存配额及清理界面待完成。
 
-已在 Android 36.1 只读 ARM64 模拟器执行 `BundleDownloaderTest`：最新完整 19 项通过，
-包含 1 GiB 下载及故障恢复。真机验证尚未完成。
+`BundleDownloaderTest` 最新 **24 项**已在
+**华为 AGS5-W00 真机（Android 12 / API 31 / arm64-v8a）** 全套通过，包含 1 GiB 下载、
+故障恢复与 5 项续传用例；此前 19 项仅在 Android 36.1 只读模拟器执行。
 
 运行本轮测试（需明确指定测试模拟器，避免操作其他设备）：
 
@@ -135,6 +137,29 @@ Activity 销毁时也会取消正在进行的下载，迟到的进度回调不�
 已知大小资源在预检失败时保留旧包；未知长度媒体在实际写入部分数据后模拟空间耗尽，
 确认临时数据清理、会话关闭和旧包哈希仍有效。
 
+## 断点续传（严格 ETag / Content-Range）
+
+现代清单资源支持跨「下载运行」的断点续传：取消、断网或进程中止后，已接收字节保存在
+应用私有 `bundles/<fileId>.resume/`（**不在 staging 内**，staging 仍按既有语义整体清理）。
+
+- 每个部分文件配套一份身份记录 `path / size / sha256 / artifactKey`。下次下载只有四者与
+  当前清单完全一致才复用；解析换代、资源哈希或大小变化一律丢弃重下。
+- 复用时发送 `Range: bytes=<已接收>-` 与 `If-Range: "<清单 sha256>"`。服务端 ETag 正是
+  `"<sha256>"`，`If-Range` 不匹配时服务端忽略 Range 返回整包，旧代字节不可能拼到新资源上。
+- `206` 必须带与清单一致的 ETag、精确的 `Content-Range: bytes <offset>-<size-1>/<size>`
+  及相等的剩余 Content-Length；`200` 视为不续传并从头下载；`416` 仅在 `bytes */<size>`
+  且已收满时视为完成。其他状态/范围/长度一律失败闭合，最终仍对**完整文件**做 SHA-256 校验。
+- 部分文件按最老优先裁剪，总量上限 512 MiB；发布成功后清空整个 resume 目录。兼容旧服务端
+  （无权威清单）及模型/字体旧流程仍用 staging `.tmp`，不支持续传。整包空间预检仍按清单总量
+  执行，续传节省的是传输量与时间，不降低首次预检的空间要求。
+- **服务端既有约束**：`openFilePart` 只对 STORE（未压缩）ZIP part 支持 `206`；DEFLATE 媒体
+  通过 inflate 流式返回，Range 请求回退整包 `200`。客户端按上述 `200` 规则丢弃重下。
+
+真机验证：5 项 instrumentation 用例覆盖截断后续传、`200` 回退、ETag / Content-Range 拒绝、
+身份变更丢弃与配额裁剪。`test:android-backend` 在真机上预置两个媒体各一半字节，真实解析
+服务端对 STORE 媒体返回 `206`、对 DEFLATE 媒体返回 `200`，探针确认 `rangeResponses=1`
+且两个资源最终都完整。
+
 ## 真实服务端联调回归
 
 先构建主 APK 和测试 APK，再明确指定专用测试设备：
@@ -146,3 +171,11 @@ ANDROID_SERIAL=<test-emulator> npm run test:android-backend -w @genoffice/viewer
 脚本启动临时解析服务、上传含嵌入字体及未引用媒体的 PPTX，安装测试 APK，下载两次，
 验证源哈希与本地模型/字体回放，并检查源解析仅一次；结束清理反向端口和临时服务数据。
 离线清单按需构建为独立辅助产物，正常在线预览不会提前遍历媒体计算哈希。
+脚本额外断言 `resumeVerified=true` 与 `rangeResponses>=1`：在真机上预置半个媒体文件，
+确认下载器对真实服务端的 `If-Range` / `206` 链路确实续传。
+
+本轮在华为 AGS5-W00 真机（Android 12 / API 31 / arm64-v8a）执行，输出
+`ok / sourceHashesVerified / cachedSecondDownload / realBackendRangeResume` 均为 true，
+`sourceParses=1`；服务端日志对 STORE 媒体记录 `206`、对 DEFLATE 媒体记录 `200`。
+Gradle 构建需把 `JAVA_HOME` 指向 JDK 17（默认 GraalVM 21 的 jlink 会令
+AGP 8.10.1 的 `androidJdkImage` 变换失败）。

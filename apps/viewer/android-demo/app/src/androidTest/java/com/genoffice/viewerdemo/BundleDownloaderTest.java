@@ -427,6 +427,140 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
         }
     }
 
+    // ── resumable downloads ─────────────────────────────────────────────────
+
+    private static final String DECLARED_MEDIA = "parts/ppt/media/video.mp4";
+
+    /** Interrupt the first transfer and leave its bytes in the bounded resume store. */
+    private void seedPartial(Fixture fixture, BundleStore store, int abortAfter) throws Exception {
+        fixture.abortAfterBytes = abortAfter;
+        try {
+            new BundleDownloader(fixture.url(), "", "test-file", store, text -> {}).run();
+            fail("truncated transfer must fail");
+        } catch (IOException expected) { /* partial bytes survive in .resume */ }
+        fixture.abortAfterBytes = 0;
+        assertFalse(store.staging().dir().exists());
+    }
+
+    public void testResumeContinuesAfterTruncatedTransferWithStrictRangeValidation() throws Exception {
+        try (Fixture fixture = new Fixture(64 * 1024)) {
+            fixture.declaredBundle = true;
+            BundleStore store = new BundleStore(root, "test-file");
+            seedPartial(fixture, store, 16 * 1024);
+            BundleResume resume = new BundleResume(store.dir());
+            long offset = resume.part(BundleResume.key(DECLARED_MEDIA)).length();
+            assertEquals(16 * 1024, offset);
+            byte[] expected = new byte[64 * 1024];
+            Arrays.fill(expected, (byte) 90);
+            int fullBefore = fixture.fullRequests;
+            new BundleDownloader(fixture.url(), "", "test-file", store, text -> {}).run();
+            assertTrue(store.isComplete());
+            store.verifyIntegrity();
+            assertEquals(64 * 1024, store.partFile("ppt/media/video.mp4").length());
+            assertEquals(1, fixture.rangeRequests);
+            assertEquals("bytes=" + offset + "-", fixture.lastRange);
+            assertEquals("\"" + BundleResume.sha256Hex(expected) + "\"", fixture.lastIfRange);
+            assertTrue("other resources are re-fetched", fixture.fullRequests > fullBefore);
+            assertFalse("published bundle clears resume state", resume.dir().exists());
+        }
+    }
+
+    public void testResumeRestartsFromZeroWhenServerIgnoresRange() throws Exception {
+        try (Fixture fixture = new Fixture(64 * 1024)) {
+            fixture.declaredBundle = true;
+            BundleStore store = new BundleStore(root, "test-file");
+            seedPartial(fixture, store, 16 * 1024);
+            fixture.ignoreRange = true;
+            new BundleDownloader(fixture.url(), "", "test-file", store, text -> {}).run();
+            assertTrue(store.isComplete());
+            store.verifyIntegrity();
+            assertEquals(1, fixture.rangeRequests);
+            assertEquals(64 * 1024, store.partFile("ppt/media/video.mp4").length());
+            assertFalse(new BundleResume(store.dir()).dir().exists());
+        }
+    }
+
+    public void testResumeRejectsMismatchedETagOrContentRange() throws Exception {
+        try (Fixture fixture = new Fixture(64 * 1024)) {
+            fixture.declaredBundle = true;
+            BundleStore store = new BundleStore(root, "test-file");
+            BundleResume resume = new BundleResume(store.dir());
+            seedPartial(fixture, store, 16 * 1024);
+            fixture.wrongEtag = true;
+            try {
+                new BundleDownloader(fixture.url(), "", "test-file", store, text -> {}).run();
+                fail("mismatched ETag must not splice an older generation");
+            } catch (IOException expected) { assertTrue(expected.getMessage().contains("ETag")); }
+            assertFalse(store.isComplete());
+            assertEquals(0, resume.usedBytes());
+
+            fixture.wrongEtag = false;
+            seedPartial(fixture, store, 16 * 1024);
+            fixture.wrongContentRange = true;
+            try {
+                new BundleDownloader(fixture.url(), "", "test-file", store, text -> {}).run();
+                fail("mismatched Content-Range must not splice an older generation");
+            } catch (IOException expected) { assertTrue(expected.getMessage().contains("范围")); }
+            assertEquals(0, resume.usedBytes());
+        }
+    }
+
+    public void testResumeDiscardsPartialWhenBundleIdentityChanges() throws Exception {
+        try (Fixture fixture = new Fixture(64 * 1024)) {
+            fixture.declaredBundle = true;
+            BundleStore store = new BundleStore(root, "test-file");
+            seedPartial(fixture, store, 16 * 1024);
+            BundleResume resume = new BundleResume(store.dir());
+            File meta = resume.meta(BundleResume.key(DECLARED_MEDIA));
+            org.json.JSONObject record = new org.json.JSONObject(readText(meta));
+            record.put("artifactKey", "stale-generation");
+            try (FileOutputStream out = new FileOutputStream(meta)) {
+                out.write(record.toString().getBytes(StandardCharsets.UTF_8));
+            }
+            int rangesBefore = fixture.rangeRequests;
+            new BundleDownloader(fixture.url(), "", "test-file", store, text -> {}).run();
+            assertTrue(store.isComplete());
+            assertEquals("stale bytes must not be resumed", rangesBefore, fixture.rangeRequests);
+            assertEquals(64 * 1024, store.partFile("ppt/media/video.mp4").length());
+            assertFalse(resume.dir().exists());
+        }
+    }
+
+    public void testResumeBudgetTrimsOldestPartial() throws Exception {
+        File bundle = new File(root, "resume-budget-bundle");
+        BundleResume resume = new BundleResume(bundle, 1024);
+        byte[] data = new byte[600];
+        Arrays.fill(data, (byte) 7);
+        String[] paths = {"parts/a.bin", "parts/b.bin", "parts/c.bin"};
+        for (int index = 0; index < paths.length; index++) {
+            File part = resume.part(BundleResume.key(paths[index]));
+            assertTrue(part.getParentFile().isDirectory() || part.getParentFile().mkdirs());
+            try (FileOutputStream out = new FileOutputStream(part)) { out.write(data); }
+            assertTrue(part.setLastModified(1000L * (index + 1)));
+            resume.record(paths[index], data.length, BundleResume.sha256Hex(data), "artifact");
+        }
+        assertEquals(600, resume.usedBytes());
+        assertFalse(resume.part(BundleResume.key(paths[0])).exists());
+        assertFalse(resume.part(BundleResume.key(paths[1])).exists());
+        assertTrue(resume.part(BundleResume.key(paths[2])).exists());
+        assertNotNull(resume.acquire(paths[2], 600, BundleResume.sha256Hex(data), "artifact"));
+        assertNull(resume.acquire(paths[0], 600, BundleResume.sha256Hex(data), "artifact"));
+        assertNull("identity mismatch is never reused",
+                resume.acquire(paths[2], 600, BundleResume.sha256Hex(data), "another-generation"));
+        resume.clear();
+        assertFalse(resume.dir().exists());
+    }
+
+    private static String readText(File file) throws IOException {
+        try (FileInputStream in = new FileInputStream(file)) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buffer = new byte[4096];
+            int n;
+            while ((n = in.read(buffer)) >= 0) out.write(buffer, 0, n);
+            return new String(out.toByteArray(), StandardCharsets.UTF_8);
+        }
+    }
+
     private static long usedHeap() {
         return Runtime.getRuntime().totalMemory() - Runtime.getRuntime().freeMemory();
     }
@@ -439,9 +573,13 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
         final java.util.concurrent.CountDownLatch sessionDeleted = new java.util.concurrent.CountDownLatch(1);
         final java.util.concurrent.CountDownLatch partStarted = new java.util.concurrent.CountDownLatch(1);
         volatile boolean declaredBundle, corruptBundleBytes, externalBundleMedia;
+        volatile boolean ignoreRange, wrongEtag, wrongContentRange;
+        volatile int abortAfterBytes, rangeRequests, fullRequests;
+        volatile String lastRange, lastIfRange;
         volatile int bundleStatus = 200, bundleVersion = 1;
         volatile int polls, v1Posts, layoutRequests, bundleResourceRequests;
         volatile String deletedApi;
+        static final String WRONG_ETAG = "\"0000000000000000000000000000000000000000000000000000000000000000\"";
         Fixture(long bytes) throws IOException {
             this.bytes = bytes;
             socket = new ServerSocket(0, 8, InetAddress.getByName("127.0.0.1"));
@@ -459,8 +597,12 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
             String first = reader.readLine(); if (first == null) return;
             String[] request = first.split(" ");
             int length = 0; String line;
+            java.util.Map<String, String> headers = new java.util.HashMap<>();
             while ((line = reader.readLine()) != null && !line.isEmpty()) {
-                if (line.toLowerCase().startsWith("content-length:")) length = Integer.parseInt(line.substring(15).trim());
+                String lower = line.toLowerCase(java.util.Locale.US);
+                if (lower.startsWith("content-length:")) length = Integer.parseInt(line.substring(15).trim());
+                int colon = line.indexOf(':');
+                if (colon > 0) headers.put(lower.substring(0, colon), line.substring(colon + 1).trim());
             }
             while (length-- > 0) reader.read();
             OutputStream out = new BufferedOutputStream(client.getOutputStream());
@@ -485,7 +627,38 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
                 String relative = URLDecoder.decode(path.substring(path.indexOf("/bundle/resources/") + 18), "UTF-8");
                 byte[] data = declaredResource(relative);
                 if (corruptBundleBytes && relative.startsWith("parts/")) data[0] ^= 1;
-                header(out, 200, data.length); out.write(data); out.flush();
+                String etag = "\"" + BundleResume.sha256Hex(data) + "\"";
+                String range = headers.get("range");
+                if (declaredBundle && range != null && range.startsWith("bytes=") && range.endsWith("-")) {
+                    rangeRequests++;
+                    lastRange = range;
+                    lastIfRange = headers.get("if-range");
+                    long start = Long.parseLong(range.substring(6, range.length() - 1));
+                    if (ignoreRange) {
+                        fullRequests++;
+                        respond(out, 200, data.length, "ETag: " + etag, "Accept-Ranges: bytes");
+                        out.write(data); out.flush(); return;
+                    }
+                    if (start >= data.length) {
+                        respond(out, 416, 0, "Content-Range: bytes */" + data.length, "ETag: " + etag);
+                        out.flush(); return;
+                    }
+                    String contentRange = wrongContentRange
+                            ? "bytes " + (start + 1) + "-" + (data.length - 1) + "/" + data.length
+                            : "bytes " + start + "-" + (data.length - 1) + "/" + data.length;
+                    String responseEtag = wrongEtag ? WRONG_ETAG : etag;
+                    int remaining = data.length - (int) start;
+                    int actual = abortAfterBytes > 0 ? Math.min(abortAfterBytes, remaining) : remaining;
+                    respond(out, 206, remaining, "Content-Range: " + contentRange,
+                            "ETag: " + responseEtag, "Accept-Ranges: bytes");
+                    if (actual > 0) out.write(data, (int) start, actual);
+                    out.flush(); return;
+                }
+                fullRequests++;
+                respond(out, 200, data.length, "ETag: " + etag, "Accept-Ranges: bytes");
+                if (abortAfterBytes > 0 && data.length > abortAfterBytes) out.write(data, 0, abortAfterBytes);
+                else out.write(data);
+                out.flush();
             }
             else if (path.equals("/v1/sessions")) { v1Posts++; json(out, 200, "{\"sessionId\":\"test\",\"fonts\":[]}"); }
             else if (path.endsWith("/layout/slides/0")) {
@@ -538,7 +711,14 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
             } catch (Exception failure) { throw new IOException(failure); }
         }
         static void header(OutputStream out, int code, long bytes) throws IOException {
-            out.write(("HTTP/1.1 " + code + " OK\r\nContent-Length: " + bytes + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII));
+            respond(out, code, bytes);
+        }
+        static void respond(OutputStream out, int code, long bytes, String... extras) throws IOException {
+            StringBuilder head = new StringBuilder("HTTP/1.1 " + code + " OK\r\nContent-Length: "
+                    + bytes + "\r\nConnection: close\r\n");
+            for (String extra : extras) head.append(extra).append("\r\n");
+            head.append("\r\n");
+            out.write(head.toString().getBytes(StandardCharsets.US_ASCII));
         }
         static void json(OutputStream out, int code, String body) throws IOException {
             byte[] data = body.getBytes(StandardCharsets.UTF_8); header(out, code, data.length);

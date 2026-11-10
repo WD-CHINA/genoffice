@@ -1,6 +1,6 @@
 # Web / Android / 解析服务整体优化方案
 
-日期：2026-11-06，更新：2026-11-07。状态：分阶段实施中，已完成项与验证边界见 [实施进度](parse-optimization-progress.zh-CN.md)。基线：单机 8 核 CPU、16 GiB 内存，已有本地磁盘及可选 MySQL。
+日期：2026-11-06，更新：2026-11-10。状态：分阶段实施中，已完成项与验证边界见 [实施进度](parse-optimization-progress.zh-CN.md)。基线：单机 8 核 CPU、16 GiB 内存，已有本地磁盘及可选 MySQL；Redis 为可选热缓存，不改变真值路径（见 5.1）。
 
 ## 1. 目标与决策
 
@@ -14,7 +14,7 @@
 - Web 和 Android 共享可版本化的模型、资源引用与离线包契约。
 - 下载失败、任务崩溃、磁盘写满和进程重启不能把半成品当成成功结果。
 
-首期使用单机磁盘存大对象、MySQL 存索引；开发模式保留文件索引适配器。暂不引入 Redis、消息中间件和分布式存储。存储接口预留对象存储适配能力，当前不承诺多实例共享本地目录。
+首期使用单机磁盘存大对象、MySQL 存索引；开发模式保留文件索引适配器。消息中间件和分布式存储仍不引入。Redis 仅作为**可选的跨实例热缓存**（预览帧、构建进度投影），未配置即完全关闭，且不承载任何真值：ready 指针、租约、配额与产物索引仍只以 MySQL 和磁盘为准（见 5.1）。存储接口预留对象存储适配能力，当前不承诺多实例共享本地目录。
 
 ## 2. 优化前的问题与代码依据
 
@@ -46,7 +46,10 @@ flowchart TD
   S --> C
   R --> D[磁盘：原文件 / 产物 / 字体]
   C --> M[MySQL：历史资源 / 产物 / 任务]
+  API -.-> RC[Redis 热缓存（可选，非真值）]
 ```
+
+虚线为可选热缓存：缓存丢失只影响首屏与轮询开销，不影响 ready 判定、单元读取与正确性；所有 miss 或故障都回退到 C / M / D。
 
 HTTP 主进程负责鉴权、流式上传、会话与调度，不执行大 XML 解析或大型同步压缩。解析阶段落盘后子进程退出；缓存读取不需要解析进程。
 
@@ -107,9 +110,37 @@ manifest 至少包含：artifactKey、fileId、schemaVersion、parserFingerprint
 
 发布次序：临时写入 → 文件 flush、关闭并完成校验 → 同文件系统 rename 到不可变 generation 目录 → 数据库事务设置 ready 和路径。数据库只指向已完整发布的目录。文件系统与数据库没有统一事务，启动对账负责清理“已落盘但未登记”的孤儿目录、修复失效 ready 指针。文件索引适配器仅支持单服务进程、原子索引文件和内存 single-flight，不宣称具备 MySQL 多写入者保证。
 
+### 5.1 Redis 热缓存层（可选，非真值）
+
+首版 Redis 只做两件事：跨实例共享**预览帧**与**构建进度投影**。`parse_*` 表与磁盘 generation 仍是唯一真值；未配置 `redis`（与 `mysql` 同级的可选配置）时完全关闭，单机默认 `mode=memory`，不新增必选依赖。
+
+**启用判据**：只有部署 ≥2 个实例、且确实出现跨节点首屏或轮询打库压力时才启用 `mode=redis`。单机部署不启用。health 暴露 `cache.mode`，运维可确认实际模式。响应缓存、会话状态投影与分布式限流列为“待评估”，不进入首版；它们与现有队列、签名和租约语义重叠，收益需先测量。
+
+**禁止进入 Redis**：ready 指针与 generation 归属、构建/读取/下载租约、配额与压力账本、原文件与产物索引、库保留策略。这些数据丢失会造成超卖、脏读、重复撤下或误删，继续由 SQL 条件更新、不可逆授权和文件校验承担。Redis 锁不得替代 `withdrawReady` 的 compare-and-clear，507 判定与租约续期也不得依赖 Redis。
+
+| 数据 | Key / 结构 | TTL | 丢失影响 | 写入时机 |
+| --- | --- | --- | --- | --- |
+| 预览帧 | `pv:{artifactKey}:{jobId}`，Hash(document、unit:i、count) | 60 s | 无首屏，返回 pending | 帧提交后 |
+| 构建进度 | `job:{jobId}`，Hash(unitsProduced、unitCount) | 5 min | 进度回退到 SQL | 逐帧或全局 200 ms 节流 |
+
+- key 必须绑定 `jobId`：重建、重试和解析器升级都会生成新 jobId，旧 key 由 TTL 清理，不做跨代 invalidate，也不存在“旧预览盖住新构建”。
+- 预览仍受 `previewMaxUnits`（默认 8）约束，不因 Redis 容量放大。单个 field 超过 256 KiB 的单元不写入缓存，该单元回源 generation；`document` 超限则该次构建不提供跨节点首屏，而不是拆分或截断。
+- Redis 只用于**否定**（无预览、未就绪、进度缺失）。任何肯定 `ready` 的判断仍必须走 `claim` / 读租约与 ready 指针校验；命中缓存不得跳过这一步。
+- 写入次序：帧提交 → 写预览 → 全部单元/字体完成 → 发布 manifest → SQL 置 ready → 才允许写其他缓存。构建失败或取消立即删除 `pv` / `job`，未发布内容绝不标记 ready。
+- 进度只由构建节点写；节流按进程全局计算（不是每个构建各 200 ms），构建结束时强制写最后一次；读取取 `max(redis, sql)`，Redis 缺失时回落 SQL。
+- 命令超时 50–100 ms，请求路径最多一次、不重试；连续失败熔断 5 s 后半开。读 miss/超时回源 MySQL 或磁盘，写失败只记指标，不得让上传、解析或读取返回 5xx。
+- 必须注入的故障：宕机、`FLUSHALL`、慢而不死（p99 500 ms）、连接池耗尽、主从切换、同刻大量过期、单 key 热读。全部只允许降级，不允许 5xx 或状态变更。
+- SLO：启用后预览/进度读取的缓存命中率 ≥80%，附加 p95 延迟 ≤5 ms，缓存错误率 ≤0.1%。未达标就切回 `memory` 并记录结论，不把“可选缓存”留成长期负债。
+- 清空、驱逐与主从切换一律视为 cache miss；Redis 不备份、不进入恢复演练，正确性仍由备份清单与 MySQL/磁盘校验保证。
+- 内存 ≤1 GiB，从 6 GiB 余量划出，并给 OS/MySQL/页缓存保留 ≥4 GiB；不计入解析与 HTTP RSS。`maxmemory` + `allkeys-lru`，key 前缀 `genoffice:{dbScope}:`，生产启用 TLS + ACL。
+- 回滚 = 切回 `mode=memory`，Redis key 靠 TTL 过期，不做数据迁移，也不得因回滚删除任何持久数据。
+- 观测：`cache_hit/miss/error/timeout`、`cache_latency`、`cache_evictions`；`cache_bytes` 用 exporter 或 `MEMORY USAGE` 采样，不直接依赖 INFO 字段。health 暴露 `cache: {mode: memory|redis, hitRate, errors}`，Redis 故障不改变请求成败。
+
+**P3.5 交付边界**：只做可关闭的最小实现——单实例 Redis、TLS/ACL、`maxmemory` 与上面两条 key；Sentinel/Cluster、容量演练、告警与灰度并入 P4，不在本阶段承诺高可用。
+
 ## 6. 任务状态、故障与资源调度
 
-状态：`queued → building → ready`；异常转为 `failed` 或 `cancelled`，租约过期任务经恢复检查重新入队。构建中的首批单元可标记 `previewable`，但完整产物 ready 只能在全部校验后设置。
+状态：`queued → building → ready`；异常转为 `failed` 或 `cancelled`，租约过期任务经恢复检查重新入队。构建中的首批单元可标记 `previewable`，但完整产物 ready 只能在全部校验后设置。状态机以 `parse_artifacts` / `parse_jobs` 的事务与租约为准；Redis 中的进度只是投影（5.1），不得用于肯定 ready，缓存丢失或回退也不得改变任何任务状态。
 
 - 同一 artifactKey 的所有访问共享任务；等待者取消只取消自己的订阅。
 - 队列满：已有任务仍可附着、ready 仍可读取；仅拒绝需要新增任务的请求，返回 429 和 Retry-After。
@@ -128,6 +159,7 @@ manifest 至少包含：artifactKey、fileId、schemaVersion、parserFingerprint
 | 解析子进程总 RSS 预算 | 8 GiB | 单任务按类别预留，未知大任务保守预留 4 GiB |
 | HTTP / 索引 / 读缓存目标预算 | 2 GiB | 内存 LRU 必须按字节限制；初始模型热缓存 256 MiB |
 | 操作系统、MySQL、页缓存和余量 | 6 GiB | 与总进程 RSS 一起监控，防止页缓存及数据库挤占 |
+| 其中 Redis 热缓存（可选） | ≤ 1 GiB | 从上一条余量划出，且给 OS/MySQL/页缓存保留 ≥4 GiB；不计入解析与 HTTP RSS |
 | 等待队列 | 20 个唯一任务 | 缓存命中不占队列；后续补调用方公平配额 |
 | 临时阅读会话上限 | 初始 500 | 只存轻量状态，需以 500 会话压测验收；超限独立返回错误 |
 | 会话空闲 TTL | 30 分钟 | 60 秒心跳；不影响持久化产物 |
@@ -158,7 +190,7 @@ DELETE /v2/library/:entryId              删除库引用；后台按依赖和策
 
 冷访问返回 Location 指向会话状态，客户端遵循 pollAfterMs 带退避轮询；首期不依赖 SSE。相同文件附着已有任务时返回相同 jobId，但 sessionId 独立。会话过期可凭有权限的 fileId 重新打开命中产物，恢复客户端锚点。
 
-所有 POST 支持业务幂等键或唯一关系去重。range、HEAD、ETag、鉴权签名保持一致；签名过期可通过会话刷新资源描述，缓存本身不失效。带短期签名的 JSON 使用私有短缓存或 no-store；规范化模型可用 artifactKey 校验缓存，避免混用两者 ETag。
+所有 POST 支持业务幂等键或唯一关系去重。range、HEAD、ETag、鉴权签名保持一致；签名过期可通过会话刷新资源描述，缓存本身不失效。带短期签名的 JSON 使用私有短缓存或 no-store；规范化模型可用 artifactKey 校验缓存，避免混用两者 ETag。共享 Redis 不缓存带签名的完整响应（响应缓存暂不启用，见 5.1）；签名和 origin 始终在出站时生成。
 
 阶段式输出不修改已发布单元；未生成单元返回明确的 pending 状态与重试建议，完整 manifest 才可用于离线完成判定。首期先全量 ready 发布，增量可预览后续实现，避免同时引入过多状态。
 
@@ -207,7 +239,7 @@ DELETE /v2/library/:entryId              删除库引用；后台按依赖和策
 
 容量达到高水位先回收临时和旧版本产物；没有可回收空间时拒绝新增上传/构建，不静默删除用户保存的原文件。部署前必须确定磁盘容量、配额和高低水位，保留紧急空间用于原子更新与日志。
 
-持久化不等于备份：MySQL 与原文件、产物目录需要一致的备份清单及恢复演练。原文件和库索引优先保证可恢复；派生产物允许重建。恢复后执行依赖对账、校验文件存在性，未通过检查的结果不能宣称 ready。
+持久化不等于备份：MySQL 与原文件、产物目录需要一致的备份清单及恢复演练。原文件和库索引优先保证可恢复；派生产物允许重建。恢复后执行依赖对账、校验文件存在性，未通过检查的结果不能宣称 ready。Redis 不参与保留与 GC 决策：清空、驱逐或丢失 Redis 不得删除任何原文件、产物或索引行。
 
 ## 10. 实施拆分和迁移
 
@@ -217,6 +249,7 @@ DELETE /v2/library/:entryId              删除库引用；后台按依赖和策
 | P1 持久化基础 | Artifact DTO/Reader/Writer、MySQL 表和文件索引、依赖关系、原子发布、PPTX/DOCX 完整产物落盘 | 新会话和重启命中产物时解析启动数为 0 |
 | P2 资源解耦 | v2 异步任务、有界队列、租约、子进程 RSS 隔离、会话只引用产物、Web/Android 等待状态适配 | 大任务排队不阻断缓存读取；客户端兼容迁移完成 |
 | P3 大文件与体验 | DOCX 真流式、前端有界 chunk 缓存、增量首屏、Android 清单/续传/容量管理 | 大正文和弱网场景达标，记录峰值内存与首屏数据 |
+| P3.5 可选热缓存 | 预览帧与构建进度的跨实例共享；单机默认 memory，Redis 可关闭 | 双实例 A 构建/B 读首屏；宕机、清空或变慢不影响 ready 与单元读取 |
 | P4 运维上线 | GC、配额、备份恢复、指标告警、灰度与故障演练 | 压测与恢复报告可复查，可回滚 |
 
 P1 的持久化不是 P3 的低峰值解析，两者分别验收。P1 初期仍可能冷解析耗时较长，不能提前宣称完整 GB 正文能力。
@@ -241,12 +274,13 @@ P1 的持久化不是 P3 的低峰值解析，两者分别验收。P1 初期仍�
 8. Android 哈希错误、磁盘不足、Range 不支持、下载中断、更新中退出：不标记 complete，旧包仍可用，恢复后下载不混版本。
 9. GC 与构建/读取/下载并发：有依赖的原文件和资源不误删；无空间时拒绝新任务，历史原文件保留。
 10. 多格式保真：选真实 PPTX/DOCX fixture 对比模型 round-trip、动画、图片、表格、编号、分节、字体与关键页面截图。
+11. Redis 热缓存（仅启用时）：实例 A 构建、实例 B 读取首屏与进度；宕机、`FLUSHALL`、p99 500 ms、连接池耗尽与主从切换下，ready 与单元读取不受影响；缓存值不含 token、签名与绝对域名；未达 5.1 的 SLO 可切回 memory。
 
 性能样本分开：大媒体小正文、压缩率高的大正文、多页复杂 PPTX、巨大单页/表格、嵌入字体、损坏包。1 GiB 媒体占位文件不能替代 1 GiB 正文测试。
 
 8 核 16 GiB 上先测：2 个冷解析 + 20 个排队任务 + 50 个并发缓存阅读，再测 500 个轻量会话。记录 p50/p95 首屏、单元读取、排队时间、解析用时、RSS 峰值、CPU、磁盘吞吐。初始目标为整体 RSS 不超过 12 GiB、缓存命中无解析启动、冷解析不导致健康接口超时；延迟目标由代表性样本基线确定后固定，不凭空承诺在线人数。
 
-新增指标：artifact_hit/miss/corrupt、parse_started、job_queue_depth/age、deduplicated_waiters、worker_rss、reserved_bytes、unit_read_latency、storage_bytes（原文件/产物/staging）、gc_deleted_bytes、signature_refresh、bundle_failure。日志关联 requestId / jobId / artifactKey / sessionId，避免输出 token、签名和密码。
+新增指标：artifact_hit/miss/corrupt、parse_started、job_queue_depth/age、deduplicated_waiters、worker_rss、reserved_bytes、unit_read_latency、storage_bytes（原文件/产物/staging）、gc_deleted_bytes、signature_refresh、bundle_failure、cache_hit/miss/error/timeout、cache_latency、cache_evictions。日志关联 requestId / jobId / artifactKey / sessionId，避免输出 token、签名和密码。
 
 ## 12. 开始实施前的默认假设
 
@@ -254,4 +288,5 @@ P1 的持久化不是 P3 的低峰值解析，两者分别验收。P1 初期仍�
 - 首期优先 PPTX 与 DOCX 持久化、PDF 原文件复用，移动端先闭环 PPTX。
 - 默认并发 2，先修正确性并建立缓存，再做流式和增量首屏。
 - 已保存历史资源的原文件不自动按 TTL 删除；临时缓存可回收。
+- Redis 为可选热缓存，单机默认 memory，未配置即关闭；缓存丢失只影响首屏与轮询开销，不影响正确性、GC 与恢复（5.1）。
 - 磁盘规格、历史库配额、备份位置和目标延迟尚待部署信息确定，不阻塞 P0 与产物格式设计。

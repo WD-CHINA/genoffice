@@ -4,8 +4,11 @@ import { paginateTableRows, type TablePage, type TableRowLayout } from './docx-t
 export interface DocxPageBlock {
   unitId: string
   blockIndex: number
+  docxIndex?: number
   height: number
   breakBefore?: boolean
+  columnBreakBefore?: boolean
+  keepWithNext?: boolean
   tablePage?: TablePage
   headerRows?: number
 }
@@ -18,7 +21,8 @@ export function replaceDocxUnitIndex(
   if (!current.length) return previous
   if (current.length === replacement.length && current.every((block, index) => {
     const next = replacement[index]
-    return block.blockIndex === next.blockIndex && Math.abs(block.height - next.height) < 0.5 &&
+    return block.blockIndex === next.blockIndex && block.docxIndex === next.docxIndex && Math.abs(block.height - next.height) < 0.5 &&
+      block.columnBreakBefore === next.columnBreakBefore && block.keepWithNext === next.keepWithNext &&
       block.breakBefore === next.breakBefore && block.headerRows === next.headerRows &&
       JSON.stringify(block.tablePage && { ...block.tablePage, height: 0 }) ===
       JSON.stringify(next.tablePage && { ...next.tablePage, height: 0 })
@@ -37,15 +41,19 @@ export function indexDocxUnit(
   blocks: readonly any[],
   heights: ReadonlyMap<number, number>,
   rows: ReadonlyMap<number, TableRowLayout[]>,
-  contentHeight: number,
+  contentHeight: number | ((block: any) => number),
 ): DocxPageBlock[] {
   return blocks.flatMap((block, blockIndex): DocxPageBlock[] => {
-    const base = { unitId, blockIndex, breakBefore: block.format?.pageBreakBefore === true }
+    const base = { unitId, blockIndex, docxIndex: block.docxIndex,
+      breakBefore: block.format?.pageBreakBefore === true || block.format?.effective?.pageBreakBefore === true,
+      columnBreakBefore: /<w:br\b[^>]*w:type=["']column["']/.test(block.originalXml ?? ''),
+      keepWithNext: block.format?.keepNext === true || block.format?.effective?.keepNext === true }
+    if (block.hidden) return [{ ...base, height: 0 }]
     const tableRows = rows.get(block.docxIndex)
     if (block.type === 'table' && tableRows?.length) {
       let headerRows = 0
       while (tableRows[headerRows]?.header) headerRows++
-      return paginateTableRows(tableRows, contentHeight, { headerRows }).map((tablePage, index) => ({
+      return paginateTableRows(tableRows, typeof contentHeight === 'number' ? contentHeight : contentHeight(block), { headerRows }).map((tablePage, index) => ({
         ...base,
         // A source page break applies once, rather than before every table fragment.
         breakBefore: index === 0 && base.breakBefore,

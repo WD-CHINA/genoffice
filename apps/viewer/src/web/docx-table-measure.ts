@@ -14,7 +14,8 @@ export async function measureTableRows(
 ): Promise<TableRowLayout[]> {
   signal?.throwIfAborted()
   const host = document.createElement('div')
-  host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;visibility:hidden;pointer-events:none`
+  host.className = 'viewer-doc-remote'
+  host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;height:auto;display:block;visibility:hidden;pointer-events:none`
   document.body.appendChild(host)
   const editor = new Editor({
     element: host,

@@ -1,5 +1,15 @@
 import type { DocxPageBlock } from './docx-page-index'
 import type { PageDescriptor } from './docx-pagination'
+import type { SectionPage } from './docx-section-layout'
+
+function blockTop(page: PageDescriptor, index: number, blocks: readonly DocxPageBlock[], padding: number): number {
+  const sectionPage = page as Partial<SectionPage>
+  const region = sectionPage.regions?.find((region) => region.columns.some((column) => column.blockStart <= index && index < column.blockEnd))
+  const column = region?.columns.find((column) => column.blockStart <= index && index < column.blockEnd)
+  let top = (sectionPage.paddingTop ?? padding) + (region?.top ?? 0)
+  for (let block = column?.blockStart ?? page.blockStart; block < index; block++) top += blocks[block].height
+  return top
+}
 
 export interface DocxScrollAnchor {
   unitId: string
@@ -18,8 +28,8 @@ export function captureDocxAnchor(
   let pageIndex = 0
   while (pageIndex + 1 < tops.length && tops[pageIndex + 1] <= scrollTop) pageIndex++
   const page = pages[pageIndex]
-  let top = tops[pageIndex] + paddingTop
   for (let index = page.blockStart; index < page.blockEnd; index++) {
+    const top = tops[pageIndex] + blockTop(page, index, blocks, paddingTop)
     const block = blocks[index]
     if (top + block.height > scrollTop || index === page.blockEnd - 1) {
       // Repeated headers are not unique anchors: use a body row when available.
@@ -30,7 +40,6 @@ export function captureDocxAnchor(
         ...(row ? { row: row.row, paragraph: row.part?.start ?? 0 } : {}),
       }
     }
-    top += block.height
   }
   return undefined
 }
@@ -47,7 +56,6 @@ export function restoreDocxAnchor(
   if (index < 0) return undefined
   const pageIndex = pages.findIndex((page) => page.blockStart <= index && page.blockEnd > index)
   if (pageIndex < 0) return undefined
-  let top = tops[pageIndex] + paddingTop
-  for (let block = pages[pageIndex].blockStart; block < index; block++) top += blocks[block].height
+  const top = tops[pageIndex] + blockTop(pages[pageIndex], index, blocks, paddingTop)
   return Math.max(0, top + anchor.offset)
 }

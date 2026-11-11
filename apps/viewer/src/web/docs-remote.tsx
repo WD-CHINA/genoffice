@@ -10,7 +10,14 @@ import {
 } from '@genoffice/viewer-renderers/docs/renderer/editor/convert'
 import '@genoffice/viewer-renderers/docs/renderer/styles.css'
 import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
-import { paginateBlocks, visiblePages, type BlockMeasure, type PageDescriptor } from './docx-pagination'
+import { visiblePages, type PageDescriptor } from './docx-pagination'
+import type { DocxReadingContext, SectionInfo, SectionSettings } from '@genoffice/docx-engine'
+import { sectionFromSectPr } from '@genoffice/docx-engine'
+import { HeaderFooterArea } from '@genoffice/viewer-renderers/docs/renderer/components/HeaderFooterArea'
+import { formatPageNumber } from '@genoffice/viewer-renderers/docs/renderer/pagination-hf'
+import { setNoteNumFmts } from '@genoffice/viewer-renderers/docs/renderer/note-format'
+import { hfReservedHeightPx, hfStripGeom } from '@genoffice/viewer-renderers/docs/renderer/editor/hf-dom'
+import { hfHeightKey, paginateSectionBlocks, sectionColumns, sectionContentHeight, sectionIndexAt, type HfHeights } from './docx-section-layout'
 import { captureDocxAnchor, restoreDocxAnchor } from './docx-scroll-anchor'
 import {
   loadReadingPosition, saveDocxReadingAnchor, type DocxReadingAnchor,
@@ -110,11 +117,70 @@ function PageEditor({ blocks, doc, unitKey, onAssetsReady }: {
   return <EditorContent editor={editor} />
 }
 
+function RemoteHf({ part, kind, settings, number, total, id, left, onHeight }: {
+  part: DocxReadingContext['hfParts'][string] | undefined
+  kind: 'header' | 'footer'; settings: SectionSettings; number: string; total: number
+  id?: string; left: number; onHeight: (key: string, height: number) => void
+}) {
+  const root = useRef<HTMLDivElement>(null)
+  const width = twipsToPx(settings.pageWidth - settings.marginLeft - settings.marginRight)
+  useLayoutEffect(() => {
+    const element = root.current?.querySelector<HTMLElement>('.page-hf')
+    if (!element || !id) return
+    const measure = () => onHeight(hfHeightKey(id, width), hfReservedHeightPx(kind,
+      part ? { text: part.text, pageNumber: part.hasPageNumber, paras: part.paras } : null, width, part?.images,
+      { marginTopPx: twipsToPx(settings.marginTop), headerDistPx: twipsToPx(settings.headerDist ?? 720) }))
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    element.addEventListener('load', measure, true)
+    document.fonts.addEventListener('loadingdone', measure)
+    measure()
+    return () => { observer.disconnect(); element.removeEventListener('load', measure, true); document.fonts.removeEventListener('loadingdone', measure) }
+  }, [id, width, onHeight, part, kind, settings.marginTop, settings.headerDist])
+  if (!part) return null
+  return <div ref={root} data-hf-part={id} style={{ position: 'absolute', top: 0, bottom: 0, left, width, pointerEvents: 'none' }}>
+    <HeaderFooterArea kind={kind} value={{ text: part.text, pageNumber: part.hasPageNumber, paras: part.paras }}
+      images={part.images} readOnly onCommit={() => {}} pageNo={number} pageTotal={total}
+      boxGeom={hfStripGeom(settings)}
+      style={{ width, left: 0, transform: 'none', pointerEvents: 'auto',
+        ...(kind === 'header' ? { top: twipsToPx(settings.headerDist ?? 720), bottom: 'auto' }
+          : { bottom: twipsToPx(settings.footerDist ?? 720), top: 'auto' }) }} />
+  </div>
+}
+
+interface RemoteLayout {
+  styleContext: StyleContext
+  docx: DocxReadingContext
+  hfHeights: HfHeights
+}
+
+async function measureUnit(id: string, blocks: any[], layout: RemoteLayout, signal: AbortSignal): Promise<DocxPageBlock[]> {
+  const rows = new Map<number, TableRowLayout[]>()
+  const heights = new Map<number, number>()
+  const groups = new Map<number, any[]>()
+  for (const block of blocks) {
+    const section = sectionIndexAt(layout.docx.sections, block.docxIndex)
+    const group = groups.get(section) ?? []
+    group.push(block); groups.set(section, group)
+  }
+  for (const [index, group] of groups) {
+    const width = Math.min(...sectionColumns(layout.docx.sections[index].settings).map((column) => column.width))
+    for (const block of group)
+      if (block.type === 'table') rows.set(block.docxIndex, await measureTableRows(layout.styleContext, block, width, signal))
+    const measured = await measureBlockHeights(layout.styleContext, group.filter((block) => block.type !== 'table'), 100, width, signal)
+    for (const [key, value] of measured) heights.set(key, value)
+  }
+  return indexDocxUnit(id, blocks, heights, rows, (block) =>
+    sectionContentHeight(layout.docx, sectionIndexAt(layout.docx.sections, block.docxIndex), layout.hfHeights))
+}
+
 export function DocsRemote({ server, fileId, token, name }: Props) {
   const [renderBlocks, setRenderBlocks] = useState<DocxPageBlock[]>([])
   const [visibleUnits, setVisibleUnits] = useState<Map<string, { blocks: any[] }>>(new Map())
   const [retryWindow, setRetryWindow] = useState(0)
   const [page, setPage] = useState<PageSettings>(DEFAULT_PAGE)
+  const [docx, setDocx] = useState<DocxReadingContext | undefined>()
+  const [hfHeights, setHfHeights] = useState<Map<string, number>>(new Map())
   const [styleContext, setStyleContext] = useState<StyleContext>({
     styles: new Map(),
     numbering: new Map(),
@@ -141,21 +207,21 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
   visibleModels.current = visibleUnits
   const remeasureQueue = useRef(new DocxReadQueue(2))
   const remeasureJobs = useRef(new Map<string, { active: DocxRemoteSession; dirty: boolean; controller: AbortController }>())
-  const layoutContext = useRef({ styleContext, contentWidth: 1, contentHeight: 1 })
+  const fallbackSection = useMemo<SectionInfo>(() => ({ ...sectionFromSectPr('', 0, Number.MAX_SAFE_INTEGER),
+    settings: { ...sectionFromSectPr('', 0, Number.MAX_SAFE_INTEGER).settings, ...page } }), [page])
+  const documentContext = useMemo<DocxReadingContext>(() => docx ?? {
+    sections: [fallbackSection], hfParts: {}, evenAndOddHeaders: false, mirrorMargins: false,
+    footnotes: [], endnotes: [], noteNumbers: {},
+  }, [docx, fallbackSection])
+  const layoutContext = useRef<RemoteLayout>({ styleContext, docx: documentContext, hfHeights })
   const auth = useMemo<Record<string, string>>(
     () => (token ? { Authorization: `Bearer ${token}` } : {}) as Record<string, string>,
     [token],
   )
-  const pageWidth = twipsToPx(page.pageWidth)
-  const pageHeight = twipsToPx(page.pageHeight)
   const paddingTop = twipsToPx(page.marginTop)
-  const paddingRight = twipsToPx(page.marginRight)
-  const paddingBottom = twipsToPx(page.marginBottom)
-  const paddingLeft = twipsToPx(page.marginLeft)
-  const contentWidth = Math.max(1, pageWidth - paddingLeft - paddingRight)
-  const contentHeight = Math.max(1, pageHeight - paddingTop - paddingBottom)
-
-  layoutContext.current = { styleContext, contentWidth, contentHeight }
+  layoutContext.current = { styleContext, docx: documentContext, hfHeights }
+  const onHfHeight = useCallback((key: string, height: number) => setHfHeights((previous) =>
+    Math.abs((previous.get(key) ?? 0) - height) < 0.5 ? previous : new Map(previous).set(key, height)), [])
 
   const onAssetsReady = useCallback((id: string) => {
     const active = session.current
@@ -171,15 +237,8 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
         const unit = visibleModels.current.get(id)
         if (!unit) return
         const layout = layoutContext.current
-        const rows = new Map<number, TableRowLayout[]>()
-        for (const block of unit.blocks) {
-          if (block.type === 'table')
-            rows.set(block.docxIndex, await measureTableRows(layout.styleContext, block, layout.contentWidth, signal))
-        }
-        const heights = await measureBlockHeights(layout.styleContext,
-          unit.blocks.filter((block) => block.type !== 'table'), 100, layout.contentWidth, signal)
+        const replacement = await measureUnit(id, unit.blocks, layout, signal)
         if (signal.aborted || session.current !== active || !visibleModels.current.has(id)) return
-        const replacement = indexDocxUnit(id, unit.blocks, heights, rows, layout.contentHeight)
         setRenderBlocks((old) => signal.aborted || session.current !== active ||
           visibleModels.current.get(id) !== unit ? old : replaceDocxUnitIndex(old, id, replacement))
       }
@@ -200,18 +259,9 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       const result = await active.load(next, async (units) => {
         const layout = layoutContext.current
         for (const unit of units) {
-          const rows = new Map<number, TableRowLayout[]>()
-          for (const block of unit.blocks) {
-            if (block.type === 'table') {
-              rows.set(block.docxIndex, await measureTableRows(layout.styleContext, block, layout.contentWidth, active.signal))
-              if (session.current !== active) return
-            }
-          }
-          const heights = await measureBlockHeights(
-            layout.styleContext, unit.blocks.filter((block) => block.type !== 'table'), 100, layout.contentWidth, active.signal,
-          )
+          const indexed = await measureUnit(unit.id, unit.blocks, layout, active.signal)
           if (session.current !== active) return
-          descriptors.push(...indexDocxUnit(unit.id, unit.blocks, heights, rows, layout.contentHeight))
+          descriptors.push(...indexed)
         }
       })
       if (session.current !== active) return
@@ -238,6 +288,9 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     setRenderBlocks([])
     setVisibleUnits(new Map())
     setPage(DEFAULT_PAGE)
+    setDocx(undefined)
+    setNoteNumFmts({})
+    setHfHeights(new Map())
     setStyleContext({ styles: new Map(), numbering: new Map() })
     setCursor(undefined)
     setHasMore(false)
@@ -269,11 +322,15 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
         if (opened.model?.page) {
           const settings = opened.model.page as unknown as PageSettings
           setPage(settings)
-          layoutContext.current = {
-            ...layoutContext.current,
-            contentWidth: Math.max(1, twipsToPx(settings.pageWidth - settings.marginLeft - settings.marginRight)),
-            contentHeight: Math.max(1, twipsToPx(settings.pageHeight - settings.marginTop - settings.marginBottom)),
-          }
+          const fallback = sectionFromSectPr('', 0, Number.MAX_SAFE_INTEGER)
+          layoutContext.current = { ...layoutContext.current, docx: { ...layoutContext.current.docx,
+            sections: [{ ...fallback, settings: { ...fallback.settings, ...settings } }] } }
+        }
+        if (opened.model?.docx) {
+          const context = opened.model.docx as unknown as DocxReadingContext
+          setDocx(context)
+          setNoteNumFmts({ footnote: context.footnoteProps, endnote: context.endnoteProps })
+          layoutContext.current = { ...layoutContext.current, docx: context }
         }
         if (opened.fonts?.length)
           await fontScope.load(server, opened.sessionId, opened.fonts, auth, signal)
@@ -299,19 +356,15 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     }
   }, [server, fileId, token, auth, loadChunk])
 
-  const pages = useMemo(() => {
-    if (!renderBlocks.length) return []
-    const measures: BlockMeasure[] = renderBlocks.map((item) => ({
-      height: item.height,
-      breakBefore: item.breakBefore,
-    }))
-    return paginateBlocks(measures, contentHeight)
-  }, [renderBlocks, contentHeight])
+  const pages = useMemo(() => paginateSectionBlocks(renderBlocks, documentContext, hfHeights), [renderBlocks, documentContext, hfHeights])
+  useEffect(() => {
+    for (const id of visibleModels.current.keys()) onAssetsReady(id)
+  }, [hfHeights, onAssetsReady])
   // An oversized image/table can be taller than the text area; let that page
   // grow instead of clipping the block at the page edge.
   const pageBoxHeights = useMemo(
-    () => pages.map((page) => Math.max(pageHeight, page.height + paddingTop + paddingBottom + 40)),
-    [pages, pageHeight, paddingTop, paddingBottom],
+    () => pages.map((page) => Math.max(page.pageHeight, page.height + page.paddingTop + page.paddingBottom)),
+    [pages],
   )
   const tops = useMemo(() => {
     const result: number[] = []
@@ -474,30 +527,50 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
               key={page.index}
               className="viewer-doc-remote-slot"
               style={{
-                width: pageWidth,
-                marginLeft: -pageWidth / 2,
+                width: page.width,
+                marginLeft: -page.width / 2,
                 transform: `translateY(${tops[page.index]}px)`,
               }}
             >
               <div
                 className="viewer-doc-remote-page"
+                data-section-index={page.sectionIndex}
+                data-page-index={page.index}
+                data-page-number={formatPageNumber(page.number, documentContext.sections[page.sectionIndex].pageNumberFmt)}
                 style={{
-                  width: pageWidth,
+                  position: 'relative',
+                  width: page.width,
                   height: pageBoxHeights[page.index],
-                  padding: `${paddingTop}px ${paddingRight}px ${paddingBottom}px ${paddingLeft}px`,
+                  padding: 0,
                 }}
               >
-                {renderBlocks.slice(page.blockStart, page.blockEnd).every((item) => visibleUnits.has(item.unitId)) ? (
-                  <PageEditor
-                    unitKey={JSON.stringify([...new Set(renderBlocks.slice(page.blockStart, page.blockEnd).map((item) => item.unitId))])}
-                    onAssetsReady={onAssetsReady}
-                    blocks={renderBlocks.slice(page.blockStart, page.blockEnd).map((item) => {
-                      const block = visibleUnits.get(item.unitId)!.blocks[item.blockIndex]
-                      return item.tablePage ? sliceTableBlock(block, item.tablePage) : block
+                <RemoteHf kind="header" id={page.headerId} part={page.headerId ? documentContext.hfParts[page.headerId] : undefined}
+                  settings={page.settings} number={formatPageNumber(page.number, documentContext.sections[page.sectionIndex].pageNumberFmt)}
+                  total={pages.length} left={page.paddingLeft} onHeight={onHfHeight} />
+                {page.regions.map((region, regionIndex) => (
+                  <div key={regionIndex} className="viewer-doc-remote-region" data-section-index={region.sectionIndex}
+                    data-columns={region.columns.length} style={{ position: 'absolute', top: page.paddingTop + region.top,
+                      left: twipsToPx(documentContext.mirrorMargins && page.number % 2 === 0
+                        ? documentContext.sections[region.sectionIndex].settings.marginRight
+                        : documentContext.sections[region.sectionIndex].settings.marginLeft) }}>
+                    {region.columns.filter((column) => column.blockEnd > column.blockStart).map((column, columnIndex) => {
+                      const items = renderBlocks.slice(column.blockStart, column.blockEnd)
+                      return <div key={columnIndex} className="viewer-doc-remote-column"
+                        style={{ position: 'absolute', left: column.left, width: column.width }}>
+                        {items.every((item) => visibleUnits.has(item.unitId)) ? <PageEditor
+                          unitKey={JSON.stringify([...new Set(items.map((item) => item.unitId))])}
+                          onAssetsReady={onAssetsReady}
+                          blocks={items.map((item) => {
+                            const block = visibleUnits.get(item.unitId)!.blocks[item.blockIndex]
+                            return item.tablePage ? sliceTableBlock(block, item.tablePage) : block
+                          })} doc={styleContext} /> : <p role="status">正在加载正文…</p>}
+                      </div>
                     })}
-                    doc={styleContext}
-                  />
-                ) : <p role="status">正在加载正文…</p>}
+                  </div>
+                ))}
+                <RemoteHf kind="footer" id={page.footerId} part={page.footerId ? documentContext.hfParts[page.footerId] : undefined}
+                  settings={page.settings} number={formatPageNumber(page.number, documentContext.sections[page.sectionIndex].pageNumberFmt)}
+                  total={pages.length} left={page.paddingLeft} onHeight={onHfHeight} />
               </div>
             </div>
           ))}

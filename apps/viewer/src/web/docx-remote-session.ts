@@ -5,10 +5,11 @@ import {
 import { DocxChunkCache } from './docx-chunk-cache'
 import { DocxReadQueue } from './docx-read-queue'
 import { needsResourceRefresh, originOf } from './signed-url'
+import type { DocModel } from '@genoffice/parse-contract'
 
 export interface DocxOpened {
   sessionId: string
-  model?: { page?: Record<string, number> }
+  model?: Pick<DocModel, 'page' | 'docx'>
   fonts?: Array<{ id: string; family: string; bold: boolean; italic: boolean }>
 }
 interface Listing {

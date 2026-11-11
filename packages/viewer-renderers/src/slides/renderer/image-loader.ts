@@ -39,10 +39,33 @@ function waitForDocFonts(timeoutMs = 4000): Promise<void> {
   })
 }
 
-async function rasterizeMetafile(url: string): Promise<string | null> {
+async function rasterizeMetafile(url: string, mimeHint?: string): Promise<string | null> {
   const m = METAFILE_RE.exec(url)
-  if (!m) return null
   await waitForDocFonts()
+  if (!m) {
+    const mime = mimeHint || (/\.wmf(?:[?#]|$)/i.test(url) ? 'image/x-wmf' : 'image/x-emf')
+    const response = await fetch(url)
+    if (!response.ok) return null
+    const limit = MAX_METAFILE_BASE64_CHARS * 3 / 4
+    if (Number(response.headers.get('Content-Length')) > limit) { await response.body?.cancel(); return null }
+    const reader = response.body?.getReader()
+    if (!reader) return null
+    const chunks: Uint8Array[] = []
+    let size = 0
+    try {
+      for (;;) {
+        const result = await reader.read()
+        if (result.done) break
+        size += result.value.byteLength
+        if (size > limit) { await reader.cancel(); return null }
+        chunks.push(result.value)
+      }
+    } finally { reader.releaseLock() }
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length }
+    return metafileToDataUrl(bytes, mime, { maxSidePx: MAX_METAFILE_RASTER_PX })
+  }
   const b64 = url.slice(url.indexOf(',') + 1)
   // atob + Uint8Array double-allocate the payload on the main thread: refuse
   // huge metafiles before decoding (mirrors the 40MB PNG cap in element-clipboard).
@@ -65,6 +88,8 @@ export function createImageLoader(
   maxConcurrent = 3,
   /** Optional one-shot URL refresh after a failed decode (403/expiry/origin change). */
   retry?: (url: string) => Promise<string | null>,
+  /** Blob URLs lose the original extension; the carrier can supply its MIME. */
+  mimeType?: (url: string) => string | undefined,
 ) {
   const loaded = new Map<string, HTMLImageElement>()
   const loading = new Set<string>()
@@ -107,8 +132,9 @@ export function createImageLoader(
       return new Promise((resolve) => {
         img.onload = () => resolve(img)
         img.onerror = () => resolve(null)
-        if (METAFILE_RE.test(source)) {
-          void rasterizeMetafile(source)
+        const mime = mimeType?.(source)
+        if (METAFILE_RE.test(source) || /\.(?:emf|wmf)(?:[?#]|$)/i.test(source) || /^image\/(?:x-)?(?:emf|wmf)$/.test(mime ?? '')) {
+          void rasterizeMetafile(source, mime)
             .then((png) => {
               if (png) img.src = png
               else resolve(null)

@@ -103,6 +103,8 @@ function mimeOf(url: string) {
         bmp: 'image/bmp',
         webp: 'image/webp',
         svg: 'image/svg+xml',
+        emf: 'image/x-emf',
+        wmf: 'image/x-wmf',
       }[ext] || 'application/octet-stream'
     )
   }
@@ -375,9 +377,10 @@ export function Slides({
         })
       }
     }
+    const imageMime = (url: string) => mimeOf(keyOf.current.get(url) ?? url)
     const loader = createImageLoader(applyImages, 16, 100, 3, async (url) =>
-      server ? await refreshSignedPartUrl(url, { server, token }) : null)
-    const thumbLoader = createImageLoader(applyImages, 4, 100, 1)
+      server ? await refreshSignedPartUrl(url, { server, token }) : null, imageMime)
+    const thumbLoader = createImageLoader(applyImages, 4, 100, 1, undefined, imageMime)
     loaderRef.current = loader
     const session =
       server && fileId

@@ -2,6 +2,7 @@ import { isAbsolute } from 'node:path'
 import { CACHE_DEFAULTS } from './cache-contract'
 import { WORK_POOL_DEFAULTS } from './work-pools'
 import type { ParseServerOptions } from './server'
+import { resolveMediaOptions } from './media-options'
 
 const MAX_TIMER = 2_147_483_647
 /** Reject malformed overrides rather than silently restoring a default or disabling a cap. */
@@ -21,6 +22,8 @@ export function numberEnv(
 }
 
 export function validateRuntimeOptions(options: ParseServerOptions): void {
+  const media = resolveMediaOptions(options.media)
+  if (media.enabled && !options.mysql) throw new Error('media conversion requires mysql')
   const integer = (name: keyof ParseServerOptions, fallback: number, min: number, max: number) => {
     const value = options[name] ?? fallback
     if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min || value > max)

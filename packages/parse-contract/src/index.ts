@@ -69,6 +69,7 @@ export interface Capabilities {
   }
   features: {
     lazyAssets: boolean
+    mediaTranscoding?: boolean
     rangeRequests: boolean
     fontWidthFeedback: boolean
     streamingUnits: boolean
@@ -340,4 +341,19 @@ export interface OfflineBundleManifest {
   totalBytes: number
   resources: OfflineBundleResource[]
   externalResources: string[]
+}
+
+/** Independent media preparation; document artifacts remain immutable. */
+export interface MediaPreparation {
+  jobId: string
+  state: 'queued' | 'processing' | 'ready' | 'failed'
+  stage: 'queued' | 'probing' | 'converting' | 'verifying' | 'ready' | 'failed'
+  progress: number
+  kind: 'video' | 'audio'
+  strategy?: 'reuse' | 'remux' | 'transcode'
+  cacheHit?: boolean
+  url?: string
+  mime?: string
+  bytes?: number
+  errorCode?: string
 }

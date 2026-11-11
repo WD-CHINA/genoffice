@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { createParseServer } from './server'
 import { mysqlConfigFromEnv } from './mysql'
 import { redisConfigFromEnv } from './redis-cache-client'
+import { mediaOptionsFromEnv } from './media-options'
 import { deploymentOptionsFromEnv } from './deployment-options'
 import type { CacheMode } from './cache-contract'
 
@@ -15,6 +16,7 @@ const dataDir = resolve(process.env.PARSE_SERVER_DATA_DIR ?? '.parse-server-data
 const deployment = await deploymentOptionsFromEnv()
 
 const server = await createParseServer({
+  media: mediaOptionsFromEnv(),
   ...deployment,
   dataDir,
   port,

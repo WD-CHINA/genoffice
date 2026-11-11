@@ -1,0 +1,6 @@
+**/node_modules
+**/dist
+**/.git
+.workbuddy
+**/__pycache__
+**/.parse-server-data

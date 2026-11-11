@@ -1,0 +1,22 @@
+# Overlay on compose.yml. Both HTTP instances share MySQL and the same media volume.
+services:
+  app-a:
+    image: genoffice-media-production:local
+    build:
+      dockerfile: apps/parse-server/Dockerfile
+    environment:
+      PARSE_SERVER_MEDIA_ENABLED: 'true'
+      PARSE_SERVER_MEDIA_CONCURRENCY: '1'
+  app-b:
+    image: genoffice-media-production:local
+    build:
+      dockerfile: apps/parse-server/Dockerfile
+    environment:
+      PARSE_SERVER_MEDIA_ENABLED: 'true'
+      PARSE_SERVER_MEDIA_CONCURRENCY: '1'
+  tests:
+    image: genoffice-media-tests:local
+    build:
+      dockerfile: apps/parse-server/deploy/validation/Dockerfile
+      args:
+        BASE_IMAGE: genoffice-media-validation:local

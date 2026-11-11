@@ -77,8 +77,13 @@ import { normalizeLayoutPrefs } from './layout-prefs'
 import { verifyRestore, type BackupManifest, type RestoreReport } from './backup-manifest'
 import { MEMORY_CACHE_BUDGET_DEFAULT_BYTES, MODEL_CACHE_DEFAULT_BYTES, ModelCache } from './model-cache'
 import { WORK_POOL_DEFAULTS, WorkPools } from './work-pools'
+import { MediaService } from './media-service'
+import { handleMedia } from './media-http'
+import { resolveMediaOptions, type MediaOptions } from './media-options'
 
 export interface ParseServerOptions {
+  /** Independent persistent media queue; enabled deployments require MySQL and FFmpeg. */
+  media?: MediaOptions
   /** Directory for the content-addressed store, metadata and temp uploads. */
   dataDir: string
   /** Staged primary-model migration; catalog requires MySQL. */
@@ -246,6 +251,7 @@ interface SessionEntry {
 }
 
 interface Context {
+  media?: MediaService
   dataDir: string
   store: ContentStore
   artifacts: ArtifactStore
@@ -431,6 +437,7 @@ function capabilitiesOf(ctx: Context): Capabilities {
     fontSetHash: ctx.fontSetHash,
     thresholds: ctx.parseThresholds,
     features: {
+      mediaTranscoding: ctx.media?.options.enabled === true,
       lazyAssets: true,
       rangeRequests: true,
       fontWidthFeedback: true,
@@ -2009,6 +2016,7 @@ async function pinResponseFile(ctx: Context, fileId: string, res: ServerResponse
 
 async function fileInUse(ctx: Context, fileId: string): Promise<boolean> {
   return (
+    (ctx.media ? (await ctx.media.catalog.protectedFiles()).includes(fileId) : false) ||
     ctx.files.has(fileId) ||
     ctx.artifacts.activeFileIds.has(fileId) ||
     [...ctx.sessions.values()].some((entry) => entry.record.fileId === fileId) ||
@@ -2416,6 +2424,8 @@ async function route(
           .slice(4)
           .map((segment) => decodeURIComponent(segment))
           .join('/')
+      else if (segments[3] === 'media' && segments.length === 6 && segments[5] === 'content' &&
+          (req.method === 'GET' || req.method === 'HEAD')) resource = `media:${segments[4]}`
       if (resource) {
         const exp = Number(url.searchParams.get('exp'))
         const sig = url.searchParams.get('sig') ?? ''
@@ -2430,7 +2440,7 @@ async function route(
 
   if (req.method === 'GET' && url.pathname === '/metrics') {
     const memory = process.memoryUsage()
-    const body = renderPrometheus({
+    let body = renderPrometheus({
       metrics: ctx.metrics,
       sessions: ctx.sessions.size + ctx.pendingViews.values().length,
       workers: ctx.parseQueue.snapshot.running,
@@ -2459,6 +2469,15 @@ async function route(
       storageArtifactBytes: await ctx.artifacts.totalBytes(),
       storageStagingBytes: await ctx.artifacts.stagingBytes(),
     })
+    if (ctx.media) {
+      const media = await ctx.media.catalog.snapshot()
+      body += '\n# TYPE genoffice_media_jobs gauge\n'
+      for (const state of ['queued', 'processing', 'ready', 'failed'])
+        body += `genoffice_media_jobs{state="${state}"} ${media.jobs[state] ?? 0}\n`
+      body += `genoffice_media_cache_bytes ${media.cacheBytes}\n`
+      for (const [name, value] of Object.entries(ctx.media.stats))
+        body += `genoffice_media_${name}_total ${value}\n`
+    }
     res.writeHead(200, {
       'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
       'Content-Length': Buffer.byteLength(body),
@@ -2475,6 +2494,7 @@ async function route(
       sessions: ctx.sessions.size + ctx.pendingViews.values().length,
       pendingSessions: ctx.pendingViews.values().length,
       activeWorkers: ctx.parseQueue.snapshot.running,
+      media: ctx.media ? { enabled: ctx.media.options.enabled, ...await ctx.media.catalog.snapshot(), counters: ctx.media.stats } : null,
       requests: ctx.metrics.requests,
       errors: ctx.metrics.errors,
       uploads: ctx.metrics.uploads,
@@ -2605,6 +2625,11 @@ async function route(
   const meta = await ctx.store.stat(fileId)
   if (!meta) {
     sendError(res, 404, 'not_found', 'unknown file', false, requestId)
+    return
+  }
+  if (segments[3] === 'media') {
+    await handleMedia(req, res, { media: ctx.media, fileId, rest: segments.slice(4),
+      baseUrl: baseUrlOf(req, ctx), token: ctx.token, readJson: () => readJsonBody(req, 8192) })
     return
   }
   if (segments.length === 4 && segments[3] === 'part-url' && req.method === 'POST') {
@@ -2763,6 +2788,16 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
   const db = options.mysql ? new MysqlDatabase(options.mysql) : undefined
   const store = new ContentStore(options.dataDir, db)
   await store.init()
+  const mediaOptions = resolveMediaOptions(options.media)
+  if (mediaOptions.enabled && !db) {
+    throw new Error('media conversion requires MySQL for durable shared tasks')
+  }
+  const existingMediaCache = db && (await stat(join(options.dataDir, 'media-cache')).catch(() => null))?.isDirectory()
+  const media = (mediaOptions.enabled || existingMediaCache) && db ? new MediaService({
+    dataDir: options.dataDir, store, db, limits, options: mediaOptions,
+  }) : undefined
+  try { await media?.init() }
+  catch (error) { await media?.close(); await db?.close(); throw error }
   const sharedAdmission = db && (
     options.storageAdmission === 'shared' ||
     (options.storageAdmission !== 'instance' && options.artifactBackend === 'catalog')
@@ -2919,6 +2954,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     })
 
   const ctx: Context = {
+    media,
     dataDir: options.dataDir,
     store,
     artifacts,
@@ -3135,6 +3171,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
   let closing: Promise<void> | undefined
   const close = (): Promise<void> => closing ??= (async () => {
     ctx.closing = true
+    await shutdownDeadline(ctx.media?.close() ?? Promise.resolve(), 'media_queue', ctx.shutdownTimeoutMs)
     clearInterval(sweeper)
     clearInterval(gcTimer)
     ctx.previews.clear()

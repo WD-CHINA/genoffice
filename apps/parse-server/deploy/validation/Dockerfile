@@ -1,5 +1,6 @@
 # Validation runtime only. The desktop node_modules directory is never copied.
-FROM node:22-bookworm-slim
+ARG BASE_IMAGE=node:22-bookworm-slim
+FROM ${BASE_IMAGE}
 WORKDIR /workspace
 RUN printf '{"private":true,"type":"module"}\n' > package.json \
  && npm install --legacy-peer-deps --ignore-scripts --no-audit --no-fund --save-exact \

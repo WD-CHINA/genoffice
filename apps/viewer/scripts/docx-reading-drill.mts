@@ -5,6 +5,7 @@ import { resolve, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import JSZip from 'jszip'
 import { chromium } from 'playwright-core'
+import { inspectDocxTableFlow, summarizeDocxTableFlow } from './docx-flow-probe.mjs'
 
 const output = resolve(process.env.WORD_EVIDENCE_DIR ?? '/tmp/genoffice-word-fixes')
 await mkdir(output, { recursive: true })
@@ -59,6 +60,26 @@ seed.file(
 const diagnosticPath = join(output, 'long-and-merged.docx')
 await writeFile(diagnosticPath, await seed.generateAsync({ type: 'nodebuffer' }))
 sources.push({ name: 'long-and-merged', path: diagnosticPath })
+// Different line pitches must advance independently; completed cells align once.
+const flowZip = await JSZip.loadAsync(await readFile(sources[0].path))
+const flowCell = (text: string, align = 'top', pitch = 300) =>
+  `<w:tc><w:tcPr><w:tcW w:w="2100" w:type="dxa"/><w:vAlign w:val="${align}"/></w:tcPr><w:p><w:pPr><w:spacing w:before="0" w:after="0" w:line="${pitch}" w:lineRule="exact"/></w:pPr><w:r><w:rPr><w:sz w:val="20"/></w:rPr>${text}</w:r></w:p></w:tc>`
+const flowLines = (prefix: string, count: number) =>
+  Array.from(
+    { length: count },
+    (_, i) => `<w:t>${prefix}_${String(i).padStart(3, '0')}</w:t>${i < count - 1 ? '<w:br/>' : ''}`,
+  ).join('')
+flowZip.file(
+  'word/document.xml',
+  original.replace(
+    /<w:body>[\s\S]*<\/w:body>/,
+    `<w:body>${p('FLOW_PREFIX '.repeat(160))}<w:tbl><w:tblPr><w:tblW w:w="8400" w:type="dxa"/><w:tblLayout w:type="fixed"/></w:tblPr><w:tblGrid>${'<w:gridCol w:w="2100"/>'.repeat(4)}</w:tblGrid><w:tr>${flowCell(flowLines('FLOW_A', 75))}${flowCell(flowLines('FLOW_B', 61), 'top', 375)}${flowCell('<w:t>FLOW_MIDDLE</w:t>', 'center')}${flowCell('<w:t>FLOW_BOTTOM</w:t>', 'bottom')}</w:tr></w:tbl>${p('FLOW_DOCUMENT_END')}${sect}</w:body>`,
+  ),
+)
+const flowPath = join(output, 'independent-cells.docx')
+await writeFile(flowPath, await flowZip.generateAsync({ type: 'nodebuffer' }))
+sources.push({ name: 'independent-cells', path: flowPath })
+
 const noteZip = await JSZip.loadAsync(await readFile(sources[1].path))
 const noteDoc = await noteZip.file('word/document.xml')!.async('string')
 noteZip.file(
@@ -141,6 +162,36 @@ edgeZip.file(
 const edgePath = join(output, 'table-right-edge.docx')
 await writeFile(edgePath, await edgeZip.generateAsync({ type: 'nodebuffer' }))
 sources.push({ name: 'table-right-edge', path: edgePath })
+for (const variant of ['borderless', 'styled'] as const) {
+  const zip = await JSZip.loadAsync(await readFile(edgePath))
+  const xml = await zip.file('word/document.xml')!.async('string')
+  zip.file(
+    'word/document.xml',
+    variant === 'borderless'
+      ? xml.replaceAll('w:val="single"', 'w:val="nil"')
+      : xml
+          .replaceAll('w:val="single"', 'w:val="double"')
+          .replaceAll('w:color="000000"', 'w:color="336699"'),
+  )
+  const path = join(output, `table-${variant}.docx`)
+  await writeFile(path, await zip.generateAsync({ type: 'nodebuffer' }))
+  sources.push({ name: `table-${variant}`, path })
+}
+const typographyZip = await JSZip.loadAsync(await readFile(sources[0].path))
+typographyZip.file(
+  'word/styles.xml',
+  `<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Arial" w:hAnsi="Arial" w:eastAsia="SimSun"/><w:sz w:val="24"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="240" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:styleId="Normal" w:default="1"><w:name w:val="Normal"/></w:style><w:style w:type="paragraph" w:styleId="Base"><w:name w:val="Base"/><w:basedOn w:val="Normal"/><w:rPr><w:sz w:val="28"/><w:color w:val="123456"/></w:rPr><w:pPr><w:spacing w:after="180" w:line="360" w:lineRule="exact"/></w:pPr></w:style><w:style w:type="paragraph" w:styleId="Derived"><w:name w:val="Derived"/><w:basedOn w:val="Base"/></w:style></w:styles>`,
+)
+typographyZip.file(
+  'word/document.xml',
+  original.replace(
+    /<w:body>[\s\S]*<\/w:body>/,
+    `<w:body>${p('DEFAULT_BASELINE 中文')}<w:p><w:pPr><w:pStyle w:val="Derived"/></w:pPr><w:r><w:t>NAMED_OVERRIDE 中文</w:t></w:r></w:p>${sect}</w:body>`,
+  ),
+)
+const typographyPath = join(output, 'typography-defaults.docx')
+await writeFile(typographyPath, await typographyZip.generateAsync({ type: 'nodebuffer' }))
+sources.push({ name: 'typography-defaults', path: typographyPath })
 const browser = await chromium.launch({
   headless: true,
   executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -205,11 +256,109 @@ try {
         'rgb(255, 255, 255)',
         'Word paper must stay readable in a dark shell',
       )
+      sample.typography = await content.evaluate(() => {
+        const root = document.querySelector<HTMLElement>('.viewer-doc-remote')!
+        const editor = root.querySelector('.doc-page')!
+        const chinese = root.querySelector('.doc-east-asian-font')
+        return {
+          sheets: document.querySelectorAll('[data-docx-style-context]').length,
+          fallback: root.dataset.docxThemeFallback,
+          baseSize: getComputedStyle(editor).fontSize,
+          chineseFont: chinese && getComputedStyle(chinese).fontFamily,
+          themeLoaded: [...document.fonts].some(
+            (face) => face.family.includes('GenOffice Theme Sans SC') && face.status === 'loaded',
+          ),
+        }
+      })
+      assert.equal(sample.typography.sheets, 1, 'one document must own one shared style sheet')
+      if (source.name === 'business') {
+        assert.equal(sample.typography.fallback, 'bundled')
+        assert.equal(
+          sample.typography.themeLoaded,
+          true,
+          'the actual fallback face must finish loading before pagination',
+        )
+        assert.match(sample.typography.chineseFont, /GenOffice Theme Sans SC/)
+      }
+      if (source.name === 'typography-defaults') {
+        sample.inheritedStyle = await content.evaluate(() => {
+          const ps = [...document.querySelectorAll('.viewer-doc-remote-column p')]
+          const css = (text: string) => {
+            const node = ps.find((p) => p.textContent?.includes(text))!,
+              style = getComputedStyle(node)
+            return {
+              size: parseFloat(style.fontSize),
+              color: style.color,
+              line: parseFloat(style.lineHeight),
+              after: parseFloat(style.marginBottom),
+            }
+          }
+          return { base: css('DEFAULT_BASELINE'), named: css('NAMED_OVERRIDE') }
+        })
+        assert.equal(
+          sample.inheritedStyle.base.size,
+          16,
+          'default font size must reach unstyled paragraphs',
+        )
+        assert.ok(
+          Math.abs(sample.inheritedStyle.named.size - 28 / 1.5) < 0.01,
+          'basedOn style size must reach descendants',
+        )
+        assert.equal(sample.inheritedStyle.named.color, 'rgb(18, 52, 86)')
+        assert.equal(
+          sample.inheritedStyle.named.line,
+          24,
+          'exact line height must survive style inheritance',
+        )
+        assert.equal(
+          sample.inheritedStyle.named.after,
+          12,
+          'style paragraph spacing must reach descendants',
+        )
+      }
       if (source.name === 'business' || source.name === 'table-right-edge') {
+        if (source.name === 'business') {
+          sample.pictureExtents = await content.evaluate(() =>
+            [
+              ...document.querySelectorAll<HTMLImageElement>(
+                '.viewer-doc-remote-column .doc-inline-pic > img',
+              ),
+            ]
+              .filter((image) => image.naturalWidth > 0)
+              .map((image) => {
+                const rect = image.getBoundingClientRect(),
+                  wrapper = image.parentElement!
+                return {
+                  width: rect.width,
+                  height: rect.height,
+                  authoredWidth: parseFloat(image.style.width),
+                  authoredHeight: parseFloat(image.style.height),
+                  cropWidth: wrapper.getBoundingClientRect().width,
+                  clip: getComputedStyle(wrapper).clipPath,
+                }
+              }),
+          )
+          assert.ok(sample.pictureExtents.length, 'business document pictures must be rendered')
+          for (const image of sample.pictureExtents) {
+            assert.ok(
+              Math.abs(image.width / image.height - image.authoredWidth / image.authoredHeight) <
+                0.002,
+              'narrow cells must preserve the authored drawing ratio',
+            )
+            assert.ok(
+              Math.abs(image.width - image.authoredWidth) < 0.1,
+              'drawing width must retain the source extent',
+            )
+            assert.ok(
+              image.cropWidth < image.width && image.clip !== 'none',
+              'oversized picture must crop inside its cell',
+            )
+          }
+        }
         sample.rightEdge = await content.evaluate(() => {
-          const table = document.querySelector<HTMLTableElement>(
-            '.viewer-doc-remote-column .doc-table',
-          )!
+          const table = [
+            ...document.querySelectorAll<HTMLTableElement>('.viewer-doc-remote-column .doc-table'),
+          ].find((node) => !node.closest('[data-docx-flow-source]'))!
           const cell = table.rows[0].cells[table.rows[0].cells.length - 1]
           const rect = cell.getBoundingClientRect()
           const x = rect.right - 0.25,
@@ -260,7 +409,63 @@ try {
       await page.screenshot({ path: join(output, `${source.name}-first.png`) })
       const visited = new Set<string>()
       const noteIds = new Set<string>()
+      const tableFrames = new Map<string, any>()
+      const flows = new Map<string, any>()
       for (let step = 0; step < 160; step++) {
+        if (['business', 'independent-cells'].includes(source.name)) {
+          const entries = await content.evaluate(({ code, skip }) => (0, eval)(`(${code})`)(skip), {
+            code: inspectDocxTableFlow.toString(),
+            skip: [...flows.keys()],
+          })
+          for (const entry of entries) flows.set(entry.key, entry)
+        }
+
+        if (
+          ['business', 'table-right-edge', 'table-borderless', 'table-styled'].includes(source.name)
+        ) {
+          const frames = await content.evaluate(() =>
+            [...document.querySelectorAll<HTMLElement>('.viewer-doc-fragment')]
+              .map((fragment) => {
+                const slices = [
+                  ...fragment.querySelectorAll<HTMLElement>('.viewer-doc-fragment-slice'),
+                ]
+                const slice = slices.at(-1)!,
+                  grid = [...slice.querySelectorAll('table')].find(
+                    (node) => !node.closest('[data-docx-flow-source]'),
+                  )
+                if (!grid) return null
+                const box = slice.getBoundingClientRect(),
+                  table = grid.getBoundingClientRect()
+                const edges = [
+                  ...slice.querySelectorAll<HTMLElement>('[data-docx-table-edge]'),
+                ].filter(
+                  (edge) =>
+                    parseFloat(
+                      getComputedStyle(edge)[
+                        edge.dataset.docxTableEdge === 'top'
+                          ? 'borderTopWidth'
+                          : 'borderBottomWidth'
+                      ],
+                    ) > 0,
+                )
+                return {
+                  key: `${fragment.dataset.docxIndex}:${fragment.dataset.sourceFrom}`,
+                  topNeeded: box.top > table.top + 1,
+                  bottomNeeded: box.bottom < table.bottom - 1,
+                  top: edges.some((edge) => edge.dataset.docxTableEdge === 'top'),
+                  bottom: edges.some((edge) => edge.dataset.docxTableEdge === 'bottom'),
+                  borders: edges.map((edge) => {
+                    const css = getComputedStyle(edge)
+                    return edge.dataset.docxTableEdge === 'top'
+                      ? { style: css.borderTopStyle, color: css.borderTopColor }
+                      : { style: css.borderBottomStyle, color: css.borderBottomColor }
+                  }),
+                }
+              })
+              .filter(Boolean),
+          )
+          for (const frame of frames) tableFrames.set(frame!.key, frame)
+        }
         const status = await content.evaluate(() => {
           const viewport = document.querySelector<HTMLElement>('.viewer-doc-remote-viewport')!
           const pages = [...document.querySelectorAll<HTMLElement>('.viewer-doc-remote-page')].map(
@@ -281,7 +486,65 @@ try {
         if (status.terminal && !status.more) break
         await page.waitForTimeout(80)
       }
+      if (['business', 'independent-cells'].includes(source.name)) {
+        sample.cellFlow = summarizeDocxTableFlow([...flows.values()])
+        assert.ok(
+          sample.cellFlow.fragments > 1,
+          'independent cell flow must be active across pages',
+        )
+        assert.ok(sample.cellFlow.expected > 100, 'probe must cover actual text')
+        assert.deepEqual(sample.cellFlow.missing, [], 'all source glyphs must be painted')
+        assert.deepEqual(sample.cellFlow.duplicates, [], 'source glyphs must be painted once')
+        if (source.name === 'independent-cells') {
+          const markers = sample.cellFlow.markers
+          assert.equal(markers.length, 2, 'completed short cells appear in only one fragment')
+          const middle = markers.find((marker: any) => marker.text === 'FLOW_MIDDLE')!
+          const bottom = markers.find((marker: any) => marker.text === 'FLOW_BOTTOM')!
+          assert.ok(
+            middle && Math.abs(middle.top - middle.bottom) < 4,
+            'middle alignment uses the first fragment height',
+          )
+          assert.ok(
+            bottom && bottom.bottom >= -0.1 && bottom.bottom < 15,
+            'bottom alignment uses the first fragment height',
+          )
+        }
+      }
       sample.visited = visited.size
+      if (
+        ['business', 'table-right-edge', 'table-borderless', 'table-styled'].includes(source.name)
+      ) {
+        sample.tableFrames = [...tableFrames.values()]
+        assert.ok(
+          sample.tableFrames.some((frame: any) => frame.bottomNeeded),
+          'fixture must exercise a split table',
+        )
+        for (const frame of sample.tableFrames) {
+          assert.equal(
+            frame.top,
+            source.name !== 'table-borderless' && frame.topNeeded,
+            'continuation frame must respect table top borders',
+          )
+          assert.equal(
+            frame.bottom,
+            source.name !== 'table-borderless' && frame.bottomNeeded,
+            'continuation frame must respect table bottom borders',
+          )
+          if (source.name === 'table-styled')
+            for (const border of frame.borders) {
+              assert.equal(
+                border.style,
+                'double',
+                'continuation frame must preserve the line style',
+              )
+              assert.equal(
+                border.color,
+                'rgb(51, 102, 153)',
+                'continuation frame must preserve the line color',
+              )
+            }
+        }
+      }
       sample.noteIds = [...noteIds]
       if (source.name === 'long-notes') {
         assert.ok(visited.size > 2, 'long footnote must continue across physical pages')

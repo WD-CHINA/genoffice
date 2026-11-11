@@ -1,5 +1,6 @@
 import type { DocxBlockGeometry, DocxClip } from './docx-fragments'
 import { paginateTableRows, type TablePage, type TableRowLayout } from './docx-table-pagination'
+import type { TableFlowLayout } from './docx-table-flow'
 
 /** Durable layout metadata only: never retain text, images or table cell models here. */
 export interface DocxPageBlock {
@@ -17,6 +18,19 @@ export interface DocxPageBlock {
   keepLines?: boolean
   widowControl?: boolean
   noteKey?: string
+  tableFlow?: TableFlowLayout
+}
+
+/** Numeric cell metadata is subject to the same translated-layer noise as row cuts. */
+function sameFlowGeometry(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) < .1
+  if (Array.isArray(a) && Array.isArray(b))
+    return a.length === b.length && a.every((value, index) => sameFlowGeometry(value, b[index]))
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false
+  const left = a as Record<string, unknown>, right = b as Record<string, unknown>
+  const keys = Object.keys(left)
+  return keys.length === Object.keys(right).length && keys.every(key => Object.hasOwn(right, key) && sameFlowGeometry(left[key], right[key]))
 }
 
 /** Translated WebView layers introduce subpixel float noise; it must not trigger another layout pass. */
@@ -26,6 +40,7 @@ function sameGeometry(a: DocxBlockGeometry | undefined, b: DocxBlockGeometry | u
   const close = (x = 0, y = 0) => Math.abs(x - y) < .1
   const points = (x: readonly number[] = [], y: readonly number[] = []) => x.length === y.length && x.every((value, i) => close(value, y[i]))
   return close(a.height, b.height) && close(a.headerHeight, b.headerHeight) && points(a.cuts, b.cuts) && points(a.forcedCuts, b.forcedCuts)
+    && sameFlowGeometry(a.tableFlow, b.tableFlow)
     && a.notes.length === b.notes.length && a.notes.every((note, index) => {
       const next = b.notes[index]
       return note.id === next.id && note.kind === next.kind && close(note.top, next.top) && close(note.bottom, next.bottom)

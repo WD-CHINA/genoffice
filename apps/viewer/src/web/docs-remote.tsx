@@ -30,6 +30,10 @@ import { indexDocxUnit, replaceDocxUnitIndex, type DocxPageBlock } from './docx-
 import { DocxReadQueue } from './docx-read-queue'
 import { measureTableRows, sliceTableBlock } from './docx-table-measure'
 import { measureBlockHeights } from './docx-block-measure'
+import { DocxFragmentSlice } from './docx-fragment-slice'
+import { reviveDocxStyles, mountDocxStyles, docxSectionTypography, type RemoteDocxStyleContext } from './docx-style-context'
+import type { DocxStyleContext } from '@genoffice/docx-engine'
+import themeSansUrl from '@genoffice/viewer-renderers/docs/renderer/fonts/NotoSansCJKsc-Regular-subset.woff2?url'
 
 interface PageSettings {
   pageWidth: number
@@ -59,31 +63,7 @@ interface Props {
   name?: string
 }
 
-interface StyleContextPayload {
-  styles: Array<[string, any]>
-  docDefaults?: any
-  numbering: Array<[string, any]>
-  themeColors?: any
-  themeFonts?: any
-}
-
-interface StyleContext {
-  styles: Map<string, any>
-  numbering: Map<string, any>
-  docDefaults?: any
-  themeColors?: any
-  themeFonts?: any
-}
-
-function reviveStyleContext(payload: StyleContextPayload): StyleContext {
-  return {
-    styles: new Map(payload.styles),
-    numbering: new Map(payload.numbering),
-    docDefaults: payload.docDefaults,
-    themeColors: payload.themeColors,
-    themeFonts: payload.themeFonts,
-  }
-}
+type StyleContext = RemoteDocxStyleContext
 
 function PageEditor({ blocks, doc, unitKey, onAssetsReady }: {
   blocks: any[]; doc: StyleContext; unitKey: string; onAssetsReady: (id: string) => void
@@ -91,7 +71,7 @@ function PageEditor({ blocks, doc, unitKey, onAssetsReady }: {
   const editor = useEditor({
     extensions: editorExtensions,
     editable: false,
-    editorProps: { attributes: { class: 'doc-page' } },
+    editorProps: { attributes: { class: 'doc-page', lang: doc.docDefaults?.lang ?? 'en-US' } },
   })
   useEffect(() => {
     if (!editor) return
@@ -143,7 +123,7 @@ function RemoteHf({ part, kind, settings, number, total, id, left, onHeight }: {
     return () => { observer.disconnect(); element.removeEventListener('load', measure, true); document.fonts.removeEventListener('loadingdone', measure) }
   }, [id, width, onHeight, part, kind, settings.marginTop, settings.headerDist])
   if (!part) return null
-  return <div ref={root} data-hf-part={id} style={{ position: 'absolute', top: 0, bottom: 0, left, width, pointerEvents: 'none' }}>
+  return <div ref={root} className="viewer-doc-remote-hf" data-hf-part={id} style={{ position: 'absolute', top: 0, bottom: 0, left, width, pointerEvents: 'none' }}>
     <HeaderFooterArea kind={kind} value={{ text: part.text, pageNumber: part.hasPageNumber, paras: part.paras }}
       images={part.images} readOnly onCommit={() => {}} pageNo={number} pageTotal={total}
       boxGeom={hfStripGeom(settings)}
@@ -172,12 +152,12 @@ async function measureUnit(id: string, blocks: any[], layout: RemoteLayout, sign
   for (const [index, group] of groups) {
     const width = Math.min(...sectionColumns(layout.docx.sections[index].settings).map((column) => column.width))
     for (const block of group)
-      if (block.type === 'table') rows.set(block.docxIndex, await measureTableRows(layout.styleContext, block, width, signal, geometries))
+      if (block.type === 'table') rows.set(block.docxIndex, await measureTableRows(layout.styleContext, block, width, signal, geometries, layout.docx.sections[index].settings))
     for (const block of group) if (block.type === 'table') {
       const tableRows = rows.get(block.docxIndex)
       if (tableRows) heights.set(block.docxIndex, tableRows.reduce((sum, row) => sum + row.height, 0))
     }
-    const measured = await measureBlockHeights(layout.styleContext, group.filter((block) => block.type !== 'table'), 100, width, signal, geometries)
+    const measured = await measureBlockHeights(layout.styleContext, group.filter((block) => block.type !== 'table'), 100, width, signal, geometries, layout.docx.sections[index].settings)
     for (const [key, value] of measured) heights.set(key, value)
   }
   return indexDocxUnit(id, blocks, heights, rows, (block) =>
@@ -196,6 +176,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
   const [styleContext, setStyleContext] = useState<StyleContext>({
     styles: new Map(),
     numbering: new Map(),
+    css: '',
   })
   const [status, setStatus] = useState('正在创建 DOCX 会话…')
   const [error, setError] = useState('')
@@ -306,7 +287,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     setNotes(new Map())
     setNoteNumFmts({})
     setHfHeights(new Map())
-    setStyleContext({ styles: new Map(), numbering: new Map() })
+    setStyleContext({ styles: new Map(), numbering: new Map(), css: '' })
     setCursor(undefined)
     setHasMore(false)
     setError('')
@@ -321,6 +302,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     if (viewport.current) viewport.current.scrollTop = 0
     loadingRef.current = false
     const fontScope = new DocxFontScope()
+    let disposeStyles = () => {}
     const active = new DocxRemoteSession(
       {
         server,
@@ -354,9 +336,11 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
           signal,
         })
         if (!response.ok) throw new Error(`读取 DOCX 样式失败（HTTP ${response.status}）`)
-        const styles = (await response.json()) as StyleContextPayload
+        const styles = (await response.json()) as DocxStyleContext
         if (session.current === active && !signal.aborted) {
-          const context = reviveStyleContext(styles)
+          disposeStyles()
+          const context = reviveDocxStyles(styles, layoutContext.current.docx, fontScope.lineMetrics())
+          disposeStyles = mountDocxStyles(context, themeSansUrl)
           layoutContext.current = { ...layoutContext.current, styleContext: context }
           setStyleContext(context)
         }
@@ -368,6 +352,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       if (session.current === active) session.current = null
       active.close()
       fontScope.close()
+      disposeStyles()
     }
   }, [server, fileId, token, auth, loadChunk])
 
@@ -557,7 +542,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
   }
 
   return (
-    <div className="viewer-preview viewer-doc-remote">
+    <div className="viewer-preview viewer-doc-remote" data-docx-theme-fallback={styleContext.missingThemeFallback ? 'bundled' : undefined}>
       {name && <span className="viewer-doc-remote-name">{name}</span>}
       {status && <p className="viewer-status">{status}</p>}
       {(error || windowError) && (
@@ -618,7 +603,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
                         return groups
                       }, [])
                       return <div key={columnIndex} className="viewer-doc-remote-column"
-                        style={{ position: 'absolute', left: column.left, width: column.width }}>
+                        style={{ position: 'absolute', left: column.left, width: column.width, ...docxSectionTypography(docx?.sections[region.sectionIndex]?.settings) }}>
                         {groups.map((group, itemIndex) => {
                           const item = group[0]
                           if (item.noteKey) {
@@ -639,11 +624,9 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
                               <PageEditor unitKey={JSON.stringify([item.unitId])} onAssetsReady={onAssetsReady} blocks={[block]} doc={styleContext} />
                             </div>}
                             {/* Clip continuation rows vertically; table rounding/indent may cross the text column's edge. */}
-                            <div className="viewer-doc-fragment-slice" style={{ height: item.clip.to - item.clip.from, clipPath: `inset(0 -${page.width}px)`, position: 'relative' }}>
-                              <div style={{ position: 'relative', top: -item.clip.from }}>
-                                <PageEditor unitKey={JSON.stringify([item.unitId])} onAssetsReady={onAssetsReady} blocks={[block]} doc={styleContext} />
-                              </div>
-                            </div>
+                            <DocxFragmentSlice from={item.clip.from} to={item.clip.to} pageWidth={page.width} table={block.type === 'table'} flow={item.tableFlow} geometry={item.geometry?.tableFlow}>
+                              <PageEditor unitKey={JSON.stringify([item.unitId])} onAssetsReady={onAssetsReady} blocks={[block]} doc={styleContext} />
+                            </DocxFragmentSlice>
                           </div>
                         })}
                       </div>

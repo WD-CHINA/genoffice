@@ -8,21 +8,25 @@ import {
   pmDocOptions,
 } from '@genoffice/viewer-renderers/docs/renderer/editor/convert'
 import type { TablePage, TablePageRow, TableRowLayout } from './docx-table-pagination'
+import { docxSectionTypography } from './docx-style-context'
+import type { SectionSettings } from '@genoffice/docx-engine'
+import { measureTableFlow } from './docx-table-flow-measure'
 
 /** Measure top-level table rows (nested tables are excluded by table.rows). */
 export async function measureTableRows(
-  doc: any, block: any, width = 760, signal?: AbortSignal, geometries?: Map<number, DocxBlockGeometry>,
+  doc: any, block: any, width = 760, signal?: AbortSignal, geometries?: Map<number, DocxBlockGeometry>, settings?: SectionSettings,
 ): Promise<TableRowLayout[]> {
   signal?.throwIfAborted()
   const host = document.createElement('div')
   host.className = 'viewer-doc-remote viewer-doc-remote-measure'
   host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;height:auto;display:block;visibility:hidden;pointer-events:none`
+  for (const [key, value] of Object.entries(docxSectionTypography(settings))) host.style.setProperty(key, value)
   document.body.appendChild(host)
   const editor = new Editor({
     element: host,
     extensions: editorExtensions,
     editable: false,
-    editorProps: { attributes: { class: 'doc-page' } },
+    editorProps: { attributes: { class: 'doc-page', lang: doc.docDefaults?.lang ?? 'en-US' } },
   })
   try {
     const storage = editor.storage.listNumbering as any
@@ -47,6 +51,7 @@ export async function measureTableRows(
         headerHeight = row.getBoundingClientRect().bottom - element.getBoundingClientRect().top
       }
       geometry.headerHeight = headerHeight
+      geometry.tableFlow = measureTableFlow(table, tableModel, doc.compatibilityMode)
       if (headerHeight > 0) geometry.cuts = geometry.cuts.filter((cut) => cut > headerHeight + .5)
       // An authored cantSplit applies to that row, not to the rest of the table.
       geometry.cuts = geometry.cuts.filter((cut) => ![...table.rows].some((row, index) => {

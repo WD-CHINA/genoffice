@@ -51,3 +51,14 @@ test('subpixel WebView geometry noise does not create an observer remeasurement 
   const changed = [{ ...original[0], geometry: { ...original[0].geometry, cuts: [90, 200] } }]
   assert.notEqual(replaceDocxUnitIndex(original, 'u', changed), original)
 })
+
+
+test('cell line geometry tolerates layer noise but invalidates a real line change', async () => {
+  const { replaceDocxUnitIndex } = await import('../src/web/docx-page-index.ts')
+  const make = (lineBottom: number) => [{ unitId: 'u', blockIndex: 0, height: 240,
+    geometry: { height: 240, cuts: [], notes: [], tableFlow: { top: 0, bottom: 0, widow: false,
+      rows: [{ height: 240, cells: [{ lines: [[0, lineBottom]] as [number, number][], childOf: [0], paraOf: [0], alignDy: 0, alignFrac: 0 }] }] } } }]
+  const original = make(20)
+  assert.equal(replaceDocxUnitIndex(original, 'u', make(20.001)), original)
+  assert.notEqual(replaceDocxUnitIndex(original, 'u', make(25)), original)
+})

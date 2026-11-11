@@ -1067,6 +1067,18 @@ html[data-viewer-toolbar='false'] .viewer-preview {
 }
 
 /* Remote DOCX: block-chunk session rendered through Tiptap. */
+/* Keep the drawing extent in narrow cells. Crop the wrapper instead of
+   shrinking only the image width while retaining its fixed height. */
+.viewer-doc .doc-table .doc-inline-pic,
+.viewer-doc-remote .doc-table .doc-inline-pic {
+  clip-path: inset(0);
+}
+
+.viewer-doc .doc-table .doc-inline-pic > .doc-inline-img,
+.viewer-doc-remote .doc-table .doc-inline-pic > .doc-inline-img {
+  max-width: none;
+}
+
 .viewer-doc-remote {
   overflow: auto;
   padding: 24px 16px 64px;

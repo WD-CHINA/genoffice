@@ -2,6 +2,7 @@
 import { execFileSync } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
+import { inspectDocxTableFlow, summarizeDocxTableFlow } from './docx-flow-probe.mjs'
 import { connectAndroidWebView } from './android-cdp.mjs'
 const serial = process.env.ANDROID_SERIAL
 if (!serial || !process.env.ANDROID_WORD_INPUTS)
@@ -124,9 +125,32 @@ async function inspect(c, id, input, disconnected) {
     throw Error('Word paper is not readable in the dark shell')
   if (snapshot.alerts.length || snapshot.images.some((image) => image.error))
     throw Error(JSON.stringify(snapshot))
+  snapshot.typography = await c.evaluate(
+    `(()=>{const root=document.querySelector('.viewer-doc-remote'),editor=root.querySelector('.doc-page'),span=editor.querySelector('.doc-east-asian-font');return{sheets:document.querySelectorAll('[data-docx-style-context][data-doc-css]').length,fallback:root.dataset.docxThemeFallback,baseSize:getComputedStyle(editor).fontSize,chineseFont:span&&getComputedStyle(span).fontFamily,themeLoaded:[...document.fonts].some(face=>face.family.includes('GenOffice Theme Sans SC')&&face.status==='loaded')}})()`,
+    id,
+  )
+  if (snapshot.typography.sheets !== 1)
+    throw Error('Word document style scope is missing or duplicated')
+  if (
+    input.name === 'business' &&
+    (!snapshot.typography.themeLoaded ||
+      !snapshot.typography.chineseFont?.includes('GenOffice Theme Sans SC'))
+  )
+    throw Error('Business Word bundled theme font did not load')
   if (input.name === 'business') {
+    snapshot.pictureExtents = await c.evaluate(
+      `([...document.querySelectorAll('.viewer-doc-remote-column .doc-inline-pic > img')].filter(image=>image.naturalWidth>0).map(image=>{const rect=image.getBoundingClientRect();return{ratio:rect.width/rect.height,authoredRatio:parseFloat(image.style.width)/parseFloat(image.style.height),clip:getComputedStyle(image.parentElement).clipPath}}))`,
+      id,
+    )
+    if (
+      !snapshot.pictureExtents.length ||
+      snapshot.pictureExtents.some(
+        (image) => Math.abs(image.ratio - image.authoredRatio) > 0.002 || image.clip === 'none',
+      )
+    )
+      throw Error('Business Word picture ratio or cell clipping is incorrect')
     snapshot.rightEdge = await c.evaluate(
-      `(()=>{const t=document.querySelector('.viewer-doc-remote-column .doc-table');const cell=t.rows[0].cells[t.rows[0].cells.length-1],r=cell.getBoundingClientRect();return{border:getComputedStyle(cell).borderRight,visible:document.elementsFromPoint(r.right-.25,r.top+r.height/2).some(n=>n===cell||cell.contains(n))}})()`,
+      `(()=>{const t=[...document.querySelectorAll('.viewer-doc-remote-column .doc-table')].find(node=>!node.closest('[data-docx-flow-source]')); const cell=t.rows[0].cells[t.rows[0].cells.length-1],r=cell.getBoundingClientRect();return{border:getComputedStyle(cell).borderRight,visible:document.elementsFromPoint(r.right-.25,r.top+r.height/2).some(n=>n===cell||cell.contains(n))}})()`,
       id,
     )
     if (!snapshot.rightEdge.visible)
@@ -138,7 +162,23 @@ async function inspect(c, id, input, disconnected) {
   if (disconnected && snapshot.external.length)
     throw Error('Offline Word requested remote assets: ' + JSON.stringify(snapshot.external))
   const visited = new Set()
+  const frames = new Map()
+  const flows = new Map()
   for (let step = 0; step < 160; step++) {
+    if (['business', 'independent-cells'].includes(input.name)) {
+      const entries = await c.evaluate(
+        `(${inspectDocxTableFlow.toString()})(${JSON.stringify([...flows.keys()])})`,
+        id,
+      )
+      for (const entry of entries) flows.set(entry.key, entry)
+    }
+    if (input.name === 'business') {
+      const slices = await c.evaluate(
+        `([...document.querySelectorAll('.viewer-doc-fragment')].map(fragment=>{const slice=[...fragment.querySelectorAll('.viewer-doc-fragment-slice')].at(-1),table=[...slice.querySelectorAll('table')].find(node=>!node.closest('[data-docx-flow-source]'));if(!table)return null;const r=slice.getBoundingClientRect(),t=table.getBoundingClientRect(),edges=[...slice.querySelectorAll('[data-docx-table-edge]')].filter(edge=>parseFloat(getComputedStyle(edge)[edge.dataset.docxTableEdge==='top'?'borderTopWidth':'borderBottomWidth'])>0);return{key:fragment.dataset.docxIndex+':'+fragment.dataset.sourceFrom,topNeeded:r.top>t.top+1,bottomNeeded:r.bottom<t.bottom-1,top:edges.some(edge=>edge.dataset.docxTableEdge==='top'),bottom:edges.some(edge=>edge.dataset.docxTableEdge==='bottom')}}).filter(Boolean))`,
+        id,
+      )
+      for (const slice of slices) frames.set(slice.key, slice)
+    }
     const status = await c.evaluate(
       `(()=>{const root=document.querySelector('.viewer-doc-remote-viewport');const pages=[...document.querySelectorAll('.viewer-doc-remote-page')].map(page=>page.dataset.pageIndex);const done=root.scrollTop+root.clientHeight>=root.scrollHeight-2&&!document.querySelector('.viewer-doc-remote-more,.viewer-doc-remote-loading');root.scrollTop=Math.min(root.scrollHeight,root.scrollTop+650);return{pages,done}})()`,
       id,
@@ -155,6 +195,43 @@ async function inspect(c, id, input, disconnected) {
         break
     }
     await wait(80)
+  }
+  if (input.name === 'business') {
+    snapshot.tableFrames = [...frames.values()]
+    if (
+      !snapshot.tableFrames.some((frame) => frame.bottomNeeded) ||
+      snapshot.tableFrames.some(
+        (frame) => frame.top !== frame.topNeeded || frame.bottom !== frame.bottomNeeded,
+      )
+    )
+      throw Error('Business Word continuation table frames are incomplete')
+  }
+  if (['business', 'independent-cells'].includes(input.name)) {
+    snapshot.cellFlow = summarizeDocxTableFlow([...flows.values()])
+    if (
+      snapshot.cellFlow.fragments < 2 ||
+      snapshot.cellFlow.expected < 100 ||
+      snapshot.cellFlow.missing.length ||
+      snapshot.cellFlow.duplicates.length
+    )
+      throw Error(
+        'Independent cell continuation lost or duplicated glyphs: ' +
+          JSON.stringify(snapshot.cellFlow),
+      )
+    if (input.name === 'independent-cells') {
+      const markers = snapshot.cellFlow.markers
+      const middle = markers.find((marker) => marker.text === 'FLOW_MIDDLE')
+      const bottom = markers.find((marker) => marker.text === 'FLOW_BOTTOM')
+      if (
+        markers.length !== 2 ||
+        !middle ||
+        Math.abs(middle.top - middle.bottom) >= 4 ||
+        !bottom ||
+        bottom.bottom < -0.1 ||
+        bottom.bottom >= 15
+      )
+        throw Error('Independent cell vertical alignment failed: ' + JSON.stringify(markers))
+    }
   }
   if (input.name === 'long-notes' && visited.size < 3) throw Error('Long footnote did not continue')
   const terminal = await c.evaluate(
@@ -223,6 +300,11 @@ try {
       )
       if (!unavailable) throw Error('Remote backend is reachable')
       const offlineResult = await inspect(offline.c, offline.id, input, true)
+      if (
+        onlineResult.typography.baseSize !== offlineResult.typography.baseSize ||
+        onlineResult.typography.chineseFont !== offlineResult.typography.chineseFont
+      )
+        throw Error('Word typography differs between online and offline reading')
       results.push({
         name: input.name,
         fileId: input.fileId,

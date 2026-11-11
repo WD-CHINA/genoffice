@@ -3,6 +3,7 @@ import { splitClip } from './docx-fragments'
 import { NOTE_SEPARATOR, noteKey, type RemoteNote, type NoteSlice } from './docx-notes'
 import type { DocxPageBlock } from './docx-page-index'
 import type { PageDescriptor } from './docx-pagination'
+import { planTableFlow } from './docx-table-flow'
 
 export type HfHeights = ReadonlyMap<string, number>
 export interface ColumnRange { blockStart: number; blockEnd: number; height: number; left: number; width: number }
@@ -203,6 +204,22 @@ export function layoutSectionBlocks(source: readonly DocxPageBlock[], context: D
     }
     let target = region!.columns[column]
     const pageCapacity = current!.pageHeight - current!.paddingTop - current!.paddingBottom
+    if (block.geometry?.tableFlow && !block.geometry.forcedCuts?.length && !block.geometry.notes.length && !block.keepWithNext && !block.clip && !block.tableFlow) {
+      const flow = planTableFlow(block.geometry.tableFlow,
+        (block.breakBefore || block.columnBreakBefore)
+          ? sectionContentHeight(context, sectionIndex, heights)
+          : pageCapacity - region!.top - (current!.noteHeight ?? 0) - target.height,
+        sectionContentHeight(context, sectionIndex, heights))
+      if (flow) {
+        blocks.splice(index, 1, ...flow.fragments.map((part, partIndex) => ({ ...block,
+          tableFlow: flow, clip: { from: part.from, to: part.to, headerHeight: part.headerHeight },
+          height: part.to - part.from + part.headerHeight,
+          breakBefore: partIndex === 0 && block.breakBefore,
+          columnBreakBefore: partIndex > 0 || flow.startOnNewPage || block.columnBreakBefore,
+        })))
+        block = blocks[index]
+      }
+    }
     const clip = block.clip ?? { from: 0, to: block.height }
     const references = (end: number) => (block.geometry?.notes ?? []).filter((ref) => ref.kind === 'footnote'
       && ref.bottom > clip.from + .01 && ref.top < end - .01).map((ref) => noteKey(sectionIndex, ref.kind, ref.id))
@@ -236,7 +253,7 @@ export function layoutSectionBlocks(source: readonly DocxPageBlock[], context: D
     }
     const moveKeptGroup = block.keepWithNext && target.height > 0 && keptHeight <= capacity && target.height + keptHeight > capacity
     const force = block.geometry?.forcedCuts?.find((cut) => cut > clip.from + .5 && cut < clip.to - .5)
-    if (!moveKeptGroup && block.geometry && (block.height > capacity - target.height + .5 || force !== undefined)) {
+    if (!moveKeptGroup && block.geometry && !block.tableFlow && (block.height > capacity - target.height + .5 || force !== undefined)) {
       const limit = Math.min(clip.to - .5, clip.from + Math.max(0, available), force ?? Infinity)
       let cuts = block.geometry.cuts.filter((cut) => cut > clip.from + .5 && cut <= limit + .01)
       if (block.widowControl !== false && !force) {

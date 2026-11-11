@@ -8780,6 +8780,11 @@ export interface DocxStyleContext {
   numbering: Array<[string, NumberingDef]>
   themeColors?: ThemeColors | null
   themeFonts?: ThemeFonts | null
+  fontTable?: ParsedDoc['fontTable']
+  compatibilityMode?: number
+  autoHyphenation?: boolean
+  adjustLineHeightInTable?: boolean
+  doNotUseHTMLParagraphAutoSpacing?: boolean
 }
 
 export async function readDocxStyleContext(bytes: Uint8Array): Promise<DocxStyleContext> {
@@ -8793,5 +8798,8 @@ export async function readDocxStyleContext(bytes: Uint8Array): Promise<DocxStyle
     numbering: [...defs.entries()],
     themeColors: theme.colors,
     themeFonts: theme.fonts,
+    fontTable: parseFontTable((await zip.file(FONT_TABLE_PART_PATH)?.async('string')) ?? ''),
+    compatibilityMode: await parseCompatibilityMode(zip),
+    ...(await parseLayoutSettings(zip)),
   }
 }

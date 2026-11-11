@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { sectionFromSectPr, type DocxReadingContext } from '@genoffice/docx-engine'
-import { paginateSectionBlocks, hfHeightKey } from '../src/web/docx-section-layout.ts'
+import { paginateSectionBlocks, layoutSectionBlocks, hfHeightKey } from '../src/web/docx-section-layout.ts'
 import { restoreDocxAnchor } from '../src/web/docx-scroll-anchor.ts'
 
 const section = (first: number, last: number, type = 'nextPage', extra = '') => sectionFromSectPr(
@@ -51,4 +51,19 @@ test('a short final column set balances into both columns instead of leaving the
   const pages = paginateSectionBlocks([0, 1, 2, 3, 4, 5].map((index) => block(index, 30)), model)
   assert.equal(pages.length, 1)
   assert.deepEqual(pages[0].regions[0].columns.map((column) => [column.blockStart, column.blockEnd, column.height]), [[0, 3, 90], [3, 6, 90]])
+})
+
+
+test('independent table fragments honor explicit page breaks and preserve their source index', () => {
+  const cells = [{ lines: Array.from({ length: 40 }, (_, i) => [i * 20, (i + 1) * 20] as [number, number]), childOf: Array(40).fill(0), paraOf: Array(40).fill(0), alignDy: 0, alignFrac: 0 }]
+  const table = { ...block(1, 800), breakBefore: true, geometry: { height: 800, cuts: [], notes: [], tableFlow: { top: 0, bottom: 0, widow: false, rows: [{ height: 800, cells }] } } }
+  const source = [block(0, 100), table]
+  const layout = layoutSectionBlocks(source, context([section(0, 1)]))
+  assert.equal(layout.pages[0].blockEnd, 1)
+  const fragments = layout.blocks.filter(item => item.tableFlow)
+  assert.equal(fragments.length, 3)
+  assert.equal(fragments[0].clip!.to, 360)
+  assert.ok(fragments.every(item => item.docxIndex === 1 && item.blockIndex === 1))
+  assert.equal(source.length, 2)
+  assert.equal(table.geometry.height, 800)
 })

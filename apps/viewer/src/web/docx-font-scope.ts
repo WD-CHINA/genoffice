@@ -1,5 +1,6 @@
 import { DocxReadQueue } from './docx-read-queue'
 import { combineAbortSignals } from './abort-signals'
+import { sfntLineMetrics } from '@genoffice/docx-engine'
 
 interface EmbeddedFont {
   id: string
@@ -21,6 +22,9 @@ export class DocxFontScope {
   private readonly reads = new DocxReadQueue(2)
   private readonly faces = new Map<string, FontFace>()
   private readonly pending = new Map<string, Promise<void>>()
+  private readonly metrics = new Map<string, { family: string; styled: boolean; ascent: number; descent: number; lineGap: number }>()
+
+  lineMetrics() { return [...this.metrics.values()].sort((a, b) => Number(a.styled) - Number(b.styled)) }
 
   constructor(private readonly host: FontHost = {
     create: (font, bytes) => new FontFace(font.family, bytes, {
@@ -61,6 +65,8 @@ export class DocxFontScope {
                 if (this.closed || signal.aborted) return
                 this.host.add(face)
                 this.faces.set(key, face)
+                const metrics = sfntLineMetrics(new Uint8Array(bytes))
+                if (metrics) this.metrics.set(key, { family: font.family, styled: font.bold || font.italic, ...metrics })
               })
             } catch {
               // Optional embedded fonts must not prevent fallback-font rendering.
@@ -84,5 +90,6 @@ export class DocxFontScope {
     for (const face of this.faces.values()) this.host.remove(face)
     this.faces.clear()
     this.pending.clear()
+    this.metrics.clear()
   }
 }

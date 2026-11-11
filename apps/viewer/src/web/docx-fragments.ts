@@ -3,6 +3,7 @@ import {
   cellCutYs,
   lineBreakBoundaries,
 } from '@genoffice/viewer-renderers/docs/renderer/pagination-lines'
+import type { TableFlowGeometry } from './docx-table-flow'
 
 /** Numeric geometry only: never keep DOM nodes or document text in the page index. */
 export interface DocxBlockGeometry {
@@ -11,6 +12,7 @@ export interface DocxBlockGeometry {
   headerHeight?: number
   notes: Array<{ id: string; kind: 'footnote' | 'endnote'; top: number; bottom: number }>
   forcedCuts?: number[]
+  tableFlow?: TableFlowGeometry
 }
 export interface DocxClip {
   from: number

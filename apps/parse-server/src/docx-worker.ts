@@ -4,7 +4,6 @@ import {
   createDocxBlockParser,
   readDocxEmbeddedFonts,
   readDocxStyleContext,
-  sectionSettingsFromXml,
 } from '@genoffice/docx-engine'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
@@ -115,7 +114,13 @@ async function open(input: OpenInput): Promise<{
     also: [],
   }))
   const metadata = await scanDocxMetadata(await openDocxDocumentStream(input.path, input.limits))
-  const settings = sectionSettingsFromXml(metadata.sections.at(-1)?.xml ?? '', {})
+  const parser = await createDocxBlockParser(bytes, {
+    ...metadata,
+    mediaUrl: (partPath) =>
+      `${input.baseUrl.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(input.fileId)}/parts/${partPath.split('/').map(encodeURIComponent).join('/')}`,
+  })
+  const docx = await parser.readingContext()
+  const settings = docx.sections[0].settings
   const manifest = await readChunkManifest(input.chunksDir)
   if (
     manifest &&
@@ -128,6 +133,7 @@ async function open(input: OpenInput): Promise<{
     chunks = []
     model = {
       format: 'docx',
+      docx,
       parserVersion: input.parserVersion,
       unitKind: 'block-chunk',
       unitCount: chunkCount,
@@ -145,11 +151,6 @@ async function open(input: OpenInput): Promise<{
     }
     return { model, fonts: fontSummaries }
   }
-  const parser = await createDocxBlockParser(bytes, {
-    ...metadata,
-    mediaUrl: (partPath) =>
-      `${input.baseUrl.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(input.fileId)}/parts/${partPath.split('/').map(encodeURIComponent).join('/')}`,
-  })
   async function* parsedChunks(): AsyncGenerator<unknown[]> {
     let batch: any[] = []
     for await (const slice of streamDocxBlocks(
@@ -185,6 +186,7 @@ async function open(input: OpenInput): Promise<{
   chunks = []
   model = {
     format: 'docx',
+    docx,
     parserVersion: input.parserVersion,
     unitKind: 'block-chunk',
     unitCount: chunkCount,

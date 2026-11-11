@@ -647,6 +647,19 @@ async function sessionDocument(
   req: IncomingMessage,
   ctx: Context,
 ): Promise<StoredSessionDocument> {
+  const document = await storedSessionDocument(entry, req, ctx)
+  return document.model.docx
+    ? { ...document, model: { ...document.model, docx: { ...document.model.docx,
+        hfParts: signedDocxPayload(ctx, document.model.docx.hfParts, entry.record.fileId, baseUrlOf(req, ctx)) as Record<string, object>,
+      } } }
+    : document
+}
+
+async function storedSessionDocument(
+  entry: SessionEntry,
+  req: IncomingMessage,
+  ctx: Context,
+): Promise<StoredSessionDocument> {
   if (entry.document) return entry.document
   const record = entry.record
   if (record.model && Array.isArray(record.fonts)) {
@@ -1387,9 +1400,7 @@ async function handleCreateAsyncSession(
     else await Promise.race([admission, work])
     const ready = ctx.sessions.get(record.id)
     if (ready) {
-      const document = ready.document
-      if (!document)
-        throw new HttpError(503, 'session_state', 'session document is unavailable')
+      const document = await sessionDocument(ready, req, ctx)
       ctx.metrics.sessionsCreated++
       sendJson(res, 201, {
         dtoVersion: PARSE_DTO_VERSION,

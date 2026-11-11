@@ -112,6 +112,27 @@ export interface DocPageSettings {
   marginLeft: number
 }
 
+/** Serializable DOCX section geometry. Rich header/footer payloads stay JSON objects. */
+export interface DocxLayoutData {
+  sections: Array<{
+    firstBlockIndex: number
+    lastBlockIndex: number
+    settings: DocPageSettings & { columns: number; colSpace?: number; colWidths?: number[] }
+    startType: 'nextPage' | 'continuous' | 'evenPage' | 'oddPage' | 'nextColumn'
+    titlePg: boolean
+    headerRefs: Partial<Record<'default' | 'first' | 'even', string>>
+    footerRefs: Partial<Record<'default' | 'first' | 'even', string>>
+  }>
+  hfParts: Record<string, object>
+  evenAndOddHeaders: boolean
+  mirrorMargins: boolean
+  footnotes: object[]
+  endnotes: object[]
+  noteNumbers: Record<string, number>
+  footnoteProps?: { numFmt?: string; numStart?: number; numRestart?: string }
+  endnoteProps?: { numFmt?: string; numStart?: number; numRestart?: string }
+}
+
 export interface DocModel {
   format: DocFormat
   parserVersion: string
@@ -125,6 +146,8 @@ export interface DocModel {
   assetCount?: number
   /** Page geometry for paginated formats (DOCX sections). */
   page?: DocPageSettings
+  /** Document-wide context shared by bounded DOCX body chunks. */
+  docx?: DocxLayoutData
   warnings: Diagnostic[]
 }
 

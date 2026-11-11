@@ -15,6 +15,7 @@ import {
   hfReferenceTags,
   hfReferenceType,
   notePropsFromXml,
+  sectionFromSectPr,
   sectionSettingsFromXml,
   xmlFlagOn,
 } from './section'
@@ -60,6 +61,7 @@ import type {
   RevisionInfo,
   Run,
   SectionSettings,
+  SectionInfo,
   SourceInfo,
   StrayIndent,
   StyleInfo,
@@ -7918,6 +7920,7 @@ async function mediaDataUrl(
 /** one string per media part: a picture anchored on thousands of paragraphs
  * (pdf2docx output) otherwise holds thousands of base64 copies and OOMs the renderer */
 const mediaDataUrlCache = new WeakMap<JSZip, Map<string, Promise<string | null>>>()
+const remoteMediaByZip = new WeakMap<JSZip, (partPath: string) => string>()
 
 function mediaPartDataUrl(zip: JSZip, partPath: string): Promise<string | null> {
   let cache = mediaDataUrlCache.get(zip)
@@ -7931,6 +7934,8 @@ function mediaPartDataUrl(zip: JSZip, partPath: string): Promise<string | null> 
 }
 
 async function readMediaPartDataUrl(zip: JSZip, partPath: string): Promise<string | null> {
+  const remote = remoteMediaByZip.get(zip)
+  if (remote) return remote(partPath)
   const file = zip.file(partPath)
   if (!file) return null
   const mime = await imagePartMime(zip, partPath)
@@ -8562,7 +8567,10 @@ async function extractChart(xml: string, ctx: BuildContext): Promise<ChartDispla
  */
 export interface DocxDocumentMetadata {
   /** w:sectPr slices with document.xml offsets. */
-  sections?: Array<{ start: number; end: number; xml: string }>
+  sections?: Array<{ start: number; end: number; xml: string; docxIndex?: number }>
+  blockCount?: number
+  /** Ordered reference and section markup collected by a streaming metadata pass. */
+  noteReferenceXml?: string
   /** Comment range ids present in document.xml. */
   commentRangeStarts?: Set<string>
   /** Absolute offset of the first explicit page break. */
@@ -8573,6 +8581,20 @@ export interface DocxDocumentMetadata {
 
 export interface DocxBlockParser {
   parseBlock(xml: string, index?: number, offset?: number): Promise<Block>
+  readingContext(): Promise<DocxReadingContext>
+}
+
+/** JSON-safe document-wide data retained independently of streamed body chunks. */
+export interface DocxReadingContext {
+  sections: SectionInfo[]
+  hfParts: Record<string, HfPartInfo>
+  evenAndOddHeaders: boolean
+  mirrorMargins: boolean
+  footnotes: NoteInfo[]
+  endnotes: NoteInfo[]
+  noteNumbers: Record<string, number>
+  footnoteProps?: NoteProps
+  endnoteProps?: NoteProps
 }
 
 export async function createDocxBlockParser(
@@ -8580,6 +8602,7 @@ export async function createDocxBlockParser(
   metadata?: DocxDocumentMetadata,
 ): Promise<DocxBlockParser> {
   const zip = await loadDocxZip(bytes)
+  if (metadata?.mediaUrl) remoteMediaByZip.set(zip, metadata.mediaUrl)
   assertZipWithinLimits(zip)
   const docPath = await resolveMainDocumentPath(zip)
   if (!docPath) throw new Error('not a docx: missing word/document.xml')
@@ -8670,12 +8693,9 @@ export async function createDocxBlockParser(
   } as unknown as BuildContext
   const footnotes = await parseNotesPart(zip, 'footnote', noteCtx)
   const endnotes = await parseNotesPart(zip, 'endnote', noteCtx)
-  const { footnoteProps, endnoteProps } = documentXml
-    ? await parseNoteProps(zip, documentXml)
-    : { footnoteProps: undefined, endnoteProps: undefined }
-  const noteNumbers = documentXml
-    ? noteNumbersOf(documentXml, footnotes, endnotes, footnoteProps, endnoteProps)
-    : new Map()
+  const noteXml = documentXml ?? metadata?.noteReferenceXml ?? ''
+  const { footnoteProps, endnoteProps } = await parseNoteProps(zip, noteXml)
+  const noteNumbers = noteNumbersOf(noteXml, footnotes, endnotes, footnoteProps, endnoteProps)
   const zoteroFieldParagraphs = documentXml
     ? crossParagraphZoteroFields(scan.elements, documentXml)
     : new Map()
@@ -8720,7 +8740,32 @@ export async function createDocxBlockParser(
           }
         : {}),
   }
+  let reading: Promise<DocxReadingContext> | undefined
   return {
+    readingContext() {
+      return reading ??= (async () => {
+        let first = 0
+        const sectionInfos = sections.map((section) => {
+          const last = 'docxIndex' in section && section.docxIndex !== undefined
+            ? section.docxIndex as number
+            : scan.elements.findIndex((element) => element.end >= section.end)
+          const result = sectionFromSectPr(section.xml, first, Math.max(first, last), gutterAtTop)
+          first = result.lastBlockIndex + 1
+          return result
+        })
+        if (!sectionInfos.length)
+          sectionInfos.push(sectionFromSectPr('', 0, Math.max(0, (metadata?.blockCount ?? scan.elements.length) - 1), gutterAtTop))
+        return {
+          sections: sectionInfos,
+          hfParts: await parseAllHfParts(zip, rels, styles, theme.colors, compatibilityMode, theme.fonts, resolver, docPath),
+          evenAndOddHeaders: await parseSettingsFlag(zip, 'w:evenAndOddHeaders'),
+          mirrorMargins: await parseSettingsFlag(zip, 'w:mirrorMargins'),
+          footnotes, endnotes, noteNumbers: Object.fromEntries(noteNumbers),
+          ...(footnoteProps ? { footnoteProps } : {}),
+          ...(endnoteProps ? { endnoteProps } : {}),
+        }
+      })()
+    },
     async parseBlock(xml: string, index = 0, offset = 0): Promise<Block> {
       const name = /^<([^\s/>]+)/.exec(xml)?.[1] ?? 'w:p'
       return buildBlock({ name, start: offset, end: offset + xml.length }, index, xml, buildCtx)

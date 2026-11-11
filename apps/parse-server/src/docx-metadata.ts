@@ -1,6 +1,7 @@
 import { streamDocxBlocks } from './docx-stream'
 
 export interface DocxSectionSlice {
+  docxIndex: number
   start: number
   end: number
   xml: string
@@ -19,6 +20,8 @@ export interface DocxMetadata {
   sections: DocxSectionSlice[]
   /** Comment range ids seen in document.xml. */
   commentRangeStarts: Set<string>
+  /** Only reference/section markup, never paragraph text or media. */
+  noteReferenceXml: string
   /** Absolute offset of the first explicit page break, when present. */
   firstPageBreakAt?: number
 }
@@ -38,15 +41,23 @@ export async function scanDocxMetadata(
   let firstPageBreakAt: number | undefined
   const sections: DocxSectionSlice[] = []
   const commentRangeStarts = new Set<string>()
+  const noteMarkup: string[] = []
   for await (const block of streamDocxBlocks(input)) {
     blockCount++
     for (const match of block.xml.matchAll(/<w:sectPr[^>]*\/>|<w:sectPr[\s\S]*?<\/w:sectPr>/g)) {
       sectionCount++
       sections.push({
+        docxIndex: block.docxIndex,
         start: block.start + (match.index ?? 0),
         end: block.start + (match.index ?? 0) + match[0].length,
         xml: match[0],
       })
+    }
+    // Reuse the engine's numbering rules with a tiny reference skeleton. Retain
+    // paragraph boundaries around section breaks (eachSect), including in tables.
+    if (/<w:(?:footnoteReference|endnoteReference|sectPr)\b/.test(block.xml)) {
+      for (const match of block.xml.matchAll(/<w:sectPr\b[^>]*\/>|<w:sectPr\b[\s\S]*?<\/w:sectPr>|<w:(?:footnote|endnote)Reference\b[^>]*\/?>|<w:p(?:\s[^>]*)?\/?>|<\/w:p>/g))
+        noteMarkup.push(match[0])
     }
     for (const match of block.xml.matchAll(
       /<w:commentRangeStart\b[^>]*\bw:id\s*=\s*["']([^"']+)["']/g,
@@ -71,6 +82,7 @@ export async function scanDocxMetadata(
     hasPageBreak,
     sections,
     commentRangeStarts,
+    noteReferenceXml: noteMarkup.join(''),
     ...(firstPageBreakAt !== undefined ? { firstPageBreakAt } : {}),
   }
 }

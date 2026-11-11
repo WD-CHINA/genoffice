@@ -149,7 +149,15 @@ export interface ArtifactSessionInput extends PptxOpenInput {
 
 /** One lightweight reader per viewing session; parsing is shared by artifact identity. */
 export class ArtifactSession {
-  model: DocModel
+  get model(): DocModel {
+    const model = this.document.model
+    // Only resource descriptions are session-specific. Large note/section
+    // collections keep sharing their immutable artifact-cache objects.
+    if (!model.docx) return model
+    return { ...model, docx: { ...model.docx,
+      hfParts: refreshDocxResourceUrls(model.docx.hfParts, this.input.fileId, this.input.baseUrl, this.input.mediaSecret) as Record<string, object>,
+    } }
+  }
   fonts: PptxFontSummary[]
   private readonly widths: Record<string, number> = {}
   private readonly pendingWidths = new Map<string, WidthItem>()
@@ -174,7 +182,6 @@ export class ArtifactSession {
     private readonly repair?: ArtifactRepair,
     private readonly shared?: SharedArtifactBackend,
   ) {
-    this.model = document.model
     this.fonts = document.fonts
   }
 
@@ -257,7 +264,7 @@ export class ArtifactSession {
           }
           // Publish the exact canonical bytes to the observer as well: a preview
           // record is never a separate, possibly divergent rendering of a unit.
-          const canonicalDocument = modelDto(document)
+          const canonicalDocument = canonicalResources(modelDto(document), input.fileId)
           await writer.append('document', canonicalDocument)
           notify({
             type: 'document',
@@ -545,7 +552,6 @@ export class ArtifactSession {
   private adopt(handle: ArtifactReadHandle, document: StoredDocument, previous: ArtifactReadHandle): void {
     this.reader = handle
     this.document = document
-    this.model = document.model
     this.fonts = document.fonts
     // Bundle identity includes the model digest; future requests must use the new pin.
     this.bundleOpening = undefined

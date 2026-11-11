@@ -30,6 +30,7 @@ export {
   type ParseOptions,
   type DocxBlockParser,
   type DocxDocumentMetadata,
+  type DocxReadingContext,
   readDocxStyleContext,
   type DocxStyleContext,
 } from './parse'

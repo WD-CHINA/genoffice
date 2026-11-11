@@ -35,6 +35,7 @@ import java.util.concurrent.TimeUnit;
  * part the units reference (posts, audio, video) and the embedded fonts. Unit JSON is
  * rewritten so part URLs are same-origin relative paths — the bundled local server
  * can then replay the session with no network.
+ * PDF stores its original bytes using authenticated file metadata and content, without a parse session.
  */
 final class BundleDownloader {
     interface Listener {
@@ -127,16 +128,17 @@ final class BundleDownloader {
         BundleStore destination = store;
         BundleStore staging = null;
         try {
-            JSONObject created = openSession();
-            heartbeat.scheduleWithFixedDelay(() -> {
-                try { requestJson(server + "/v1/sessions/" + encode(sessionId), "GET", null); }
-                catch (Exception ignored) { /* the active download reports connection failures */ }
-            }, 60, 60, TimeUnit.SECONDS);
+            JSONObject pdf = pdfManifest();
+            JSONObject created = pdf == null ? openSession() : new JSONObject();
+            if (pdf == null) heartbeat.scheduleWithFixedDelay(() -> {
+                    try { requestJson(server + "/v1/sessions/" + encode(sessionId), "GET", null); }
+                    catch (Exception ignored) { /* the active download reports connection failures */ }
+                }, 60, 60, TimeUnit.SECONDS);
             JSONObject model = created.optJSONObject("model");
-            String format = model == null ? "pptx" : model.optString("format", "pptx");
-            if (!"pptx".equals(format) && !"docx".equals(format)) throw new IOException("离线包支持 PPTX 和 DOCX");
+            String format = pdf != null ? "pdf" : model == null ? "pptx" : model.optString("format", "pptx");
+            if (!"pptx".equals(format) && !"docx".equals(format) && !"pdf".equals(format)) throw new IOException("离线包支持 PPTX、DOCX 和 PDF");
             // The authoritative manifest identifies the generation before any staging is chosen.
-            JSONObject declared = fetchDeclaredManifest();
+            JSONObject declared = pdf == null ? fetchDeclaredManifest() : pdf;
             if (declared != null && !format.equals(declared.optString("format"))) throw new IOException("离线清单文档类型与会话不符");
             if (cache != null && declared != null) {
                 destination = cache.versionStore(fileId, declared.getString("artifactKey"));
@@ -233,7 +235,9 @@ final class BundleDownloader {
             // Publication is committed: nothing is left to resume for this bundle.
             resume.clear();
             synchronized (lifecycle) { finished = true; }
-            String text = "离线包完成：共 " + count + " 页、" + partsDownloaded + " 个媒体文件";
+            String text = "pdf".equals(format) ? "PDF 离线文件已下载并校验，可断网阅读。"
+                    : "docx".equals(format) ? "Word 离线包已下载并校验，可断网阅读。"
+                    : "离线包完成：共 " + count + " 页、" + partsDownloaded + " 个媒体文件";
             JSONArray external = manifest.optJSONArray("externalResources");
             if (external != null && external.length() > 0)
                 text += "；部分离线：" + external.length() + " 个外部资源需联网，未保证完整离线";
@@ -252,6 +256,31 @@ final class BundleDownloader {
                 if (interrupted) Thread.currentThread().interrupt();
             }
         }
+    }
+
+    /** PDF keeps the original bytes; authenticated file metadata is its source manifest. */
+    private JSONObject pdfManifest() throws IOException, JSONException {
+        JSONObject meta;
+        try { meta = requestJson(server + "/v1/files/" + encode(fileId), "GET", null); }
+        catch (HttpFailure failure) {
+            // Older model-only servers can still download PPTX through their existing route.
+            if (failure.status == 404 || failure.status == 405) return null;
+            throw failure;
+        }
+        if (!"pdf".equals(meta.optString("format"))) return null;
+        long size = meta.getLong("size");
+        String hash = meta.getString("sha256");
+        if (!fileId.equals(meta.optString("fileId")) || !hash.matches("[a-f0-9]{64}")
+                || !fileId.equals(hash) || size <= 0 || size > 9007199254740991L || meta.getDouble("size") != size)
+            throw new IOException("PDF 原文件身份、大小或哈希无效");
+        String key;
+        try { key = hex(MessageDigest.getInstance("SHA-256").digest(("genoffice-pdf-original-v1:" + hash).getBytes(StandardCharsets.UTF_8))); }
+        catch (NoSuchAlgorithmException impossible) { throw new IOException(impossible); }
+        return new JSONObject().put("bundleSchemaVersion", 1).put("fileId", fileId).put("format", "pdf")
+                .put("artifactKey", key).put("inventory", "pdf-original-v1").put("pdfPath", "document.pdf")
+                .put("sourceSha256", hash).put("sourceSize", size).put("unitCount", 0)
+                .put("fonts", new JSONArray()).put("externalResources", new JSONArray()).put("totalBytes", size)
+                .put("resources", new JSONArray().put(new JSONObject().put("path", "document.pdf").put("size", size).put("sha256", hash)));
     }
 
     /** Fetch and fully validate the authoritative manifest; 404/405 keeps the legacy flow. */
@@ -313,7 +342,8 @@ final class BundleDownloader {
     }
 
     private int downloadDeclaredResources(JSONObject manifest) throws IOException, JSONException {
-        String root = "/v2/sessions/" + encode(sessionId) + "/bundle";
+        boolean pdf = "pdf".equals(manifest.optString("format"));
+        String root = pdf ? null : "/v2/sessions/" + encode(sessionId) + "/bundle";
         String artifactKey = manifest.getString("artifactKey");
         int count = manifest.getInt("unitCount");
         JSONArray resources = manifest.getJSONArray("resources");
@@ -330,7 +360,8 @@ final class BundleDownloader {
             listener.stage("下载并核验资源 " + (index + 1) + " / " + resources.length() + "…");
             StringBuilder encoded = new StringBuilder();
             for (String segment : path.split("/")) { if (encoded.length() > 0) encoded.append('/'); encoded.append(encode(segment).replace("+", "%20")); }
-            downloadDeclaredFile(server + root + "/resources/" + encoded, store.resourceFile(path),
+            downloadDeclaredFile(pdf ? server + "/v1/files/" + encode(fileId) + "/content"
+                            : server + root + "/resources/" + encoded, store.resourceFile(path),
                     path, resource.getLong("size"), resource.getString("sha256"), artifactKey);
             if (path.startsWith("parts/")) partsDownloaded++;
         }

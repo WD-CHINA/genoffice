@@ -326,6 +326,14 @@ final class LocalAssetServer extends Thread {
             sendText(out, 404, "Not Found");
             return;
         }
+        if (raw.length == 5 && "content".equals(raw[4]) && ("GET".equals(request.method) || "HEAD".equals(request.method))) {
+            try {
+                JSONObject manifest = store.manifest();
+                if (!"pdf".equals(manifest.optString("format")) || !store.isComplete()) { sendText(out, 404, "Not Found"); return; }
+                serveRange(request, out, store.pdfFile(), "\"" + manifest.getString("sourceSha256") + "\"");
+            } catch (org.json.JSONException invalid) { throw new IOException("invalid PDF manifest", invalid); }
+            return;
+        }
         if (raw.length == 6 && "prepared".equals(raw[4]) && ("GET".equals(request.method) || "HEAD".equals(request.method))) {
             String name = decode(raw[5]);
             if (!name.matches("[a-f0-9]{64}\\.(mp4|mp3)")) { sendText(out, 400, "Bad Request"); return; }
@@ -336,11 +344,13 @@ final class LocalAssetServer extends Thread {
         if (raw.length == 4 && "GET".equals(request.method)) {
             try {
                 JSONObject manifest = store.manifest();
-                sendJson(out, 200, new JSONObject()
+                JSONObject metadata = new JSONObject()
                         .put("fileId", fileId)
                         .put("format", manifest.optString("format", "pptx"))
-                        .put("size", 0)
-                        .toString());
+                        .put("size", 0);
+                if ("pdf".equals(manifest.optString("format"))) metadata
+                        .put("size", manifest.getLong("sourceSize")).put("sha256", manifest.getString("sourceSha256"));
+                sendJson(out, 200, metadata.toString());
             } catch (Exception e) {
                 sendText(out, 404, "Not Found");
             }
@@ -437,11 +447,16 @@ final class LocalAssetServer extends Thread {
     // ── range + responses ────────────────────────────────────────────────────
 
     private void serveRange(Request request, OutputStream out, File file) throws IOException {
+        serveRange(request, out, file, null);
+    }
+
+    private void serveRange(Request request, OutputStream out, File file, String etag) throws IOException {
         long size = file.length();
         long start = 0;
         long end = size - 1;
         boolean partial = false;
         String header = request.headers.get("range");
+        if (etag != null && request.headers.containsKey("if-range") && !etag.equals(request.headers.get("if-range"))) header = null;
         if (header != null && header.startsWith("bytes=")) {
             String spec = header.substring("bytes=".length()).split(",")[0].trim();
             int dash = spec.indexOf('-');
@@ -476,6 +491,7 @@ final class LocalAssetServer extends Thread {
         long length = end - start + 1;
         Map<String, String> extra = new HashMap<>();
         extra.put("Accept-Ranges", "bytes");
+        if (etag != null) extra.put("ETag", etag);
         extra.put("Cache-Control", "public, max-age=31536000");
         if (partial) extra.put("Content-Range", "bytes " + start + "-" + end + "/" + size);
         StringBuilder head = new StringBuilder();
@@ -584,6 +600,7 @@ final class LocalAssetServer extends Thread {
     private static String mime(String path) {
         String lower = path.toLowerCase(Locale.US);
         if (lower.endsWith(".html")) return "text/html; charset=utf-8";
+        if (lower.endsWith(".pdf")) return "application/pdf";
         if (lower.endsWith(".js") || lower.endsWith(".mjs")) return "text/javascript";
         if (lower.endsWith(".css")) return "text/css";
         if (lower.endsWith(".json")) return "application/json";

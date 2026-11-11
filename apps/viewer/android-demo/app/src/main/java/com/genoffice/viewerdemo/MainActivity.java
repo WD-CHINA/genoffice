@@ -97,7 +97,7 @@ public class MainActivity extends Activity {
         root.addView(title, matchWrap());
 
         TextView hint = new TextView(this);
-        hint.setText("支持 PPTX 和 Word 在线预览。下载离线包会校验正文、图片与字体，并为 PPT 准备兼容音视频，之后可断网阅读。");
+        hint.setText("支持 PPTX、Word 和 PDF 在线预览及下载后断网阅读。下载时校验原文件或文档资源，并为 PPT 准备兼容音视频。");
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         hint.setPadding(0, dp(8), 0, dp(16));
         root.addView(hint);
@@ -199,9 +199,10 @@ public class MainActivity extends Activity {
                     + " 的离线包；缓存共 " + size + "。");
             return;
         }
-        boolean word = false;
-        try { word = "docx".equals(store.manifest().optString("format")); } catch (Exception ignored) { }
-        StringBuilder text = word ? new StringBuilder("已有 Word 离线包，可直接离线打开。")
+        String format = "pptx";
+        try { format = store.manifest().optString("format"); } catch (Exception ignored) { }
+        StringBuilder text = "pdf".equals(format) ? new StringBuilder("已有 PDF 原文件，已校验，可直接离线打开。")
+                : "docx".equals(format) ? new StringBuilder("已有 Word 离线包，可直接离线打开。")
                 : new StringBuilder("已有离线包：").append(store.unitCount()).append(" 页，可直接离线打开。");
         if (!store.claimsFullOffline())
             text.append(" 部分离线：").append(store.externalResourceCount())
@@ -461,7 +462,7 @@ public class MainActivity extends Activity {
                 return;
             }
             view.evaluateJavascript(
-                    "!!document.querySelector('.viewer-slide-stage canvas,.viewer-doc-remote-page')"
+                    "!!document.querySelector('.viewer-slide-stage canvas,.viewer-doc-remote-page,.pdf-page-content canvas')"
                             + " || !!document.querySelector('[role=alert],iframe,input[type=file]')",
                     value -> {
                         if ("true".equals(value)) {

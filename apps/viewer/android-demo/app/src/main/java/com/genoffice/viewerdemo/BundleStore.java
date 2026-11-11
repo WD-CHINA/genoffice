@@ -25,6 +25,7 @@ import java.security.NoSuchAlgorithmException;
  *   bundles/&lt;fileId&gt;/units/&lt;i&gt;.json
  *   bundles/&lt;fileId&gt;/parts/&lt;part path&gt;
  *   bundles/&lt;fileId&gt;/fonts/&lt;font id&gt;
+ *   bundles/&lt;fileId&gt;/document.pdf   (PDF original, instead of parsed units)
  *   bundles/&lt;fileId&gt;/complete   (written last: the bundle is reusable)
  */
 final class BundleStore {
@@ -88,6 +89,8 @@ final class BundleStore {
     File layoutInfoFile() {
         return new File(dir, "layout.json");
     }
+
+    File pdfFile() { return new File(dir, "document.pdf"); }
 
     /** Parsed slide model the viewer lays out itself. */
     File layoutSlideFile(int index) {
@@ -189,10 +192,11 @@ final class BundleStore {
         if (marker && (!new File(dir, "complete").isFile() || new File(dir, "complete").length() != 64 || !readText(new File(dir, "complete")).equals(digest(manifestFile()))))
             throw new IOException("offline manifest seal mismatch");
         JSONObject manifest = manifest();
-        if (manifest.optInt("bundleSchemaVersion") != 1 || !fileId.equals(manifest.optString("fileId")) || !("pptx".equals(manifest.optString("format")) || "docx".equals(manifest.optString("format"))))
+        boolean pdf = "pdf".equals(manifest.optString("format"));
+        if (manifest.optInt("bundleSchemaVersion") != 1 || !fileId.equals(manifest.optString("fileId")) || !("pptx".equals(manifest.optString("format")) || "docx".equals(manifest.optString("format")) || pdf))
             throw new IOException("unsupported offline bundle version or identity");
         int count = manifest.getInt("unitCount");
-        if (count <= 0 || count > 100000) throw new IOException("invalid offline slide count");
+        if (pdf ? count != 0 : count <= 0 || count > 100000) throw new IOException("invalid offline unit count");
         // A bundle with external references must never be presented as fully offline.
         String scope = manifest.optString("offlineScope", "complete");
         if (!"complete".equals(scope) && !"partial".equals(scope))
@@ -215,6 +219,17 @@ final class BundleStore {
             if (hashes && !hash.equals(digest(file))) throw new IOException("offline checksum mismatch: " + path);
         }
         boolean docx = "docx".equals(manifest.optString("format"));
+        if (pdf) {
+            if (!"pdf-original-v1".equals(manifest.optString("inventory")) || !"document.pdf".equals(manifest.optString("pdfPath"))
+                    || !manifest.optBoolean("sourceVerified") || resources.length() != 1 || !paths.contains("document.pdf"))
+                throw new IOException("offline PDF original missing or unverified");
+            JSONObject original = resources.getJSONObject(0);
+            if (!fileId.matches("[a-f0-9]{64}") || !fileId.equals(manifest.optString("sourceSha256"))
+                    || !fileId.equals(original.getString("sha256")) || manifest.optLong("sourceSize", -1) <= 0
+                    || manifest.getLong("sourceSize") != original.getLong("size"))
+                throw new IOException("offline PDF source identity mismatch");
+            return;
+        }
         if (docx && (!paths.contains("document.json") || !paths.contains("styles.json"))) throw new IOException("offline DOCX context missing");
         if (!docx && !paths.contains("layout.json")) throw new IOException("offline layout missing");
         for (int index = 0; index < count; index++) if (!paths.contains((docx ? "units/" : "layout/") + index + ".json")) throw new IOException("offline slide missing");

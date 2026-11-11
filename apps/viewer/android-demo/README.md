@@ -1,6 +1,6 @@
 # Office Viewer Android demo
 
-把 `apps/viewer` 的 Web Viewer 嵌进 WebView，支持 PPTX / DOCX 在线预览和下载后断网阅读。
+把 `apps/viewer` 的 Web Viewer 嵌进 WebView，支持 PPTX / DOCX / PDF 在线预览和下载后断网阅读。
 
 ## 工作方式
 
@@ -62,6 +62,33 @@ DOCX 的 unitCount 是正文分块数，应用不把它显示为排版页数。�
 运行 `node apps/viewer/scripts/android-docx-smoke.mjs`。输入为 `[{"name":"business","fileId":"64位sha256"}]`。
 脚本验证在线和下载后断开服务端口映射时的本地重放，保留应用数据并恢复原 USB reverse 映射。
 详细结果见 [Word 阅读修复验收](../../../docs/word-reading-fixes-validation.zh-CN.md)。
+
+## PDF 原文件离线阅读
+
+PDF 下载先读取 `/v1/files/<fileId>` 的鉴权元数据，核对文档类型、大小和 SHA-256，
+再从 `/v1/files/<fileId>/content` 流式下载原件。PDF 不创建解析会话或媒体转换任务，
+版本身份由原件哈希和本地包版本派生；下载复用现有续传、空间预检、哈希封存及原子版本切换，
+失败或取消时保留当前可用文件。
+
+离线目录包含 `document.pdf` 与清单。原件内容保持不变；本地 HTTP 服务提供同源
+`/v1/files/<fileId>/content`，支持 GET / HEAD、Range、ETag 和 If-Range。
+APK 内已有 PDF.js Worker、CMap、标准字体及 WASM，阅读时由 PDF.js 在 WebView 内解析并按可见页绘制。
+清单 `unitCount=0` 表示不生成服务器分页模型，实际页数来自 PDF.js，设置页不会显示成 0 页。
+
+为 Chromium 114 补充 ReadableStream 异步迭代兼容层，保持读完、异常和提前退出时的锁释放及取消语义。
+现代内核保留原生实现。PDF 的全页尺寸与表单扫描仍在首次显示前执行，超大页数的首屏优化另行处理。
+
+真机复现：输入 JSON 为 `[{"name":"business","fileId":"64位sha256"}]`，可加 `expectedPages`。
+
+```bash
+ANDROID_SERIAL=<目标设备> PARSE_SERVER_TOKEN=<令牌> \
+ANDROID_PDF_INPUTS=/tmp/private-pdf-inputs.json \
+ANDROID_PDF_EVIDENCE_DIR=/tmp/genoffice-pdf-offline/device \
+npm run test:android-pdf -w @genoffice/viewer
+```
+
+脚本检查在线、下载、移除远程端口映射后的冷启动离线阅读，以及本地文件哈希和 Range 字节。
+完整结果见 [PDF 离线验收](../../../docs/android-pdf-offline-validation.zh-CN.md)。
 
 ## 构建
 

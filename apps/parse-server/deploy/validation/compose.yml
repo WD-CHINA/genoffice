@@ -14,14 +14,13 @@ x-environment: &environment
   PARSE_SERVER_ALLOWED_ORIGINS: http://127.0.0.1:11019
   PARSE_SERVER_ARTIFACT_BACKEND: catalog
   PARSE_SERVER_STORAGE_ADMISSION: shared
-  PARSE_SERVER_BUILD_FINGERPRINT: validation-local
   PARSE_SERVER_CACHE_MODE: redis
   PARSE_SERVER_WORKER_MEMORY_MB: 512
   PARSE_SERVER_WORKER_RSS_MB: 1024
   PARSE_SERVER_PARSE_MEMORY_MB: 2048
   MYSQL_DATABASE: genoffice_validation
   MYSQL_SOCKET: /sockets/mysql.sock
-  REDIS_SOCKET: /sockets/redis.sock
+  REDIS_SOCKET: /redis-sockets/redis.sock
 
 services:
   mysql:
@@ -40,9 +39,9 @@ services:
       retries: 60
   redis:
     image: redis:7-alpine
-    command: ['redis-server', '--unixsocket', '/sockets/redis.sock', '--unixsocketperm', '777', '--maxmemory', '64mb', '--maxmemory-policy', 'allkeys-lru']
+    command: ['redis-server', '--unixsocket', '/data/redis.sock', '--unixsocketperm', '777', '--maxmemory', '64mb', '--maxmemory-policy', 'allkeys-lru']
     mem_limit: 128m
-    volumes: [sockets:/sockets]
+    volumes: [redis-sockets:/data]
     networks: [validation]
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
@@ -56,7 +55,7 @@ services:
     mem_limit: 4g
     memswap_limit: 4g
     ports: ['127.0.0.1:18787:8787']
-    volumes: [data:/data, sockets:/sockets]
+    volumes: [data:/data, sockets:/sockets, redis-sockets:/redis-sockets]
     depends_on:
       mysql: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -67,7 +66,7 @@ services:
     mem_limit: 2g
     memswap_limit: 2g
     ports: ['127.0.0.1:18788:8787']
-    volumes: [data:/data, sockets:/sockets]
+    volumes: [data:/data, sockets:/sockets, redis-sockets:/redis-sockets]
     depends_on:
       mysql: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -79,9 +78,10 @@ services:
     memswap_limit: 4g
     environment:
       PARSE_TEST_MYSQL_SOCKET: /sockets/mysql.sock
-      PARSE_TEST_REDIS_SOCKET: /sockets/redis.sock
+      PARSE_TEST_REDIS_SOCKET: /redis-sockets/redis.sock
     volumes:
       - sockets:/sockets
+      - redis-sockets:/redis-sockets
       - ${EVIDENCE_DIR:-/tmp/genoffice-validation}:/evidence
     command: ['node', '/workspace/node_modules/vitest/vitest.mjs', 'run', '--no-file-parallelism', '--reporter=json', '--outputFile=/evidence/suite.json']
     depends_on:
@@ -102,5 +102,6 @@ networks:
   validation:
 volumes:
   sockets:
+  redis-sockets:
   mysql:
   data:

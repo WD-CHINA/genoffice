@@ -1,6 +1,6 @@
 # 解析优化实施进度
 
-更新：2026-11-11。当前实际验收见 [Docker 验证记录](parse-docker-validation.zh-CN.md)。对应方案：`parse-persistence-optimization.zh-CN.md`。持久化、可选 Redis 热缓存、业务课件重启复用、Linux 内核 OOM、GB 正文与独立数据库冷恢复均有实测；远程 DOCX 脚注与复杂版式、最大 PPT 首页图片就绪仍有未通过项。下文保留实施历史，不再引用旧“七成 / Redis 未开始”等过时百分比作为当前状态。
+更新：2026-11-11。当前功能修复见 [DOCX / PPT 修复验收](parse-viewer-fixes-validation.zh-CN.md)，容量及恢复边界见 [Docker 验证记录](parse-docker-validation.zh-CN.md)。对应方案：`parse-persistence-optimization.zh-CN.md`。持久化、可选 Redis 热缓存、业务课件重启复用、Linux 内核 OOM、GB 正文与独立数据库冷恢复均有实测；脚注编号与格式、远程分节 / 页眉页脚和最大 PPT 的 EMF 首页图片已修复并复验。下文保留实施历史，不再引用旧“七成 / Redis 未开始”等过时百分比作为当前状态。
 
 ## 已落地
 

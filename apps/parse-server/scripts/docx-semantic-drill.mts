@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { readdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, resolve } from 'node:path'
 import JSZip from 'jszip'
-import { parseDocx } from '@genoffice/docx-engine'
+import { parseDocx, readSections } from '@genoffice/docx-engine'
 import { setTimeout as delay } from 'node:timers/promises'
 
 const option = (name: string, fallback = '') => {
@@ -53,7 +53,9 @@ for (const path of files) {
     const zip = await JSZip.loadAsync(bytes)
     const xml = await zip.file('word/document.xml')!.async('string')
     sample.sourceSections = (xml.match(/<w:sectPr\b/g) ?? []).length
-    sample.sourceHeadersFooters = Object.keys(zip.files).filter((name) => /^word\/(header|footer)\d+\.xml$/.test(name)).length
+    // Office also uses names such as footer.xml, not only footer1.xml.
+    const relationships = await zip.file('word/_rels/document.xml.rels')?.async('string') ?? ''
+    sample.sourceHeadersFooters = (relationships.match(/<Relationship\b[^>]*\bType=["'][^"']+\/(?:header|footer)["'][^>]*>/g) ?? []).length
     const full = await parseDocx(bytes)
     const upload = await json('/v2/files', { method: 'POST', body: bytes })
     sample.fileId = upload.fileId
@@ -76,8 +78,20 @@ for (const path of files) {
     sample.remoteBlockCount = blocks.length
     sample.bodyEquivalent = JSON.stringify(full.blocks.map(signature)) === JSON.stringify(blocks.map(signature))
     sample.remotePageSettings = document.model.page
-    sample.remoteModelHasSections = Array.isArray(document.model.sections)
-    sample.remoteModelHasHeadersFooters = Boolean(document.model.headers || document.model.footers)
+    const reading = document.model.docx
+    sample.remoteModelHasSections = Array.isArray(reading?.sections)
+    sample.remoteModelHasHeadersFooters = Boolean(reading?.hfParts && Object.keys(reading.hfParts).length)
+    assert.ok(reading, 'missing DOCX reading context')
+    assert.deepEqual(reading.sections, readSections(full), 'section ranges/settings differ')
+    assert.deepEqual(reading.noteNumbers, full.noteNumbers, 'note numbering map differs')
+    assert.deepEqual(reading.footnoteProps, full.footnoteProps, 'footnote number formatting differs')
+    assert.deepEqual(reading.endnoteProps, full.endnoteProps, 'endnote number formatting differs')
+    sample.sectionCount = reading.sections.length
+    sample.headerFooterParts = Object.keys(reading.hfParts).length
+    for (const [id, part] of Object.entries(full.hfParts ?? {})) {
+      assert.equal(reading.hfParts[id]?.text, part.text, `header/footer ${id} text differs`)
+      assert.equal(reading.hfParts[id]?.images?.length ?? 0, part.images?.length ?? 0, `header/footer ${id} images differ`)
+    }
     assert.equal(sample.bodyEquivalent, true, 'body content/type/table rows differ')
     sample.status = 'passed'
     await fetch(`${base}/v2/sessions/${opened.sessionId}`, { method: 'DELETE', headers })

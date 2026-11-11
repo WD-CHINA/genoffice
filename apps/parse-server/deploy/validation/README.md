@@ -27,9 +27,9 @@ node --import tsx apps/parse-server/scripts/corpus-drill.mts --reopen-report /tm
 node --import tsx apps/parse-server/scripts/docx-semantic-drill.mts --input "$CORPUS_DIR" --out /tmp/docx-semantics.json
 ```
 
-The semantic drill intentionally fails on known regressions; passing block text
-and table rows does not accept section layout, note numbering or header/footer
-rendering. Reports distinguish those requirements.
+The semantic drill compares body text, note numbering/formatting, section ranges,
+and header/footer model content against the full parser, and fails on regressions.
+Use the separate browser layout audit to accept actual geometry, fields and images.
 
 Browser evidence uses the host's Chrome and repository development dependencies.
 Compose allows the browser drill's `http://127.0.0.1:11019` origin. Other
@@ -38,6 +38,9 @@ also points Vite's background API proxy at the selected server:
 
 ```sh
 PARSE_SERVER_URL=http://127.0.0.1:18787 node --import tsx apps/viewer/scripts/corpus-browser.mts --corpus /tmp/corpus-a.json --out /tmp/corpus-browser
+# The JSON from docx-semantic-drill is accepted too; --docx-layout scrolls every
+# section and checks paper widths, columns, note marks, PAGE/NUMPAGES and images.
+node --import tsx apps/viewer/scripts/corpus-browser.mts --corpus /tmp/docx-semantics.json --server http://127.0.0.1:18787 --docx-layout --out /tmp/docx-browser
 # Optional --only-name NAME --only-index 0 --playback
 node apps/viewer/scripts/weak-network-proxy.mjs --latency-ms 200 --bytes-per-second 131072
 # In a separate terminal: corpus-browser accepts --server http://127.0.0.1:18789.
@@ -90,3 +93,5 @@ docker compose -f apps/parse-server/deploy/validation/compose.yml down --volumes
 
 Recorded results and unresolved acceptance failures:
 [2026-11-11 validation report](../../../../docs/parse-docker-validation.zh-CN.md).
+The three document defects from that initial report were subsequently fixed:
+[repair verification](../../../../docs/parse-viewer-fixes-validation.zh-CN.md).

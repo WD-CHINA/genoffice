@@ -1,6 +1,6 @@
 # 解析优化方案完成度评估
 
-> **2026-11-11 更新：本文件以下为历史方案自评。** 旧版 86% / 73% 口径有冲突，且不能体现新发现的远程 DOCX 功能缺口；不再用这些数字作当前交付依据。当前可核验结论、业务样本、Docker 限额、551 项集成回归、GB 正文及数据库冷恢复见 [最新验收报告](parse-docker-validation.zh-CN.md)。当前未完成项优先级为脚注编号、分节 / 页眉页脚、最大 PPT 首页素材就绪、16 GiB 环境及真实异机 / Office 基线。
+> **2026-11-11 更新：本文件以下为历史方案自评。** 旧版 86% / 73% 口径有冲突，不再作当前交付依据。脚注编号、分节 / 页眉页脚及最大 PPT 首页素材已修复，554 项真实数据库回归及业务复验见 [修复验收报告](parse-viewer-fixes-validation.zh-CN.md)；容量 / 恢复边界见 [Docker 验证记录](parse-docker-validation.zh-CN.md)。16 GiB 环境、真实异机及完整独立 Office 基线仍未验收。
 
 评估日期：2026-11-10。评估对象：[`parse-persistence-optimization.zh-CN.md`](parse-persistence-optimization.zh-CN.md)（2026-11-10 版，292 行）。
 代码基线：分支 `feat/parse-server`，HEAD `de677f0d`（该提交只改文档，新增可选 Redis 热缓存层）；工作区另有 P3.5 最小实现、v2 契约补齐、部署开关、测试夹具修复与文档改动（未提交），见 §7。

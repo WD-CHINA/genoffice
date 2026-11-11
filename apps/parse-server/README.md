@@ -1,6 +1,6 @@
 # 解析优化实施进度
 
-> 当前验收以 [2026-11-11 Docker 验证记录](../../docs/parse-docker-validation.zh-CN.md) 为准；[隔离复现环境](deploy/validation/README.md)覆盖真实 MySQL/Redis、业务课件、资源限制与冷恢复。下文早期“当前限制”和计数保留用于追溯，部分已被后续实现替代。复杂 DOCX 仍有明确脚注与版式缺口，不能据旧完成度百分比宣布完成。
+> 当前功能修复见 [DOCX / PPT 验收记录](../../docs/parse-viewer-fixes-validation.zh-CN.md)；容量 / 恢复边界见 [Docker 验证记录](../../docs/parse-docker-validation.zh-CN.md)。[隔离复现环境](deploy/validation/README.md)覆盖真实 MySQL/Redis、业务课件、资源限制与冷恢复。脚注编号、分节 / 页眉页脚和远程 EMF 加载已修复；下文早期“当前限制”和计数保留用于追溯，部分已被后续实现替代，不能据旧完成度百分比宣布完成。
 
 更新：2026-11-07。对应方案：`parse-persistence-optimization.zh-CN.md`。整体目标仍在进行；磁盘持久化已接入实际预览，历史库保存/读取/移除已接入，生产任务与运维尚未完成。
 

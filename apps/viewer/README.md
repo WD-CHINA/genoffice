@@ -1,6 +1,6 @@
 # GenOffice Web Viewer
 
-独立的静态预览页面，支持 `.pptx`、`.pdf`、`.docx` 只读展示和 PPT 放映；可使用浏览器本地解析，或连接独立 parse-server 读取远程模型。当前实际业务样本、Docker 容量 / 恢复结果与未通过项见 [2026-11-11 验收报告](../../docs/parse-docker-validation.zh-CN.md)。复杂文档的完整视觉还原仍在验收中。
+独立的静态预览页面，支持 `.pptx`、`.pdf`、`.docx` 只读展示和 PPT 放映；可使用浏览器本地解析，或连接独立 parse-server 读取远程模型。当前业务文档修复与验证见 [2026-11-11 修复验收](../../docs/parse-viewer-fixes-validation.zh-CN.md)；容量 / 恢复环境边界见 [Docker 验收报告](../../docs/parse-docker-validation.zh-CN.md)。复杂文档的完整视觉还原仍在验收中。
 
 改动范围仅为 `apps/viewer` 和新增的 `packages/viewer-renderers`、`packages/viewer-services`。现有 app、package、根配置及根锁文件不修改。
 

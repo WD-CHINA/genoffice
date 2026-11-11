@@ -5,6 +5,8 @@ import { join, resolve } from 'node:path'
 import { createHash } from 'node:crypto'
 import { chromium } from 'playwright-core'
 import { createServer } from 'vite'
+import { PAGE_MARK, TOTAL_PAGES_MARK } from '@genoffice/docx-engine'
+import { formatNoteNumber } from '@genoffice/viewer-renderers/docs/renderer/note-format'
 
 const option = (name: string, fallback = '') => {
   const index = process.argv.indexOf(`--${name}`)
@@ -12,9 +14,11 @@ const option = (name: string, fallback = '') => {
 }
 if (!option('corpus')) throw new Error('--corpus is required')
 const corpus = JSON.parse(await readFile(resolve(option('corpus')), 'utf8')) as any
+if (!corpus.documents && corpus.samples)
+  corpus.documents = corpus.samples.map((sample: any) => ({ ...sample, format: 'docx' }))
 const output = resolve(option('out', '/tmp/genoffice-corpus-browser'))
 const token = process.env.PARSE_SERVER_TOKEN ?? ''
-const serverUrl = option('server', corpus.base)
+const serverUrl = option('server', corpus.base ?? 'http://127.0.0.1:18787')
 process.env.PARSE_SERVER_URL = serverUrl
 await mkdir(output, { recursive: true })
 const frontend = await createServer({ configFile: resolve(import.meta.dirname, '../vite.config.ts'),
@@ -43,7 +47,7 @@ try {
       report.samples.push(sample)
       page.on('pageerror', (error) => sample.errors.push(error.message))
       page.on('response', (response) => {
-        if (response.status() >= 400) sample.httpErrors.push({ status: response.status(), path: new URL(response.url()).pathname })
+        if (response.status() >= 400) sample.httpErrors.push({ status: response.status(), origin: new URL(response.url()).origin, path: new URL(response.url()).pathname })
       })
       try {
         const params = new URLSearchParams({ parse: 'server', server: serverUrl, fileId: document.fileId,
@@ -71,6 +75,90 @@ try {
           alerts: [...document.querySelectorAll('[role="alert"]')].map((element) => element.textContent),
           performance: (window as any).__viewerPerformance,
         }))
+        if (process.argv.includes('--docx-layout') && document.format === 'docx') {
+          const auth = token ? { Authorization: `Bearer ${token}` } : {}
+          const opened = await (await fetch(serverUrl + '/v1/sessions', { method: 'POST',
+            headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ fileId: document.fileId }) })).json() as any
+          const reading = opened.model.docx
+          assert.ok(reading?.sections?.length, 'section model missing')
+          await fetch(`${serverUrl}/v1/sessions/${opened.sessionId}`, { method: 'DELETE', headers: auth })
+          const observed = new Map<number, any>()
+          const sections = new Set<number>()
+          const images: any[] = []
+          const strip = (text: string) => text.replace(/\s+/g, '')
+          for (let step = 0; step < 100; step++) {
+            const view = await contentFrame.evaluate(() => {
+              const viewport = document.querySelector<HTMLElement>('.viewer-doc-remote-viewport')!
+              return { top: viewport.scrollTop, height: viewport.clientHeight, total: viewport.scrollHeight,
+                pages: [...document.querySelectorAll<HTMLElement>('.viewer-doc-remote-page')].map((paper) => ({
+                  index: Number(paper.dataset.pageIndex), section: Number(paper.dataset.sectionIndex), number: paper.dataset.pageNumber,
+                  width: paper.getBoundingClientRect().width, height: paper.getBoundingClientRect().height,
+                  columns: [...paper.querySelectorAll<HTMLElement>('.viewer-doc-remote-column')].map((column) => ({
+                    height: column.getBoundingClientRect().height,
+                    bottomGap: paper.getBoundingClientRect().bottom - column.getBoundingClientRect().bottom,
+                  })),
+                  notes: [...paper.querySelectorAll<HTMLElement>('sup[data-note-ref]')].map((note) => ({
+                    id: note.dataset.noteRef, kind: note.dataset.noteKind, text: note.textContent ?? '',
+                  })),
+                  top: Number(/translateY\(([-.\d]+)px\)/.exec(paper.parentElement!.style.transform)?.[1] ?? 0),
+                  regions: [...paper.querySelectorAll<HTMLElement>('.viewer-doc-remote-region')].map((region) => ({
+                    section: Number(region.dataset.sectionIndex), columns: Number(region.dataset.columns),
+                  })),
+                  parts: [...paper.querySelectorAll<HTMLElement>('[data-hf-part]')].map((part) => ({ id: part.dataset.hfPart!, text: part.textContent ?? '' })),
+                  images: [...paper.querySelectorAll<HTMLImageElement>('[data-hf-part] img')].map((image) => ({ complete: image.complete, width: image.naturalWidth, url: image.src.split('?')[0] })),
+                })) }
+            })
+            for (const paper of view.pages) {
+              observed.set(paper.index, paper)
+              assert.ok(Math.abs(paper.width - reading.sections[paper.section].settings.pageWidth / 15) < 2, 'wrong section paper width')
+              assert.ok(paper.columns.every((column) => column.bottomGap >= -2), 'body column overflows its paper')
+              for (const region of paper.regions) {
+                sections.add(region.section)
+                assert.equal(region.columns, reading.sections[region.section].settings.columns)
+              }
+              for (const part of paper.parts) {
+                const expected = reading.hfParts[part.id].text.replaceAll(TOTAL_PAGES_MARK, String(observed.size)).replaceAll(PAGE_MARK, paper.number)
+                // NUMPAGES can still grow while later chunks are being indexed.
+                if (!reading.hfParts[part.id].text.includes(TOTAL_PAGES_MARK))
+                  assert.ok(strip(part.text).includes(strip(expected)), `header/footer ${part.id} text/field mismatch`)
+              }
+              for (const note of paper.notes) {
+                const number = reading.noteNumbers[`${note.kind}:${note.id}`]
+                const fmt = note.kind === 'endnote' ? reading.endnoteProps?.numFmt ?? 'lowerRoman' : reading.footnoteProps?.numFmt ?? 'decimal'
+                assert.equal(note.text, formatNoteNumber(fmt, number), 'rendered note marker differs')
+              }
+              images.push(...paper.images)
+            }
+            if (view.top + view.height >= view.total - 2) break
+            await contentFrame.locator('.viewer-doc-remote-viewport').evaluate((element) => { element.scrollTop += Math.max(100, element.clientHeight * 0.8) })
+            await page.waitForTimeout(200)
+          }
+          assert.equal(sections.size, reading.sections.length, 'not every source section was rendered')
+          for (const paper of observed.values()) for (const part of paper.parts) {
+            const expected = reading.hfParts[part.id].text.replaceAll(TOTAL_PAGES_MARK, String(observed.size)).replaceAll(PAGE_MARK, paper.number)
+            assert.ok(strip(part.text).includes(strip(expected)), `header/footer ${part.id} final PAGE/NUMPAGES mismatch`)
+          }
+          if (reading.sections.length === 1 && reading.sections[0].settings.columns === 2 && observed.size === 1)
+            assert.equal([...observed.values()][0].columns.filter((column: any) => column.height > 0).length, 2, 'final two-column page did not balance')
+          assert.ok(images.every((image) => image.complete && image.width > 0), `header/footer image did not decode: ${JSON.stringify(images.filter((image) => !image.complete || !image.width))}`)
+          sample.layoutAudit = { sourceSections: reading.sections.length, renderedSections: [...sections],
+            pages: [...observed.values()].map((paper) => ({ ...paper, parts: paper.parts.map((part: any) => ({ id: part.id })) })),
+            headerFooterImageChecks: images.length }
+          for (const section of sections) {
+            const paper = [...observed.values()].find((paper) => paper.regions.some((region: any) => region.section === section))!
+            await contentFrame.locator('.viewer-doc-remote-viewport').evaluate((element, top) => { element.scrollTop = top }, paper.top)
+            await page.waitForTimeout(200)
+            await page.screenshot({ path: join(output, `${document.fileId.slice(0, 12)}-section-${section}.png`) })
+          }
+          if ([...observed.values()].some((paper) => paper.parts.some((part: any) => reading.hfParts[part.id].hasPageNumber))) {
+            const firstPaper = [...observed.values()][0]
+            await contentFrame.locator('.viewer-doc-remote-viewport').evaluate((element, paper) => {
+              element.scrollTop = Math.max(0, paper.top + paper.height - element.clientHeight + 24)
+            }, firstPaper)
+            await page.waitForTimeout(200)
+            await page.screenshot({ path: join(output, `${document.fileId.slice(0, 12)}-footer.png`) })
+          }
+        }
         if (document.format !== 'docx') {
           // Screenshots work for legitimate cross-origin images too; reading
           // canvas pixels in page JS would reject tainted canvases.

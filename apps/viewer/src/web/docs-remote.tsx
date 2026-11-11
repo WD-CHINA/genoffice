@@ -1,4 +1,5 @@
 import { openingStateText } from './server-session'
+import { combineAbortSignals } from './abort-signals'
 import { DocxRemoteSession } from './docx-remote-session'
 import { DocxFontScope } from './docx-font-scope'
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -229,7 +230,8 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     const existing = remeasureJobs.current.get(id)
     if (existing?.active === active && !existing.controller.signal.aborted) { existing.dirty = true; return }
     const job = { active, dirty: true, controller: new AbortController() }
-    const signal = AbortSignal.any([active.signal, job.controller.signal])
+    const combined = combineAbortSignals([active.signal, job.controller.signal])
+    const signal = combined.signal
     remeasureJobs.current.set(id, job)
     void remeasureQueue.current.run(signal, async () => {
       while (job.dirty && session.current === active) {
@@ -246,6 +248,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       if (session.current === active && !signal.aborted)
         setWindowError(caught instanceof Error ? caught.message : String(caught))
     }).finally(() => {
+      combined.dispose()
       if (remeasureJobs.current.get(id) === job) remeasureJobs.current.delete(id)
     })
   }, [])

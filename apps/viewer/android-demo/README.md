@@ -1,6 +1,6 @@
 # Office Viewer Android demo
 
-把 `apps/viewer` 的 Web Viewer 嵌进 WebView，并从解析服务下载「已解析」的结果离线渲染。
+把 `apps/viewer` 的 Web Viewer 嵌进 WebView，支持在线预览和下载后断网播放 PPTX。
 
 ## 工作方式
 
@@ -21,6 +21,31 @@
    页面与 API 同源，因此不涉及 CORS、canvas 也不会被跨域像素污染；音视频播放使用的
    是本地缓存文件。
 
+## 在线和离线音视频
+
+设置页可选择「在线打开」或「下载离线包并打开」。在线地址指向部署的 Viewer，解析服务地址
+指向已启用自动媒体准备的 parse-server。文件 ID 留空时，在线页面可选本机文件上传。
+在线端复用现有媒体准备状态、转换进度和重试入口；Android 不运行 FFmpeg。
+
+下载离线包时，先验证服务端权威清单及原始资源，再调用媒体准备接口。兼容媒体优先复用，
+容器不兼容时 remux，编码不兼容时转换。准备结果提供 `sha256`、`sourceSha256` 和 `profile`，
+安卓核对来源哈希、结果哈希、大小、类型，并检查系统视频解码器。缺少视频解码器时自动请求一次强制转码；
+仍不支持则下载失败，保留原来的可用包。MP3 由 WebView 音频链路解码；原生 MediaExtractor
+会误拒绝部分有效的极短音效，因此不作为 MP3 下载门禁。
+
+原始模型及媒体不覆盖；兼容 MP4 / MP3 存在 `prepared-media/<sha256>.*`，清单记录来源、转换配置和映射。
+原 artifactKey 与转换结果、配置共同派生本地版本身份，完整性校验覆盖两类文件。
+本地 HTTP 回放模型时才替换媒体引用，视频通过同源 `/v1/files/<id>/prepared/<hash>.*` 支持 Range。
+资源清单内未引用的已知音视频也会准备；这不会新增原渲染器未实现的转场声音行为。
+
+原媒体和兼容媒体均占用缓存配额，下载时需预留额外空间。转换排队、处理、取消和失败均在设置页显示。
+旧服务未启用媒体准备时仍可下载原始包，但会提示音视频兼容性尚未保证；服务启用了媒体准备却没有
+完整性元数据时要求升级服务，不降级为未经验证的兼容媒体下载。外链媒体仍标记「部分离线」。
+
+APK 开启硬件加速、视频全屏支持，并修复重复打开和返回页面时的 WebView 生命周期。
+前端为 Chromium 114 补充 `AbortSignal.any` 兼容实现。该版本实机报告见
+[Android 在线与离线媒体验收](../../../docs/android-media-validation.zh-CN.md)。
+
 ## 构建
 
 ```bash
@@ -30,7 +55,7 @@ npm run package
 
 # 2. 构建 APK
 cd android-demo
-./gradlew assembleDebug
+JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
@@ -47,6 +72,12 @@ curl -X POST --data-binary @deck.pptx http://127.0.0.1:8790/v1/files
 
 # 设备通过 USB 访问电脑上的服务
 adb reverse tcp:8790 tcp:8790
+adb reverse tcp:11019 tcp:11019
+
+# 在线预览（本地 Viewer 需先启动；正式部署填写 HTTPS 地址）
+adb shell am start -n com.genoffice.viewerdemo/.MainActivity \
+  --es viewer http://127.0.0.1:11019/ --es server http://127.0.0.1:8790 \
+  --es fileId <sha256> --ez online true
 
 # 启动即下载并打开；已有缓存时可只打开
 adb shell am start -n com.genoffice.viewerdemo/.MainActivity \

@@ -7,6 +7,8 @@
  * document. Only successful, well-formed responses are cached.
  */
 
+import { combineAbortSignals } from './abort-signals'
+
 export interface ServerCapabilities {
   contractVersion?: string
   parserVersion?: string
@@ -87,9 +89,8 @@ export async function fetchCapabilities(
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   const timeout = new AbortController()
   const timer = setTimeout(() => timeout.abort(), timeoutMs)
-  const signal = options.signal
-    ? AbortSignal.any([options.signal, timeout.signal])
-    : timeout.signal
+  const combined = combineAbortSignals(options.signal ? [options.signal, timeout.signal] : [timeout.signal])
+  const signal = combined.signal
   try {
     const response = await fetchImpl(base + '/v2/capabilities', {
       method: 'GET',
@@ -106,6 +107,7 @@ export async function fetchCapabilities(
   } catch {
     return undefined
   } finally {
+    combined.dispose()
     clearTimeout(timer)
   }
 }

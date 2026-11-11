@@ -17,6 +17,7 @@
     "package": "cross-env VIEWER_BASE=/viewer/ node scripts/build.mjs && node scripts/package.mjs",
     "test:resilience": "node --import tsx scripts/resilience-smoke.mts",
     "test:soak": "cross-env SOAK_SECONDS=7500 node --import tsx scripts/resilience-smoke.mts",
+    "test:android-media": "node scripts/android-media-smoke.mjs",
     "test:android-backend": "node --import tsx scripts/android-backend-smoke.mts"
   },
   "dependencies": {

@@ -98,3 +98,6 @@ PARSE_SERVER_TOKEN=validation-local node --import tsx \
 - `4a2c58…pptx` 的音频对象位于画布外。组件播放验证通过，但正常指针点击仍受工具栏 / 视口影响，计为交互警告；本次没有移动原对象。
 - 播放检查采用静音自动化，验证了音轨完整解码、视频帧、进度和拖动，没有人工听音、Office 动画时序对照，以及 Safari / Firefox / Android WebView 的实际设备验收。
 - 本轮完成在线服务接入和本机生产镜像验证，未部署到外部线上环境；离线 bundle 兼容媒体导出及目标硬件生产容量不属于本轮结论。
+
+后续 Android 在线及断网播放接入与真机验收见
+[Android 媒体验收](android-media-validation.zh-CN.md)，该报告补充了本报告未覆盖的离线包与 WebView 范围。

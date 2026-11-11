@@ -1,4 +1,5 @@
 import { DocxReadQueue } from './docx-read-queue'
+import { combineAbortSignals } from './abort-signals'
 
 interface EmbeddedFont {
   id: string
@@ -31,7 +32,8 @@ export class DocxFontScope {
 
   async load(server: string, sessionId: string, fonts: readonly EmbeddedFont[],
     headers: Record<string, string>, signal: AbortSignal): Promise<void> {
-    signal = AbortSignal.any([signal, this.controller.signal])
+    const combined = combineAbortSignals([signal, this.controller.signal])
+    signal = combined.signal
     let index = 0
     const worker = async () => {
       while (!this.closed && !signal.aborted && index < fonts.length) {
@@ -71,7 +73,8 @@ export class DocxFontScope {
       }
     }
     // Do not fetch and decode every embedded font concurrently.
-    await Promise.all([worker(), worker()])
+    try { await Promise.all([worker(), worker()]) }
+    finally { combined.dispose() }
   }
 
   close(): void {

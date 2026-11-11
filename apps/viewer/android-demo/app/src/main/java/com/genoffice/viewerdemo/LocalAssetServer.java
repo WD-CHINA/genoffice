@@ -242,7 +242,7 @@ final class LocalAssetServer extends Thread {
                 sendText(out, 404, "Not Found");
                 return;
             }
-            sendBytes(out, 200, "application/json; charset=utf-8", readFile(file),
+            sendBytes(out, 200, "application/json; charset=utf-8", modelBytes(file),
                     "HEAD".equals(method), null);
             return;
         }
@@ -252,7 +252,7 @@ final class LocalAssetServer extends Thread {
                 sendText(out, 404, "Not Found");
                 return;
             }
-            sendBytes(out, 200, "application/json; charset=utf-8", readFile(file), false, null);
+            sendBytes(out, 200, "application/json; charset=utf-8", modelBytes(file), false, null);
             return;
         }
         if (raw.length == 7 && "layout".equals(raw[4]) && "slides".equals(raw[5])
@@ -269,7 +269,7 @@ final class LocalAssetServer extends Thread {
                 sendText(out, 404, "Not Found");
                 return;
             }
-            sendBytes(out, 200, "application/json; charset=utf-8", readFile(file), false, null);
+            sendBytes(out, 200, "application/json; charset=utf-8", modelBytes(file), false, null);
             return;
         }
         if (raw.length == 5 && "text-widths".equals(raw[4]) && "POST".equals(method)) {
@@ -295,6 +295,13 @@ final class LocalAssetServer extends Thread {
         if (!store.fileId().equals(fileId)) {
             sendText(out, 404, "Not Found");
             return;
+        }
+        if (raw.length == 6 && "prepared".equals(raw[4]) && ("GET".equals(request.method) || "HEAD".equals(request.method))) {
+            String name = decode(raw[5]);
+            if (!name.matches("[a-f0-9]{64}\\.(mp4|mp3)")) { sendText(out, 400, "Bad Request"); return; }
+            File file = store.resourceFile(PreparedMedia.PREFIX + name);
+            if (!file.isFile()) { sendText(out, 404, "Not Found"); return; }
+            serveRange(request, out, file); return;
         }
         if (raw.length == 4 && "GET".equals(request.method)) {
             try {
@@ -333,6 +340,14 @@ final class LocalAssetServer extends Thread {
     }
 
     // ── static assets ────────────────────────────────────────────────────────
+
+    private byte[] modelBytes(File file) throws IOException {
+        try {
+            JSONObject model = new JSONObject(new String(readFile(file), StandardCharsets.UTF_8));
+            PreparedMedia.rewrite(model, store);
+            return model.toString().getBytes(StandardCharsets.UTF_8);
+        } catch (Exception failure) { throw new IOException("invalid offline media mapping", failure); }
+    }
 
     private void serveAsset(Request request, OutputStream out) throws IOException {
         if (!"GET".equals(request.method) && !"HEAD".equals(request.method)) {

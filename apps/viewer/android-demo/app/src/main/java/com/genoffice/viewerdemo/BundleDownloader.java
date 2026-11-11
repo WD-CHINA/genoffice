@@ -23,6 +23,8 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.HashMap;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -202,10 +204,17 @@ final class BundleDownloader {
                 manifest.put("parts", partsDownloaded);
                 JSONArray external = manifest.optJSONArray("externalResources");
                 manifest.put("offlineScope", external != null && external.length() > 0 ? "partial" : "complete");
+                prepareOfflineMedia(manifest, count);
+                if (cache != null && manifest.has("sourceArtifactKey")) {
+                    destination = cache.versionStore(fileId, manifest.getString("artifactKey"));
+                    destination.recoverPrevious();
+                }
             }
             listener.stage("正在校验离线资源…");
             checkCancelled();
             store.seal(manifest);
+            if (cache != null) cache.require(manifest.toString().getBytes(StandardCharsets.UTF_8).length
+                    + 64L + manifest.getLong("totalBytes"));
             synchronized (lifecycle) {
                 checkCancelled();
                 publishing = true;
@@ -319,6 +328,117 @@ final class BundleDownloader {
             if (path.startsWith("parts/")) partsDownloaded++;
         }
         return count;
+    }
+
+    /** Add verified compatible media without changing the source manifest resources. */
+    private void prepareOfflineMedia(JSONObject manifest, int count) throws Exception {
+        Map<String, JSONObject> requests = PreparedMedia.requests(store, count, server, manifest.getJSONArray("resources"));
+        manifest.put("mediaObjectCount", requests.size());
+        if (requests.isEmpty()) { manifest.put("mediaPreparation", "not-needed"); return; }
+        JSONObject capabilities;
+        try { capabilities = requestJson(server + "/v2/capabilities", "GET", null); }
+        catch (HttpFailure failure) {
+            if (failure.status != 404 && failure.status != 405) throw failure;
+            manifest.put("mediaPreparation", "unavailable"); return;
+        }
+        JSONObject features = capabilities.optJSONObject("features");
+        if (features == null || !features.optBoolean("mediaTranscoding")) {
+            manifest.put("mediaPreparation", "unavailable"); return;
+        }
+        if (!features.optBoolean("mediaPreparationIntegrity"))
+            throw new IOException("请升级解析服务，以提供离线兼容媒体的哈希校验。");
+        Map<String, JSONObject> sources = new HashMap<>();
+        JSONArray original = manifest.getJSONArray("resources");
+        for (int i = 0; i < original.length(); i++) {
+            JSONObject resource = original.getJSONObject(i);
+            sources.put(resource.getString("path"), resource);
+        }
+        String sourceKey = manifest.getString("artifactKey");
+        JSONArray mappings = new JSONArray();
+        Set<String> downloaded = new HashSet<>();
+        long extra = 0;
+        int index = 0;
+        for (JSONObject request : requests.values()) {
+            checkCancelled();
+            String part = request.getString("part"), kind = request.getString("kind");
+            JSONObject source = sources.get("parts/" + part);
+            if (source == null) throw new IOException("媒体引用不在服务端资源清单内。");
+            JSONObject prepared = null;
+            String path = null;
+            File target = null;
+            for (int attempt = 0; attempt < 2; attempt++) {
+                listener.stage("准备兼容媒体 " + (index + 1) + " / " + requests.size() + "…");
+                JSONObject body = new JSONObject().put("partPath", part).put("kind", kind).put("retry", attempt > 0);
+                String endpoint = server + "/v1/files/" + encode(fileId) + "/media";
+                prepared = requestJson(endpoint, "POST", body.toString());
+                long deadline = android.os.SystemClock.elapsedRealtime() + 30 * 60 * 1000L;
+                while ("queued".equals(prepared.optString("state")) || "processing".equals(prepared.optString("state"))) {
+                    checkCancelled();
+                    if (android.os.SystemClock.elapsedRealtime() > deadline) throw new IOException("兼容媒体处理超时。");
+                    String job = prepared.optString("jobId");
+                    if (!job.matches("[a-f0-9]{64}")) throw new IOException("媒体任务身份无效。");
+                    String stage = prepared.optString("stage");
+                    listener.stage("queued".equals(prepared.optString("state")) ? "兼容媒体正在排队…"
+                            : "converting".equals(stage) ? "正在转换媒体（" + Math.max(0, Math.min(99, prepared.optInt("progress"))) + "%）…"
+                            : "verifying".equals(stage) ? "正在校验兼容媒体…" : "正在检查兼容媒体…");
+                    try { Thread.sleep(750); }
+                    catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); checkCancelled(); throw new IOException("下载已取消", interrupted); }
+                    prepared = requestJson(endpoint + "/" + job, "GET", null);
+                }
+                if (!"ready".equals(prepared.optString("state"))) throw new IOException("兼容媒体准备失败：" + prepared.optString("errorCode", "unknown"));
+                String sha = prepared.optString("sha256"), profile = prepared.optString("profile"), job = prepared.optString("jobId");
+                long size = prepared.optLong("bytes", -1);
+                if (!sha.matches("[a-f0-9]{64}") || !profile.matches("[a-f0-9]{64}") || !job.matches("[a-f0-9]{64}")
+                        || !source.getString("sha256").equals(prepared.optString("sourceSha256"))
+                        || !kind.equals(prepared.optString("kind")) || size <= 0 || prepared.getDouble("bytes") != size
+                        || !("video".equals(kind) ? "video/mp4" : "audio/mpeg").equals(prepared.optString("mime")))
+                    throw new IOException("兼容媒体哈希或资源身份不匹配。");
+                path = PreparedMedia.PREFIX + sha + ("video".equals(kind) ? ".mp4" : ".mp3");
+                target = store.resourceFile(path);
+                if (!downloaded.contains(path)) extra = Math.addExact(extra, size);
+                if (cache != null) cache.require(Math.addExact(manifest.getLong("totalBytes"), extra + 65536L));
+                if (target.isFile() && (target.length() != size || !sha.equals(BundleStore.digest(target)))) {
+                    if (!target.delete()) throw new IOException("无法清理未完成的兼容媒体。");
+                }
+                if (!target.isFile()) {
+                    space.require(size);
+                    if (sha.equals(source.getString("sha256")) && size == source.getLong("size")) {
+                        copyLocal(store.resourceFile("parts/" + part), target);
+                    } else {
+                        // Never follow an untrusted returned URL or leak the token to another host.
+                        downloadDeclaredFile(endpoint + "/" + job + "/content", target, path, size, sha, profile);
+                    }
+                }
+                if (PreparedMedia.decodable(target, kind)) break;
+                if (!downloaded.contains(path)) {
+                    if (!target.delete()) throw new IOException("无法清理不兼容的临时媒体。");
+                    extra -= size;
+                }
+                if (attempt == 1) throw new IOException("系统缺少该兼容媒体的解码器，离线包未更新。");
+            }
+            downloaded.add(path);
+            mappings.put(new JSONObject().put("part", part).put("kind", kind).put("path", path)
+                    .put("sha256", prepared.getString("sha256")).put("size", prepared.getLong("bytes"))
+                    .put("sourceSha256", prepared.getString("sourceSha256")).put("profile", prepared.getString("profile")));
+            index++;
+        }
+        manifest.put("sourceArtifactKey", sourceKey);
+        manifest.put("sourceTotalBytes", manifest.getLong("totalBytes"));
+        manifest.put("preparedMedia", mappings);
+        manifest.put("mediaPreparation", "complete");
+        manifest.put("artifactKey", PreparedMedia.version(sourceKey, mappings));
+    }
+
+    private void copyLocal(File source, File target) throws IOException {
+        File parent = target.getParentFile();
+        if (!parent.isDirectory() && !parent.mkdirs()) throw new IOException("cannot create prepared media directory");
+        try (InputStream input = new FileInputStream(source); FileOutputStream output = new FileOutputStream(target)) {
+            byte[] buffer = new byte[65536]; int size;
+            while ((size = input.read(buffer)) != -1) {
+                checkCancelled(); space.require(size); output.write(buffer, 0, size);
+            }
+            output.getFD().sync();
+        }
     }
 
     // ── session / units ──────────────────────────────────────────────────────

@@ -25,6 +25,7 @@ import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -48,6 +49,11 @@ public class MainActivity extends Activity {
     private static final String PREFS = "viewer-demo";
     private static final int FILE_REQ = 1;
 
+    private EditText viewerInput;
+    private Button onlineButton;
+    private View fullscreen;
+    private WebChromeClient.CustomViewCallback fullscreenCallback;
+    private int previousUi;
     private EditText serverInput;
     private EditText fileInput;
     private EditText tokenInput;
@@ -58,6 +64,7 @@ public class MainActivity extends Activity {
     private Button cleanupButton;
     private BundleCache cache;
     private volatile BundleDownloader activeDownload;
+    private Intent pendingIntent;
 
     private LocalAssetServer server;
     private int port;
@@ -84,24 +91,32 @@ public class MainActivity extends Activity {
         root.setPadding(pad, dp(40), pad, pad);
 
         TextView title = new TextView(this);
-        title.setText("Office Viewer 离线演示");
+        title.setText("Office Viewer 在线与离线预览");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
         title.setTextColor(Color.BLACK);
         root.addView(title, matchWrap());
 
         TextView hint = new TextView(this);
-        hint.setText("先从解析服务下载该文件的解析结果（每页渲染树、音视频与字体），之后断网也能预览；音视频使用本地缓存文件播放。");
+        hint.setText("在线预览使用服务端兼容媒体；下载离线包会准备兼容音视频、校验完整性，之后可断网播放。");
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         hint.setPadding(0, dp(8), 0, dp(16));
         root.addView(hint);
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        viewerInput = field("在线预览地址", prefs.getString("viewer", "http://127.0.0.1:11019/"));
+        root.addView(labeled("在线预览地址", viewerInput));
         serverInput = field("解析服务地址", prefs.getString("server", "http://127.0.0.1:8787"));
         fileInput = field("文件 ID（sha256）", prefs.getString("fileId", ""));
         tokenInput = field("访问令牌（可留空）", prefs.getString("token", ""));
+        tokenInput.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         root.addView(labeled("解析服务地址", serverInput));
         root.addView(labeled("文件 ID", fileInput));
         root.addView(labeled("访问令牌（可留空）", tokenInput));
+
+        onlineButton = new Button(this);
+        onlineButton.setText("在线打开（文件 ID 可留空上传）");
+        onlineButton.setOnClickListener(v -> startOnline());
+        root.addView(onlineButton, matchWrapTop(dp(16)));
 
         downloadButton = new Button(this);
         downloadButton.setText("下载离线包并打开");
@@ -144,13 +159,17 @@ public class MainActivity extends Activity {
         root.addView(status);
         updateStatus(prefs.getString("fileId", ""));
 
-        setContentView(root);
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(root);
+        setContentView(scroll);
         applyIntent(getIntent());
     }
 
     /** adb convenience: --es server … --es fileId … [--ez download true] */
     private void applyIntent(Intent intent) {
         if (intent == null) return;
+        String viewer = intent.getStringExtra("viewer");
+        if (viewer != null) viewerInput.setText(viewer);
         String server = intent.getStringExtra("server");
         String fileId = intent.getStringExtra("fileId");
         String token = intent.getStringExtra("token");
@@ -159,7 +178,8 @@ public class MainActivity extends Activity {
         if (token != null) tokenInput.setText(token);
         // The status line must describe the intent's fileId, not the last saved preference.
         updateStatus(fileInput.getText().toString().trim());
-        if (intent.getBooleanExtra("download", false)) startDownload();
+        if (intent.getBooleanExtra("online", false)) startOnline();
+        else if (intent.getBooleanExtra("download", false)) startDownload();
         else if (intent.getBooleanExtra("open", false)) {
             String current = fileId != null ? fileId : fileInput.getText().toString().trim();
             if (!current.isEmpty()) openCached(current);
@@ -184,6 +204,13 @@ public class MainActivity extends Activity {
         if (!store.claimsFullOffline())
             text.append(" 部分离线：").append(store.externalResourceCount())
                     .append(" 个外部资源需联网，未保证完整离线。");
+        try {
+            JSONObject manifest = store.manifest();
+            if ("complete".equals(manifest.optString("mediaPreparation")))
+                text.append(" 兼容媒体 ").append(manifest.getJSONArray("preparedMedia").length()).append(" 个，已校验。");
+            else if (manifest.optInt("mediaObjectCount") > 0)
+                text.append(" 原媒体尚未做兼容准备，请启用服务端转码后重新下载。");
+        } catch (Exception ignored) { /* verifyIntegrity reports damaged bundles on open */ }
         text.append(" 缓存共 ").append(size).append(" / 配额 ")
                 .append(cache.maxBytes() / (1024 * 1024)).append(" MiB，历史版本 ")
                 .append(cache.versionCount()).append(" 个。");
@@ -279,6 +306,7 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     if (destroyed || activeDownload != download) return;
                     activeDownload = null;
+                    if (applyPendingIntent()) return;
                     setBusy(false);
                     updateStatus(fileId);
                     openCached(fileId);
@@ -288,6 +316,7 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     if (destroyed || activeDownload != download) return;
                     activeDownload = null;
+                    if (applyPendingIntent()) return;
                     setBusy(false);
                     if (download.isCancelled()) { setStatus("下载已取消"); return; }
                     setStatus("下载失败：" + e.getMessage());
@@ -298,6 +327,7 @@ public class MainActivity extends Activity {
     }
 
     private void setBusy(boolean busy) {
+        if (onlineButton != null) onlineButton.setEnabled(!busy);
         if (downloadButton != null) downloadButton.setEnabled(!busy);
         if (openButton != null) openButton.setEnabled(!busy);
         if (cleanupButton != null) cleanupButton.setEnabled(!busy);
@@ -324,6 +354,11 @@ public class MainActivity extends Activity {
                     if (!store.claimsFullOffline())
                         Toast.makeText(this, "部分离线：" + store.externalResourceCount()
                                 + " 个外部资源需联网，未保证完整离线", Toast.LENGTH_LONG).show();
+                    try {
+                        JSONObject manifest = store.manifest();
+                        if (manifest.optInt("mediaObjectCount") > 0 && !"complete".equals(manifest.optString("mediaPreparation")))
+                            Toast.makeText(this, "原媒体尚未做兼容准备，部分音视频可能无法播放，请启用服务端转码后重新下载", Toast.LENGTH_LONG).show();
+                    } catch (Exception ignored) { }
                     showCached(store);
                 });
             } catch (IOException failure) {
@@ -348,7 +383,44 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "本地服务启动失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
             return;
         }
+        // Load the preview document directly: the host shell (header + iframe) would add a
+        // second document load and a blank frame before the deck appears.
+        String base = "http://127.0.0.1:" + port;
+        String url = base + "/viewer/preview.html?src=bundle&format=pptx&name="
+                + Uri.encode(fileId)
+                + "&server=" + Uri.encode(base)
+                + "&fileId=" + Uri.encode(fileId)
+                + "&layout=client&theme=dark";
+        loadViewer(url);
+    }
+
+    private void startOnline() {
+        try {
+            Uri viewer = Uri.parse(viewerInput.getText().toString().trim());
+            Uri backend = Uri.parse(serverInput.getText().toString().trim());
+            for (Uri uri : new Uri[]{viewer, backend}) {
+                if (!("http".equals(uri.getScheme()) || "https".equals(uri.getScheme()))
+                        || uri.getHost() == null || uri.getUserInfo() != null)
+                    throw new IllegalArgumentException("请填写有效的 HTTP(S) 地址");
+            }
+            String fileId = fileInput.getText().toString().trim();
+            String token = tokenInput.getText().toString().trim();
+            getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("viewer", viewer.toString())
+                    .putString("server", backend.toString()).putString("fileId", fileId).putString("token", token).apply();
+            Uri.Builder target = viewer.buildUpon().clearQuery().fragment(null)
+                    .appendQueryParameter("parse", fileId.isEmpty() ? "auto" : "server")
+                    .appendQueryParameter("server", backend.toString()).appendQueryParameter("token", token)
+                    .appendQueryParameter("theme", "dark");
+            if (!fileId.isEmpty()) target.appendQueryParameter("fileId", fileId);
+            loadViewer(target.build().toString());
+        } catch (Exception failure) {
+            Toast.makeText(this, failure.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void loadViewer(String url) {
         if (webView == null) webView = createWebView();
+        if (webView.getParent() instanceof ViewGroup) ((ViewGroup) webView.getParent()).removeView(webView);
         FrameLayout container = new FrameLayout(this);
         container.setBackgroundColor(VIEWER_BACKGROUND);
         container.addView(webView, new FrameLayout.LayoutParams(
@@ -363,15 +435,6 @@ public class MainActivity extends Activity {
                 android.view.Gravity.CENTER);
         loading.addView(spinner, spinnerParams);
         setContentView(container);
-        // Load the preview document directly: the host shell (header + iframe) would add a
-        // second document load and a blank frame before the deck appears.
-        String base = "http://127.0.0.1:" + port;
-        String url = base + "/viewer/preview.html?src=bundle&format=pptx&name="
-                + Uri.encode(fileId)
-                + "&server=" + Uri.encode(base)
-                + "&fileId=" + Uri.encode(fileId)
-                + "&layout=client&theme=dark";
-        Log.i(TAG, "open " + url);
         webView.loadUrl(url);
         revealWhenReady(webView, loading);
     }
@@ -395,7 +458,7 @@ public class MainActivity extends Activity {
             }
             view.evaluateJavascript(
                     "!!document.querySelector('.viewer-slide-stage canvas')"
-                            + " || !!document.querySelector('[role=alert]')",
+                            + " || !!document.querySelector('[role=alert],iframe,input[type=file]')",
                     value -> {
                         if ("true".equals(value)) {
                             view.postVisualStateCallback(0, new WebView.VisualStateCallback() {
@@ -428,6 +491,17 @@ public class MainActivity extends Activity {
             }
         });
         view.setWebChromeClient(new WebChromeClient() {
+            @Override public void onShowCustomView(View custom, CustomViewCallback callback) {
+                if (fullscreen != null) { callback.onCustomViewHidden(); return; }
+                fullscreen = custom; fullscreenCallback = callback;
+                View decor = getWindow().getDecorView();
+                previousUi = decor.getSystemUiVisibility();
+                ((FrameLayout) decor).addView(custom, new FrameLayout.LayoutParams(-1, -1));
+                decor.setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                        | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+            }
+            @Override public void onHideCustomView() { hideFullscreen(); }
+
             @Override
             public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> callback,
                                              FileChooserParams params) {
@@ -445,12 +519,16 @@ public class MainActivity extends Activity {
 
             @Override
             public boolean onConsoleMessage(ConsoleMessage message) {
-                Log.i(TAG, message.message() + " (" + message.sourceId() + ":"
+                Log.i(TAG, redact(message.message()) + " (" + redact(message.sourceId()) + ":"
                         + message.lineNumber() + ")");
                 return true;
             }
         });
         return view;
+    }
+
+    private static String redact(String text) {
+        return text.replaceAll("(?i)([?&](?:token|sig)=)[^&\\s]+", "$1[redacted]");
     }
 
     @Override
@@ -465,19 +543,48 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        if (webView != null) {
-            setContentView(webView);
-        } else {
-            applyIntent(intent);
+        if (intent.hasExtra("online") || intent.hasExtra("download") || intent.hasExtra("open") || intent.hasExtra("fileId")) {
+            if (activeDownload != null) {
+                pendingIntent = intent;
+                activeDownload.cancel();
+                setStatus("正在取消当前下载，随后打开新文件…");
+                return;
+            }
+            downloadGeneration++; openGeneration++;
+            closeViewer();
+            showSetup();
         }
     }
 
-    @Override
-    public void onBackPressed() {
+    private boolean applyPendingIntent() {
+        if (pendingIntent == null) return false;
+        Intent next = pendingIntent; pendingIntent = null;
+        setIntent(next); closeViewer(); showSetup();
+        return true;
+    }
+
+    private void hideFullscreen() {
+        if (fullscreen == null) return;
+        ((ViewGroup) fullscreen.getParent()).removeView(fullscreen);
+        fullscreen = null;
+        getWindow().getDecorView().setSystemUiVisibility(previousUi);
+        WebChromeClient.CustomViewCallback callback = fullscreenCallback;
+        fullscreenCallback = null;
+        if (callback != null) callback.onCustomViewHidden();
+    }
+
+    private void closeViewer() {
+        hideFullscreen();
         if (webView != null) {
-            // Leave the viewer; the next launch reopens the setup screen.
-            webView = null;
+            if (webView.getParent() instanceof ViewGroup) ((ViewGroup) webView.getParent()).removeView(webView);
+            webView.stopLoading(); webView.destroy(); webView = null;
         }
+        if (server != null) { server.shutdown(); server = null; }
+    }
+
+    @Override public void onBackPressed() {
+        if (fullscreen != null) { hideFullscreen(); return; }
+        if (webView != null) { closeViewer(); setIntent(new Intent()); showSetup(); return; }
         super.onBackPressed();
     }
 
@@ -489,8 +596,7 @@ public class MainActivity extends Activity {
             fileCallback.onReceiveValue(null);
             fileCallback = null;
         }
-        if (webView != null) webView.destroy();
-        if (server != null) server.shutdown();
+        closeViewer();
         super.onDestroy();
     }
 }

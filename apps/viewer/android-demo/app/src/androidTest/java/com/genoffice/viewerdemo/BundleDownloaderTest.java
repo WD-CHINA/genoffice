@@ -747,6 +747,53 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
         }
     }
 
+    public void testMediaFailurePreservesActiveGeneration() throws Exception {
+        assertMediaUpdateRejected("{\"state\":\"failed\",\"errorCode\":\"decode_failed\"}");
+    }
+    public void testMediaSourceHashMismatchPreservesActiveGeneration() throws Exception {
+        org.json.JSONObject response = new org.json.JSONObject().put("state", "ready").put("kind", "video")
+                .put("jobId", key('c')).put("sha256", key('a')).put("sourceSha256", key('b'))
+                .put("profile", key('d')).put("mime", "video/mp4").put("bytes", 4096);
+        assertMediaUpdateRejected(response.toString());
+    }
+    private void assertMediaUpdateRejected(String response) throws Exception {
+        try (Fixture fixture = new Fixture(4096)) {
+            fixture.declaredBundle = true;
+            BundleCache cache = new BundleCache(root);
+            new BundleDownloader(fixture.url(), "", "test-file", cache.resolve("test-file"), text -> {}, File::getUsableSpace, cache).run();
+            String oldKey = cache.current("test-file").getString("artifactKey");
+            fixture.bundleKey = key('b'); fixture.preparedResponse = response;
+            try {
+                new BundleDownloader(fixture.url(), "", "test-file", cache.resolve("test-file"), text -> {}, File::getUsableSpace, cache).run();
+                fail("failed or mismatched media must not replace the active bundle");
+            } catch (IOException expected) { }
+            assertEquals(oldKey, cache.current("test-file").getString("artifactKey"));
+            cache.resolve("test-file").verifyIntegrity();
+        }
+    }
+    public void testCancelMediaQueuePreservesActiveGeneration() throws Exception {
+        try (Fixture fixture = new Fixture(4096)) {
+            fixture.declaredBundle = true;
+            BundleCache cache = new BundleCache(root);
+            new BundleDownloader(fixture.url(), "", "test-file", cache.resolve("test-file"), text -> {}, File::getUsableSpace, cache).run();
+            String oldKey = cache.current("test-file").getString("artifactKey");
+            fixture.bundleKey = key('b');
+            fixture.preparedResponse = new org.json.JSONObject().put("state", "queued").put("jobId", key('c')).toString();
+            BundleDownloader download = new BundleDownloader(fixture.url(), "", "test-file", cache.resolve("test-file"), text -> {}, File::getUsableSpace, cache);
+            java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
+            Thread thread = new Thread(() -> { try { download.run(); } catch (Throwable caught) { failure.set(caught); } });
+            thread.start();
+            try {
+                assertTrue(fixture.mediaStarted.await(5, java.util.concurrent.TimeUnit.SECONDS));
+                download.cancel(); thread.join(5000);
+                assertFalse("queue cancellation must finish", thread.isAlive());
+                assertNotNull(failure.get());
+                assertEquals(oldKey, cache.current("test-file").getString("artifactKey"));
+                cache.resolve("test-file").verifyIntegrity();
+            } finally { download.cancel(); thread.join(5000); }
+        }
+    }
+
     public void testCleanupButtonRemovesInactiveVersionsButKeepsCurrent() throws Exception {
         android.content.Context context = getInstrumentation().getTargetContext();
         android.content.SharedPreferences preferences = context.getSharedPreferences("viewer-demo", 0);
@@ -754,7 +801,7 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
         String oldFile = preferences.getString("fileId", null);
         String oldToken = preferences.getString("token", null);
         String fileId = "instrumentation-cache-" + java.util.UUID.randomUUID();
-        BundleCache cache = new BundleCache(context.getFilesDir());
+        BundleCache cache = new BundleCache(root);
         try (Fixture fixture = new Fixture(4096)) {
             fixture.declaredBundle = true;
             fixture.declaredFileId = fileId;
@@ -769,6 +816,15 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
                     .putExtra("server", fixture.url()).putExtra("fileId", fileId);
             MainActivity activity = (MainActivity) getInstrumentation().startActivitySync(intent);
             try {
+                // Exercise the real button against an isolated test cache, preserving user bundles.
+                java.lang.reflect.Field cacheField = MainActivity.class.getDeclaredField("cache");
+                cacheField.setAccessible(true);
+                java.lang.reflect.Method update = MainActivity.class.getDeclaredMethod("updateStatus", String.class);
+                update.setAccessible(true);
+                getInstrumentation().runOnMainSync(() -> {
+                    try { cacheField.set(activity, cache); update.invoke(activity, fileId); }
+                    catch (Exception failure) { throw new RuntimeException(failure); }
+                });
                 awaitContains(activity, "历史版本 2 个");
                 getInstrumentation().runOnMainSync(() -> {
                     android.widget.Button button = (android.widget.Button) findText(
@@ -788,7 +844,7 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
         } finally {
             preferences.edit().putString("server", oldServer).putString("fileId", oldFile)
                     .putString("token", oldToken).commit();
-            delete(new File(new File(context.getFilesDir(), "bundle-cache"), BundleStore.safe(fileId)));
+
         }
     }
 
@@ -839,6 +895,8 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
         volatile boolean ignoreRange, wrongEtag, wrongContentRange;
         volatile String bundleKey = key('a');
         volatile String declaredFileId = "test-file";
+        volatile String preparedResponse;
+        final java.util.concurrent.CountDownLatch mediaStarted = new java.util.concurrent.CountDownLatch(1);
         volatile int abortAfterBytes, rangeRequests, fullRequests;
         volatile String lastRange, lastIfRange;
         volatile int bundleStatus = 200, bundleVersion = 1;
@@ -874,6 +932,12 @@ public class BundleDownloaderTest extends InstrumentationTestCase {
             String path = request[1];
             if (fail) { json(out, 500, "failed"); return; }
             if (request[0].equals("DELETE")) { deleted = true; deletedApi = path; json(out, 200, "{}"); sessionDeleted.countDown(); }
+            else if (path.equals("/v2/capabilities") && preparedResponse != null) {
+                json(out, 200, "{\"features\":{\"mediaTranscoding\":true,\"mediaPreparationIntegrity\":true}}");
+            }
+            else if (path.startsWith("/v1/files/test-file/media") && preparedResponse != null) {
+                mediaStarted.countDown(); json(out, 200, preparedResponse);
+            }
             else if (path.equals("/v2/sessions") && rejectV2) { json(out, 404, "{}"); }
             else if (path.equals("/v2/sessions") && queueFull) { json(out, 429, "{}"); }
             else if (path.equals("/v2/sessions") && async) { waitingStarted.countDown(); json(out, 202, "{\"sessionId\":\"test\",\"state\":\"queued\",\"pollAfterMs\":1}"); }

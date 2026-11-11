@@ -1,4 +1,5 @@
 import { readingLayoutPrefs } from './reading-position'
+import { combineAbortSignals } from './abort-signals'
 import {
   openServerSession, updateSessionLayoutPrefs, type ServerSessionTarget,
 } from './server-session'
@@ -175,7 +176,8 @@ export class DocxRemoteSession {
     const existing = this.unitRequests.get(id)
     if (existing) return existing.promise
     const controller = new AbortController()
-    const signal = AbortSignal.any([this.controller.signal, controller.signal])
+    const combined = combineAbortSignals([this.controller.signal, controller.signal])
+    const signal = combined.signal
     const job = Promise.resolve().then(async () => {
       for (let attempt = 0; ; attempt++) {
         signal.throwIfAborted()
@@ -200,6 +202,7 @@ export class DocxRemoteSession {
     const request = { promise: job, controller }
     this.unitRequests.set(id, request)
     void job.finally(() => {
+      combined.dispose()
       if (this.unitRequests.get(id) === request) this.unitRequests.delete(id)
     }).catch(() => undefined)
     return job

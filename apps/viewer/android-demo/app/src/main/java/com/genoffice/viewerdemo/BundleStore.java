@@ -133,6 +133,9 @@ final class BundleStore {
         JSONArray resources = new JSONArray();
         collect(dir, resources);
         manifest.put("resources", resources);
+        long total = 0;
+        for (int i = 0; i < resources.length(); i++) total = Math.addExact(total, resources.getJSONObject(i).getLong("size"));
+        manifest.put("totalBytes", total);
         writeSynced(manifestFile(), manifest.toString().getBytes(StandardCharsets.UTF_8));
         markComplete();
     }
@@ -216,9 +219,10 @@ final class BundleStore {
         JSONArray fonts = manifest.optJSONArray("fonts");
         if (fonts != null) for (int index = 0; index < fonts.length(); index++)
             if (!paths.contains(fonts.getJSONObject(index).optString("resourcePath", "fonts/" + safe(fonts.getJSONObject(index).getString("id")) + ".sfnt"))) throw new IOException("offline font missing");
+        PreparedMedia.validate(manifest);
     }
 
-    private static String digest(File file) throws IOException {
+    static String digest(File file) throws IOException {
         try {
             MessageDigest digest = MessageDigest.getInstance("SHA-256");
             try (FileInputStream input = new FileInputStream(file)) {
@@ -285,7 +289,7 @@ final class BundleStore {
         return name.isEmpty() || name.equals(".") || name.equals("..") ? "x" : name;
     }
 
-    private static String readText(File file) throws IOException {
+    static String readText(File file) throws IOException {
         try (FileInputStream in = new FileInputStream(file)) {
             ByteArrayOutputStream out = new ByteArrayOutputStream();
             byte[] buffer = new byte[16384];

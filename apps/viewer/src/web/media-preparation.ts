@@ -1,6 +1,7 @@
 import type { MediaPreparation } from '@genoffice/parse-contract'
 import type { MediaLoadOptions } from '@genoffice/viewer-renderers/slides/renderer/data-source'
 import { fetchCapabilities } from './capabilities'
+import { combineAbortSignals } from './abort-signals'
 
 const messages: Record<string, string> = {
   media_runtime_changed: '媒体服务已升级，请重试。',
@@ -34,7 +35,8 @@ export async function prepareRemoteMedia(input: {
   const partPath = url.pathname.slice(marker.length).split('/').map(decodeURIComponent).join('/')
   const timeout = new AbortController()
   const timer = setTimeout(() => timeout.abort(), 30 * 60_000)
-  const signal = input.options?.signal ? AbortSignal.any([timeout.signal, input.options.signal]) : timeout.signal
+  const combined = combineAbortSignals(input.options?.signal ? [timeout.signal, input.options.signal] : [timeout.signal])
+  const signal = combined.signal
   const headers: Record<string, string> = { 'Content-Type': 'application/json',
     ...(input.token ? { Authorization: `Bearer ${input.token}` } : {}) }
   const fetchImpl = input.fetchImpl ?? fetch
@@ -71,5 +73,5 @@ export async function prepareRemoteMedia(input: {
       })
       state = await request(`${endpoint}/${state.jobId}`)
     }
-  } finally { clearTimeout(timer) }
+  } finally { clearTimeout(timer); combined.dispose() }
 }

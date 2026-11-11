@@ -57,9 +57,12 @@ it('exposes unit-read latency, queue age, signing, artifact and bundle counters'
   }
   const unit = await call(`/v2/sessions/${sessionId}/units/0`)
   expect(unit.status).toBe(200)
-  // DOCX bundles are unsupported: the bundle route must record a failure.
+  // DOCX export succeeds; an unknown bundle resource still records a failure.
   const bundle = await call(`/v2/sessions/${sessionId}/bundle`)
-  expect(bundle.status).toBe(415)
+  expect(bundle.status).toBe(200)
+  await bundle.arrayBuffer()
+  const missing = await call(`/v2/sessions/${sessionId}/bundle/resources/missing.json`)
+  expect(missing.status).toBe(404)
 
   const text = await metrics(server)
   expect(text).toContain('genoffice_parse_unit_read_latency_seconds_count')

@@ -1445,8 +1445,8 @@ async function handleOfflineBundle(
 ): Promise<void> {
   await pinResponseFile(ctx, entry.record.fileId, res)
   const session = await ensureSession(entry, req, ctx)
-  if (session.model.format !== 'pptx')
-    throw new HttpError(415, 'unsupported_format', 'offline bundles currently require PPTX')
+  if (session.model.format !== 'pptx' && session.model.format !== 'docx')
+    throw new HttpError(415, 'unsupported_format', 'unsupported offline document')
   res.setHeader('Cache-Control', 'private, no-store')
   if (parts.length === 4 && req.method === 'GET') {
     const manifest = await session.bundleManifest().catch((error: unknown) => {

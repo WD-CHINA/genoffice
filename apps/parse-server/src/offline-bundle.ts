@@ -141,3 +141,51 @@ export async function writeOfflineBundle(
   } satisfies OfflineBundleManifest
   await writer.append('bundle', manifest)
 }
+
+/** DOCX canonical chunks/styles/context and all stripped images/embeddings, without signed URLs. */
+export async function writeDocxOfflineBundle(
+  writer: ArtifactWriter,
+  input: { path: string; fileId: string; artifactKey: string; modelArtifactKey: string;
+    modelSchemaVersion: number; parserVersion: string; parserFingerprint: string; limits: ServerLimits },
+  document: { model: { unitCount?: number }; fonts: PptxLayoutInfo['fonts'] },
+  describe: (id: string) => { size: number; sha256: string },
+  read: (id: string) => Promise<unknown>,
+): Promise<void> {
+  const resources: OfflineBundleResource[] = []
+  await writer.append('bundle:document', document as never)
+  resources.push({ path: 'document.json', ...writer.describe('bundle:document') })
+  resources.push({ path: 'styles.json', ...describe('styles') })
+  const external = new Set<string>()
+  const scan = (value: unknown, key = '') => {
+    if (Array.isArray(value)) { for (const item of value) scan(item, key); return }
+    if (value && typeof value === 'object') { for (const [name, item] of Object.entries(value)) scan(item, name); return }
+    if (typeof value === 'string' && /^(dataUrl|src|imageUrl)$/.test(key) && /^https?:/.test(value)) external.add(value)
+  }
+  scan(document)
+  const unitCount = document.model.unitCount ?? 0
+  for (let index = 0; index < unitCount; index++) {
+    resources.push({ path: `units/${index}.json`, ...describe(`unit:${index}`) })
+    scan(await read(`unit:${index}`))
+  }
+  const fonts = document.fonts.map((font, index) => ({ id: font.id, family: font.family,
+    bold: font.bold, italic: font.italic, also: [...font.also], resourcePath: `fonts/font-${index}.sfnt` }))
+  for (const font of fonts) resources.push({ path: font.resourcePath, ...describe(`font:${font.id}`) })
+  const parts = await withFileSource(input.path, (source) => readZipEntries(source, {
+    maxParts: input.limits.maxParts, maxPartBytes: input.limits.maxPartBytes,
+    maxTotalBytes: input.limits.maxTotalUncompressedBytes,
+  }))
+  for (const part of parts) {
+    if (part.name.endsWith('/') || !/^word\/(media|embeddings)\//.test(part.name)) continue
+    if (!validBundlePath(part.name)) throw new Error('invalid DOCX resource path')
+    const resource = { path: `parts/${part.name}`, ...await hashPart(input.path, part) }
+    await writer.append(`bundle:part:${part.name}`, resource)
+    resources.push(resource)
+  }
+  const totalBytes = resources.reduce((sum, resource) => sum + resource.size, 0)
+  if (!Number.isSafeInteger(totalBytes)) throw new Error('DOCX offline bundle size overflow')
+  await writer.append('bundle', { bundleSchemaVersion: 1, modelSchemaVersion: input.modelSchemaVersion,
+    artifactKey: input.artifactKey, modelArtifactKey: input.modelArtifactKey, fileId: input.fileId,
+    format: 'docx', parserVersion: input.parserVersion, parserFingerprint: input.parserFingerprint,
+    unitCount, fonts, inventory: 'docx-media-v1', totalBytes, resources: resources.map(({ path, size, sha256 }) => ({ path, size, sha256 })),
+    externalResources: [...external].filter((url) => !url.startsWith('http://artifact.invalid/')).sort() } satisfies OfflineBundleManifest)
+}

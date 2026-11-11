@@ -4,7 +4,7 @@ import type { ArtifactGenerations } from './artifact-generations'
 import type { ArtifactCoordinator } from './artifact-coordinator'
 import { randomUUID } from 'node:crypto'
 import { ArtifactReadHandle } from './artifact-read-handle'
-import { writeOfflineBundle, externalMedia, validBundlePath } from './offline-bundle'
+import { writeOfflineBundle, writeDocxOfflineBundle, externalMedia, validBundlePath } from './offline-bundle'
 import { exportArtifactDirectory, type ArtifactExportResult } from './artifact-export'
 import type { OfflineBundleManifest, OfflineBundleResource } from '@genoffice/parse-contract'
 import type { WidthItem } from './metrics'
@@ -631,7 +631,7 @@ export class ArtifactSession {
 
   private async ensureBundle(): Promise<BundleReader> {
     this.check()
-    if (this.model.format !== 'pptx') throw new Error('offline bundles currently require PPTX')
+    if (this.model.format !== 'pptx' && this.model.format !== 'docx') throw new Error('unsupported offline document')
     if (!this.bundleOpening) {
       const identity = this.bundleIdentity()
       const task = this.shared
@@ -710,8 +710,14 @@ export class ArtifactSession {
     try {
       const build = async () => {
         signal?.throwIfAborted()
-        const external = (await source.read('external-media')) as string[]
+        const external = this.model.format === 'pptx' ? (await source.read('external-media')) as string[] : []
         await writer.setMetadata({ dependencies: [source.manifest.key] })
+        if (this.model.format === 'docx') {
+          await writeDocxOfflineBundle(writer, { ...this.input, artifactKey: artifactKey(identity),
+            modelArtifactKey: source.manifest.key, modelSchemaVersion: MODEL_SCHEMA_VERSION },
+            this.document as never, (id) => source.describe(id), (id) => source.read(id))
+          return
+        }
         await writeOfflineBundle(
           writer,
           {
@@ -770,7 +776,7 @@ export class ArtifactSession {
     path: string,
   ): Promise<{ info: OfflineBundleResource; bytes?: Buffer; partPath?: string } | null> {
     this.check()
-    if (this.model.format !== 'pptx' || !validBundlePath(path)) return null
+    if (!validBundlePath(path)) return null
     // Records owned by the derived bundle generation use its own repair path.
     const derived = await this.withBundleRepair(async () => {
       const bundle = await this.ensureBundle()
@@ -783,10 +789,12 @@ export class ArtifactSession {
         )) as unknown as OfflineBundleResource
         return { info, partPath }
       }
-      if (path === 'layout.json') {
-        const value = await this.readBundleRecord(bundle, 'bundle:layout')
+      if (path === 'layout.json' || path === 'document.json') {
+        const record = path === 'layout.json' ? 'bundle:layout' : 'bundle:document'
+        if (!bundle.has(record)) return null
+        const value = await this.readBundleRecord(bundle, record)
         return {
-          info: { path, ...bundle.describe('bundle:layout') },
+          info: { path, ...bundle.describe(record) },
           bytes: Buffer.isBuffer(value) ? value : Buffer.from(canonicalJson(value)),
         }
       }
@@ -795,7 +803,9 @@ export class ArtifactSession {
     if (derived) return derived
     // Model records (layout pages and embedded fonts) keep the model repair path.
     let id: string | undefined
-    if (/^layout\/(0|[1-9]\d*)\.json$/.test(path)) id = `unit:${path.slice(7, -5)}`
+    if ((this.model.format === 'docx' ? /^units\/(0|[1-9]\d*)\.json$/ : /^layout\/(0|[1-9]\d*)\.json$/).test(path))
+      id = `unit:${path.split('/')[1].slice(0, -5)}`
+    else if (path === 'styles.json' && this.model.format === 'docx') id = 'styles'
     else if (path.startsWith('fonts/') && path.endsWith('.sfnt')) {
       const match = /^fonts\/font-(0|[1-9]\d*)\.sfnt$/.exec(path)
       const font = match ? this.fonts[Number(match[1])] : undefined

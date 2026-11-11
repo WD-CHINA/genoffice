@@ -325,7 +325,7 @@ export interface OfflineBundleManifest {
   artifactKey: string
   modelArtifactKey: string
   fileId: string
-  format: 'pptx'
+  format: 'pptx' | 'docx'
   parserVersion: string
   parserFingerprint: string
   unitCount: number
@@ -337,8 +337,8 @@ export interface OfflineBundleManifest {
     also: string[]
     resourcePath: string
   }>
-  /** Includes all stripped ppt/media entries, even ones unused by the current slides. */
-  inventory: 'ppt-media-v1'
+  /** Includes every stripped media/embedding entry, even ones unused by the rendered document. */
+  inventory: 'ppt-media-v1' | 'docx-media-v1'
   totalBytes: number
   resources: OfflineBundleResource[]
   externalResources: string[]

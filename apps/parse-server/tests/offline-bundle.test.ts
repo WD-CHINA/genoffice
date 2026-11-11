@@ -85,6 +85,8 @@ it('serves exact hashed bundle bytes, complete stripped-media inventory and auth
   const fileId = await app.upload(await zip.generateAsync({ type: 'nodebuffer' }))
   const id = await app.open(fileId)
   const manifest = await app.manifest(id)
+  for (const path of ['document.json', 'units/0.json'])
+    expect((await app.request(`/v2/sessions/${id}/bundle/resources/${path}`)).status).toBe(404)
   expect(manifest).toMatchObject({
     fileId,
     format: 'pptx',
@@ -301,3 +303,38 @@ it('retains a shared lazy build after its client cancels and closes the viewing 
   const health = (await (await app.request('/v1/health')).json()) as any
   expect(health.artifacts.sourceParsesStarted).toBe(2)
 })
+
+it.each(['image', 'font', 'table'])('exports verified DOCX %s context, chunks, styles and inventory for offline replay', async (fixture) => {
+  const h = await setup()
+  const zip = await JSZip.loadAsync(await readFile(new URL(`./fixtures/docx/${fixture}.docx`, import.meta.url)))
+  zip.file('word/embeddings/unused.bin', Buffer.from('offline-inventory'))
+  const fileId = await h.upload(await zip.generateAsync({ type: 'nodebuffer' }))
+  const sessionId = await h.open(fileId)
+  const response = await h.request(`/v2/sessions/${sessionId}/bundle`)
+  expect(response.status, await response.clone().text()).toBe(200)
+  const manifest = await response.json() as OfflineBundleManifest
+  expect(manifest.format).toBe('docx')
+  for (const path of ['layout.json', 'layout/0.json'])
+    expect((await h.request(`/v2/sessions/${sessionId}/bundle/resources/${path}`)).status).toBe(404)
+  expect(manifest.inventory).toBe('docx-media-v1')
+  expect(manifest.resources.map((resource) => resource.path)).toEqual(expect.arrayContaining([
+    'document.json', 'styles.json', 'units/0.json', 'parts/word/embeddings/unused.bin',
+  ]))
+  let total = 0
+  for (const resource of manifest.resources) {
+    const read = await h.request(resource.href!)
+    expect(read.status).toBe(200)
+    const bytes = Buffer.from(await read.arrayBuffer())
+    expect(bytes.length).toBe(resource.size)
+    expect(sha(bytes)).toBe(resource.sha256)
+    total += resource.size
+    if (resource.path === 'document.json') {
+      expect(JSON.parse(bytes.toString()).model.format).toBe('docx')
+      expect(bytes.toString()).not.toContain('?exp=')
+    }
+  }
+  expect(total).toBe(manifest.totalBytes)
+  const reopened = await h.open(fileId)
+  const warm = await (await h.request(`/v2/sessions/${reopened}/bundle`)).json() as OfflineBundleManifest
+  expect(warm.artifactKey).toBe(manifest.artifactKey)
+}, 30_000)

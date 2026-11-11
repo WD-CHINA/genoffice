@@ -1,3 +1,5 @@
+import { featureEnabled, fetchCapabilities } from './capabilities'
+
 export type OpeningState = 'queued' | 'building' | 'previewable'
 /** First-frame capability reported while a v2 job is still building. */
 export interface PreviewNotice {
@@ -17,6 +19,10 @@ export interface ServerSessionTarget {
   onState?: (state: OpeningState) => void
   /** Fires once when the server first reports committed preview units. */
   onPreview?: (preview: PreviewNotice) => void
+  /** Tests/offline embeddings: skip the best-effort capabilities probe. */
+  skipCapabilities?: boolean
+  /** Reading position handed to the v2 contract (plan §4.1). */
+  layoutPrefs?: unknown
 }
 interface Status {
   sessionId: string
@@ -56,13 +62,44 @@ async function responseError(response: Response): Promise<Error> {
 }
 
 /** v2 async readiness with v1 fallback for older servers and Android's local replay server. */
+/** Incremental reading-position update on the heartbeat channel (plan §4.1). */
+export async function updateSessionLayoutPrefs(
+  server: string,
+  sessionId: string,
+  layoutPrefs: unknown,
+  token?: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(
+    `${server.replace(/\/+$/, '')}/v2/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ layoutPrefs }),
+      signal,
+    },
+  )
+  if (!response.ok) throw new Error(`HTTP ${response.status}`)
+}
+
 export async function openServerSession<T extends { sessionId: string }>(
   target: ServerSessionTarget,
 ): Promise<T> {
   const base = target.server.replace(/\/+$/, '')
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (target.token) headers.Authorization = `Bearer ${target.token}`
-  let endpoint = '/v2/sessions'
+  // Match behaviour against the server's declared capabilities (plan §8.1).
+  // A missing probe keeps the legacy v2-first behaviour; only an explicit
+  // `asyncSessions: false` forces the v1 contract.
+  const capabilities = target.skipCapabilities
+    ? undefined
+    : await fetchCapabilities({ baseUrl: base, signal: target.signal })
+  const allowPreview = featureEnabled(capabilities, 'incrementalPreview') !== false
+  let endpoint =
+    featureEnabled(capabilities, 'asyncSessions') === false ? '/v1/sessions' : '/v2/sessions'
   let id: string | undefined
   try {
     aborted(target.signal)
@@ -72,6 +109,7 @@ export async function openServerSession<T extends { sessionId: string }>(
       body: JSON.stringify({
         fileId: target.fileId,
         ...(target.width !== undefined ? { width: target.width } : {}),
+        ...(target.layoutPrefs !== undefined ? { layoutPrefs: target.layoutPrefs } : {}),
       }),
       signal: target.signal,
     }
@@ -94,8 +132,8 @@ export async function openServerSession<T extends { sessionId: string }>(
         throw new Error('解析服务返回了未知会话状态')
       // `previewable` describes a building job, not a new terminal state: keep
       // polling until the full manifest makes the session ready.
-      target.onState?.(body.previewable ? 'previewable' : body.state)
-      if (body.previewable && !previewNotified && endpoint === '/v2/sessions') {
+      target.onState?.(body.previewable && allowPreview ? 'previewable' : body.state)
+      if (body.previewable && allowPreview && !previewNotified && endpoint === '/v2/sessions') {
         previewNotified = true
         target.onPreview?.({
           sessionId: id,

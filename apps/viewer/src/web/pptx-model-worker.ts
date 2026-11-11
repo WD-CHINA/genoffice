@@ -11,6 +11,7 @@ import { parse as parseFont } from 'opentype.js'
 import { buildRenderSlide } from '@genoffice/pptx-render'
 import { createBundledMetrics, type ParsedFace } from './bundled-metrics'
 import { METRIC_FONTS, type MetricFont } from './metric-fonts'
+import { needsResourceRefresh, originOf } from './signed-url'
 
 interface SessionFont {
   id: string
@@ -49,6 +50,7 @@ interface OpenInput {
 }
 
 let sessionBase = ''
+let baseOrigin: string | undefined
 let token = ''
 let width = 960
 let metrics: ReturnType<typeof createBundledMetrics> | null = null
@@ -111,7 +113,10 @@ async function loadEmbedded(font: SessionFont): Promise<ParsedFace | null> {
 
 async function fetchSource(index: number): Promise<LayoutSlide> {
   const cached = sources.get(index)
-  if (cached) return cached
+  // Signed part URLs inside a cached slide/source expire; refetch the whole
+  // description instead of handing dead URLs to the render tree.
+  if (cached && !needsResourceRefresh(cached, { baseOrigin })) return cached
+  if (cached) sources.delete(index)
   const response = await fetch(`${sessionBase}/layout/slides/${index}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : undefined,
   })
@@ -174,9 +179,17 @@ async function handleMessage(event: MessageEvent) {
   const { id, op, input } = event.data as { id: number; op: string; input: any }
   try {
     let result: unknown
-    if (op === 'open') {
+    if (op === 'refresh') {
+      // Drop cached slide sources/units for one index; the next unit call refetches
+      // fresh signed resource descriptions from the server.
+      sources.delete(input.index)
+      units.delete(input.index)
+      dependencies.delete(input.index)
+      result = {}
+    } else if (op === 'open') {
       const open = input as OpenInput
       sessionBase = open.sessionBase.replace(/\/+$/, '')
+      baseOrigin = originOf(sessionBase)
       token = open.token ?? ''
       width = open.width || 960
       const [metricFaces, embedded] = await Promise.all([

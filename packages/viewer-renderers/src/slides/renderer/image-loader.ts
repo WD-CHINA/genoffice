@@ -63,6 +63,8 @@ export function createImageLoader(
    *  deck of 10 x 18 MB ones peaks at ~1.4 GB of decoded frames) OOM-kills the
    *  renderer process the moment they all start decoding together. */
   maxConcurrent = 3,
+  /** Optional one-shot URL refresh after a failed decode (403/expiry/origin change). */
+  retry?: (url: string) => Promise<string | null>,
 ) {
   const loaded = new Map<string, HTMLImageElement>()
   const loading = new Set<string>()
@@ -87,29 +89,44 @@ export function createImageLoader(
 
   const start = (u: string) => {
     loading.add(u)
-    const img = new Image()
-    const done = (ok: boolean) => {
+    let settledDone = false
+    const done = (image: HTMLImageElement | null) => {
+      if (settledDone) return
+      settledDone = true
       loading.delete(u)
-      if (ok) {
-        loaded.set(u, img)
-        if (!disposed) buf.set(u, img)
+      if (image) {
+        loaded.set(u, image)
+        if (!disposed) buf.set(u, image)
       } else failed.add(u)
       pump()
       if (settled()) flush()
       else if (!timer && buf.size > 0) timer = setTimeout(flush, delayMs)
     }
-    img.onload = () => done(true)
-    img.onerror = () => done(false)
-    if (METAFILE_RE.test(u)) {
-      void rasterizeMetafile(u)
-        .then((png) => {
-          if (png) img.src = png
-          else done(false)
-        })
-        .catch(() => done(false))
-    } else {
-      img.src = u
+    const decode = (source: string): Promise<HTMLImageElement | null> => {
+      const img = new Image()
+      return new Promise((resolve) => {
+        img.onload = () => resolve(img)
+        img.onerror = () => resolve(null)
+        if (METAFILE_RE.test(source)) {
+          void rasterizeMetafile(source)
+            .then((png) => {
+              if (png) img.src = png
+              else resolve(null)
+            })
+            .catch(() => resolve(null))
+        } else {
+          img.src = source
+        }
+      })
     }
+    void (async () => {
+      let image = await decode(u)
+      if (!image && retry) {
+        const refreshed = await retry(u).catch(() => null)
+        if (refreshed) image = await decode(refreshed)
+      }
+      done(image)
+    })()
   }
 
   /** Fill the decode slots from the queue, skipping anything already handled. */

@@ -4,6 +4,9 @@ import JSZip from 'jszip'
 import { ToolbarIcon } from './toolbar-icon'
 import { ViewerBar } from './viewer-bar'
 import { applyViewerUi, readViewerUi, viewerUiParams } from './ui-options'
+import { fetchCapabilities } from './capabilities'
+import { FORMAT_POLICY, decideRoute, precheckLocalFile } from './format-policy'
+import { readResponseLimited } from './fetch-limited'
 import '@genoffice/ui/tokens.css'
 import './viewer.css'
 
@@ -15,6 +18,8 @@ type Opened = { id: string; name: string; format: Format; src: string; remote?: 
 const linkParams = new URLSearchParams(location.search)
 const ui = readViewerUi(linkParams)
 const initialUrl = linkParams.get('url')?.trim() || ''
+// Explicit fidelity fallback; manual server mode otherwise streams the remote model.
+const docxLocalFallback = linkParams.get('docxLocalFallback') === '1'
 const initialFileId = linkParams.get('fileId')?.trim() || ''
 const initialName = linkParams.get('name')?.trim() || ''
 const parseParam = linkParams.get('parse')
@@ -45,11 +50,6 @@ function initialParseMode(): ParseMode {
 }
 applyViewerUi(ui)
 
-const MAX_BYTES = 1024 * 1024 * 1024
-/** Local DOCX preview is not the 1 GB path; fail explicitly instead of trying to parse it. */
-const DOCX_LOCAL_MAX_BYTES = 32 * 1024 * 1024
-/** auto mode sends larger decks to the server; small ones stay local. */
-const AUTO_REMOTE_BYTES = 64 * 1024 * 1024
 
 function extensionOf(name: string): Format | null {
   const ext = name.split('.').pop()?.toLowerCase()
@@ -160,6 +160,18 @@ function Host() {
     setError('')
     setOpened(null)
     try {
+      // Probe capabilities before reading anything so an impossible local route
+      // (large DOCX without a server) fails before the file is buffered.
+      const capabilities = serverUrl
+        ? await fetchCapabilities({ baseUrl: serverUrl })
+        : undefined
+      if (source.kind === 'file' && extensionOf(source.file.name))
+        precheckLocalFile({
+          name: source.file.name,
+          size: source.file.size,
+          ...(serverUrl ? { serverUrl } : {}),
+          ...(capabilities ? { capabilities } : {}),
+        })
       let name: string
       let format: Format
       // The iframe only ever needs a URL, so a local file with a known extension is
@@ -167,18 +179,18 @@ function Host() {
       // in memory twice (the read plus the blob) for no reason.
       let file: Blob
       if (source.kind === 'file' && extensionOf(source.file.name)) {
-        if (source.file.size > MAX_BYTES) throw new Error('文件超过 1 GiB')
+        if (source.file.size > FORMAT_POLICY.maxFileBytes) throw new Error('文件超过 1 GiB')
         name = source.file.name
         format = extensionOf(source.file.name)!
         file = source.file
       } else if (source.kind === 'file') {
-        if (source.file.size > MAX_BYTES) throw new Error('文件超过 1 GiB')
+        if (source.file.size > FORMAT_POLICY.maxFileBytes) throw new Error('文件超过 1 GiB')
         const bytes = new Uint8Array(await source.file.arrayBuffer())
         if (!bytes.length) throw new Error('文件是空的')
-        if (bytes.length > MAX_BYTES) throw new Error('文件超过 1 GiB')
+        if (bytes.length > FORMAT_POLICY.maxFileBytes) throw new Error('文件超过 1 GiB')
         name = source.file.name
         format = await formatOf(name, bytes)
-        file = new File([bytes], name, { type: source.file.type })
+        file = new File([bytes.buffer as ArrayBuffer], name, { type: source.file.type })
       } else {
         let response: Response
         try {
@@ -189,23 +201,21 @@ function Host() {
         if (!response.ok) throw new Error('下载失败（HTTP ' + response.status + '）')
         // reject an oversized file before pulling it in, when the server says so
         const declared = Number(response.headers.get('content-length'))
-        if (declared > MAX_BYTES) throw new Error('文件超过 1 GiB')
-        const bytes = new Uint8Array(await response.arrayBuffer())
+        if (declared > FORMAT_POLICY.maxFileBytes) throw new Error('文件超过 1 GiB')
+        const bytes = await readResponseLimited(response, FORMAT_POLICY.maxFileBytes)
         if (!bytes.length) throw new Error('文件是空的')
-        if (bytes.length > MAX_BYTES) throw new Error('文件超过 1 GiB')
         name = nameFrom(source.url, response.headers.get('content-disposition'))
         format = await formatOf(name, bytes)
-        file = new Blob([bytes])
+        file = new Blob([bytes.buffer as ArrayBuffer])
       }
-      const resolvedMode: ParseMode =
-        mode === 'auto'
-          ? serverUrl && file.size > (format === 'docx' ? DOCX_LOCAL_MAX_BYTES : AUTO_REMOTE_BYTES)
-            ? 'server'
-            : 'local'
-          : mode
-      if (format === 'docx' && resolvedMode === 'local' && file.size > DOCX_LOCAL_MAX_BYTES) {
-        throw new Error('大 DOCX 本地预览上限 32 MiB；请切换到服务端解析')
-      }
+      const route = decideRoute({
+        mode,
+        ...(serverUrl ? { serverUrl } : {}),
+        format,
+        size: file.size,
+        ...(capabilities ? { capabilities } : {}),
+      })
+      const resolvedMode: ParseMode = route.mode
       let remote: RemoteTarget | undefined
       if (resolvedMode === 'server') {
         if (!serverUrl) throw new Error('没有配置解析服务地址（?server=http://…）')
@@ -360,6 +370,7 @@ function Host() {
                   ...(layoutParam ? { layout: layoutParam } : {}),
                   ...(opened.remote.token ? { token: opened.remote.token } : {}),
                   ...(opened.remote.contentUrl ? { contentUrl: opened.remote.contentUrl } : {}),
+                  ...(opened.format === 'docx' && docxLocalFallback ? { docxLocalFallback: '1' } : {}),
                 }
               : {}),
             ...viewerUiParams(ui),

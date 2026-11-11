@@ -1,15 +1,19 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Docs } from './docs'
 import { DocsRemote } from './docs-remote'
+import { fetchCapabilities } from './capabilities'
+import { chooseDocxServerRoute, FORMAT_POLICY, thresholdsOf } from './format-policy'
 
 /** Full-document local renderer is exact but needs the whole file in memory. */
-const FULL_RENDER_LIMIT = 64 * 1024 * 1024
+const FULL_RENDER_LIMIT = FORMAT_POLICY.docxServerFullRenderBytes
 
 interface Props {
   server: string
   fileId: string
   token?: string
   name?: string
+  /** Explicit fidelity fallback for small DOCX; default is the remote model. */
+  localFallback?: boolean
 }
 
 /**
@@ -17,7 +21,7 @@ interface Props {
  * parser/pagination as local mode whenever the file is small enough. Large
  * documents fall back to the streaming remote renderer.
  */
-export function DocsServer({ server, fileId, token, name }: Props) {
+export function DocsServer({ server, fileId, token, name, localFallback = false }: Props) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [remote, setRemote] = useState(false)
   const [error, setError] = useState('')
@@ -28,8 +32,19 @@ export function DocsServer({ server, fileId, token, name }: Props) {
     setError('')
     setRemote(false)
     setBlobUrl(null)
+    if (!localFallback) {
+      // Manual server mode uses the streaming remote model. The exact local
+      // renderer is only a fidelity fallback that must be requested explicitly.
+      setRemote(true)
+      return () => controller.abort()
+    }
     void (async () => {
       try {
+        // Only reached with the explicit local fallback; thresholds may still be
+        // advertised by the deployment capabilities.
+        const capabilities = await fetchCapabilities({
+          baseUrl: server, signal: controller.signal,
+        })
         const metadata = await fetch(
           `${server.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(fileId)}`,
           { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: controller.signal },
@@ -37,7 +52,11 @@ export function DocsServer({ server, fileId, token, name }: Props) {
         if (!metadata.ok) throw new Error(`读取 DOCX 信息失败（HTTP ${metadata.status}）`)
         const info = (await metadata.json()) as { size: number }
         if (!Number.isSafeInteger(info.size) || info.size < 0) throw new Error('DOCX 文件大小无效')
-        if (info.size > FULL_RENDER_LIMIT) {
+        if (chooseDocxServerRoute({
+          size: info.size,
+          allowLocalFallback: localFallback,
+          thresholds: thresholdsOf(capabilities),
+        }) === 'remote') {
           setRemote(true)
           return
         }
@@ -71,7 +90,7 @@ export function DocsServer({ server, fileId, token, name }: Props) {
         urlRef.current = null
       }
     }
-  }, [server, fileId, token])
+  }, [server, fileId, token, localFallback])
 
   if (error)
     return (

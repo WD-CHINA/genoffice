@@ -12,6 +12,9 @@ import '@genoffice/viewer-renderers/docs/renderer/styles.css'
 import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
 import { paginateBlocks, visiblePages, type BlockMeasure, type PageDescriptor } from './docx-pagination'
 import { captureDocxAnchor, restoreDocxAnchor } from './docx-scroll-anchor'
+import {
+  loadReadingPosition, saveDocxReadingAnchor, type DocxReadingAnchor,
+} from './reading-position'
 import { type TableRowLayout } from './docx-table-pagination'
 import { indexDocxUnit, replaceDocxUnitIndex, type DocxPageBlock } from './docx-page-index'
 import { DocxReadQueue } from './docx-read-queue'
@@ -126,6 +129,10 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
   const session = useRef<DocxRemoteSession | null>(null)
   const viewport = useRef<HTMLDivElement>(null)
   const scrollPosition = useRef(0)
+  const restoredAnchor = useRef(false)
+  const pendingAnchor = useRef<DocxReadingAnchor | undefined>(undefined)
+  const prefetchAttempts = useRef(0)
+  const prefetching = useRef(false)
   const previousLayout = useRef<{
     key: string; blocks: DocxPageBlock[]; pages: PageDescriptor[]; tops: number[]; paddingTop: number
   } | undefined>(undefined)
@@ -239,6 +246,10 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     setStatus('正在创建 DOCX 会话…')
     setScrollTop(0)
     scrollPosition.current = 0
+    restoredAnchor.current = false
+    pendingAnchor.current = loadReadingPosition(fileId)?.anchor
+    prefetchAttempts.current = 0
+    prefetching.current = false
     if (viewport.current) viewport.current.scrollTop = 0
     loadingRef.current = false
     const fontScope = new DocxFontScope()
@@ -330,6 +341,57 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     }
     previousLayout.current = { key, blocks: renderBlocks, pages, tops, paddingTop }
   }, [server, fileId, renderBlocks, pages, tops, paddingTop])
+  // Restore a saved DOCX source anchor once, as soon as the first window has
+  // enough blocks to resolve it. An anchor whose unit is not loaded yet is left
+  // for a later window instead of jumping to the top.
+  useEffect(() => {
+    if (restoredAnchor.current || !fileId || !renderBlocks.length || !pages.length || !viewport.current)
+      return
+    const saved = pendingAnchor.current ?? loadReadingPosition(fileId)?.anchor
+    if (!saved) {
+      restoredAnchor.current = true
+      return
+    }
+    const top = restoreDocxAnchor(saved, renderBlocks, pages, tops, paddingTop)
+    if (top === undefined) return
+    restoredAnchor.current = true
+    pendingAnchor.current = undefined
+    viewport.current.scrollTop = top
+    scrollPosition.current = top
+    setScrollTop(top)
+  }, [fileId, renderBlocks, pages, tops, paddingTop])
+  // A saved anchor can live past the first window: keep fetching bounded chunks
+  // until its unit appears (or the document ends), then the restore effect jumps.
+  useEffect(() => {
+    const saved = pendingAnchor.current
+    if (!saved || restoredAnchor.current || !renderBlocks.length) return
+    if (renderBlocks.some((block) => block.unitId === saved.unitId)) return
+    if (!hasMore || loadingRef.current || prefetching.current || prefetchAttempts.current >= 20) {
+      pendingAnchor.current = undefined
+      return
+    }
+    prefetchAttempts.current++
+    prefetching.current = true
+    const active = session.current
+    if (active) void loadChunk(active, cursor).finally(() => { prefetching.current = false })
+    else prefetching.current = false
+  }, [renderBlocks, pages, hasMore, cursor, loadChunk])
+  // Keep the anchor instead of a page number: reflow can move pages around.
+  useEffect(() => {
+    if (!fileId || !renderBlocks.length || !pages.length) return
+    const timer = setTimeout(() => {
+      const anchor = captureDocxAnchor(renderBlocks, pages, tops,
+        scrollPosition.current, paddingTop)
+      if (anchor) {
+        saveDocxReadingAnchor(fileId, anchor)
+        session.current?.setLayoutPrefs({
+          anchor: { unitId: anchor.unitId, blockIndex: anchor.blockIndex,
+            offsetPx: Math.round(anchor.offset) },
+        })
+      }
+    }, 600)
+    return () => clearTimeout(timer)
+  }, [fileId, renderBlocks, pages, tops, paddingTop, scrollTop])
   const viewportHeight = viewport.current?.clientHeight || 720
   const range = visiblePages(tops, pageBoxHeights, scrollTop, viewportHeight, OVERSCAN)
 

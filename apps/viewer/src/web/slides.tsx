@@ -17,6 +17,8 @@ import { createModelPptxSession } from './pptx-model-session'
 import { METRIC_FONTS } from './metric-fonts'
 import { readViewerUi } from './ui-options'
 import { createViewerTiming } from './performance'
+import { refreshSignedPartUrl } from './part-url'
+import { loadReadingPosition, saveReadingPosition } from './reading-position'
 import {
   ControlButton,
   FitControls,
@@ -164,7 +166,11 @@ export function Slides({
     [images, setImages] = useState(new Map<string, HTMLImageElement>()),
     /** thumbnail strip: still rasters keyed by the picture's data url */
     [thumbs, setThumbs] = useState(new Map<string, HTMLImageElement>()),
-    [page, setPage] = useState(0),
+    // Resume the last slide for this file; the server session preference is the
+    // durable contract, this local hint keeps reopening a deck seamless.
+    [page, setPage] = useState<number>(() =>
+      (fileId ? loadReadingPosition(fileId)?.page : undefined) ?? 0,
+    ),
     [show, setShow] = useState(false),
     [showPage, setShowPage] = useState(0),
     [error, setError] = useState(''),
@@ -200,6 +206,16 @@ export function Slides({
     thumbsMime = useRef(new Map<string, string>()),
     loaderRef = useRef<ReturnType<typeof createImageLoader> | null>(null)
   const activePage = show ? showPage : page
+  useEffect(() => {
+    if (!deck || !fileId) return
+    const count = Array.isArray(deck.slides) ? deck.slides.length : 0
+    if (count > 0 && page >= count) setPage(0)
+  }, [deck, fileId, page])
+  useEffect(() => {
+    if (!deck || !fileId) return
+    saveReadingPosition(fileId, page)
+    pptx.current?.updateReadingPosition?.(page)
+  }, [deck, fileId, page])
   useEffect(() => {
     if (!deck || !pane.current) return
     const element = pane.current
@@ -359,7 +375,8 @@ export function Slides({
         })
       }
     }
-    const loader = createImageLoader(applyImages)
+    const loader = createImageLoader(applyImages, 16, 100, 3, async (url) =>
+      server ? await refreshSignedPartUrl(url, { server, token }) : null)
     const thumbLoader = createImageLoader(applyImages, 4, 100, 1)
     loaderRef.current = loader
     const session =

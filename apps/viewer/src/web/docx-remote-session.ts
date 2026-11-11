@@ -1,6 +1,10 @@
-import { openServerSession, type ServerSessionTarget } from './server-session'
+import { readingLayoutPrefs } from './reading-position'
+import {
+  openServerSession, updateSessionLayoutPrefs, type ServerSessionTarget,
+} from './server-session'
 import { DocxChunkCache } from './docx-chunk-cache'
 import { DocxReadQueue } from './docx-read-queue'
+import { needsResourceRefresh, originOf } from './signed-url'
 
 export interface DocxOpened {
   sessionId: string
@@ -27,6 +31,7 @@ class SessionExpired extends Error {
 export class DocxRemoteSession {
   private readonly controller = new AbortController()
   private readonly base: string
+  private readonly baseOrigin: string | undefined
   private readonly headers: Record<string, string>
   private id?: string
   private opening?: Promise<DocxOpened>
@@ -35,6 +40,7 @@ export class DocxRemoteSession {
   private readonly committed = new Set<string>()
   private readonly chunks = new DocxChunkCache<{ blocks: any[] }>()
   private readonly reads = new DocxReadQueue()
+  private lastPrefAt = 0
   private readonly unitRequests = new Map<string, {
     promise: Promise<{ blocks: any[] }>; controller: AbortController
   }>()
@@ -44,6 +50,7 @@ export class DocxRemoteSession {
     private readonly onOpened: (opened: DocxOpened, signal: AbortSignal) => Promise<void>,
   ) {
     this.base = target.server.replace(/\/+$/, '')
+    this.baseOrigin = originOf(this.base)
     this.headers = target.token ? { Authorization: `Bearer ${target.token}` } : {}
   }
 
@@ -52,6 +59,17 @@ export class DocxRemoteSession {
   }
 
   get signal(): AbortSignal { return this.controller.signal }
+
+  /** Incremental reading-position update on the heartbeat channel (throttled). */
+  setLayoutPrefs(layoutPrefs: unknown): void {
+    const id = this.id
+    if (!id) return
+    const now = Date.now()
+    if (now - this.lastPrefAt < 750) return
+    this.lastPrefAt = now
+    void updateSessionLayoutPrefs(this.base, id, layoutPrefs, this.target.token)
+      .catch(() => undefined)
+  }
 
   private remove(id: string): void {
     void fetch(`${this.base}/v1/sessions/${encodeURIComponent(id)}`, {
@@ -65,8 +83,10 @@ export class DocxRemoteSession {
     this.check()
     if (this.opening) return this.opening
     const job = Promise.resolve().then(async () => {
+      const layoutPrefs = readingLayoutPrefs(this.target.fileId)
       const opened = await openServerSession<DocxOpened>({
         ...this.target,
+        ...(layoutPrefs ? { layoutPrefs } : {}),
         signal: this.controller.signal,
       })
       if (this.controller.signal.aborted) {
@@ -161,7 +181,10 @@ export class DocxRemoteSession {
         if (!this.id) await this.open()
         signal.throwIfAborted()
         const cached = this.chunks.get(id)
-        if (cached) return cached
+        // A cached chunk may carry signed URLs that expired (or point at a
+        // previous deployment origin): refresh the description from the server.
+        if (cached && !needsResourceRefresh(cached, { baseOrigin: this.baseOrigin }))
+          return cached
         try {
           const unit = await this.json(`units/${encodeURIComponent(id)}`, signal)
           if (!unit || !Array.isArray(unit.blocks)) throw new Error('DOCX chunk 格式无效')
@@ -196,7 +219,10 @@ export class DocxRemoteSession {
           const ids: string[] = []
           for (const item of listing.items) {
             if (this.committed.has(item.id)) continue
-            const unit = this.chunks.get(item.id) ?? await this.json(`units/${encodeURIComponent(item.id)}`)
+            let unit = this.chunks.get(item.id)
+            if (unit && needsResourceRefresh(unit, { baseOrigin: this.baseOrigin }))
+              unit = undefined
+            if (!unit) unit = await this.json(`units/${encodeURIComponent(item.id)}`)
             if (!unit || !Array.isArray(unit.blocks)) throw new Error('DOCX chunk 格式无效')
             this.chunks.set(item.id, unit)
             blocks.push(...unit.blocks)

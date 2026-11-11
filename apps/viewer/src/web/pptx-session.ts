@@ -70,6 +70,8 @@ export function createPptxSession() {
     bytes: (ref: string) => call('bytes', { ref }) as Promise<ArrayBuffer | null>,
     media: (index: number, sourceId: string) =>
       call('media', { index, sourceId }) as Promise<{ kind: string; dataUrl: string } | null>,
+    /** Local sessions have no durable server record to update. */
+    updateReadingPosition(_page: number): void {},
     close() {
       closed = true
       for (const task of pending.values()) task.reject(new Error('Presentation closed'))

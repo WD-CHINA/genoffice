@@ -1,4 +1,7 @@
-import { openServerSession, openingStateText, type PreviewNotice } from './server-session'
+import { readingLayoutPrefs } from './reading-position'
+import {
+  openServerSession, openingStateText, updateSessionLayoutPrefs, type PreviewNotice,
+} from './server-session'
 import type { PptxDeck } from './pptx-session'
 
 /** A first frame published while the v2 job is still building; never a complete deck. */
@@ -79,6 +82,7 @@ export function createRemotePptxSession(target: RemoteTarget) {
   let deck: PptxDeck | undefined
   let unitCount = 0
   let closed = false
+  let lastPrefAt = 0
   const abort = new AbortController()
   let heartbeat: ReturnType<typeof setInterval> | undefined
   const units = new Map<number, RemoteUnit>()
@@ -179,6 +183,10 @@ export function createRemotePptxSession(target: RemoteTarget) {
       }>({
         ...target,
         width: _width,
+        ...(() => {
+          const layoutPrefs = readingLayoutPrefs(target.fileId)
+          return layoutPrefs ? { layoutPrefs } : {}
+        })(),
         signal: abort.signal,
         onState: (state) => target.onStatus?.(openingStateText(state)),
         onPreview: (notice) => void prefetchPreview(notice),
@@ -289,6 +297,14 @@ export function createRemotePptxSession(target: RemoteTarget) {
       const unit = await fetchUnit(index)
       const ref = unit.media?.find((item) => item.sourceId === sourceId)
       return ref ? { kind: ref.kind, dataUrl: ref.url } : null
+    },
+    updateReadingPosition(page: number): void {
+      if (!sessionId || closed) return
+      const now = Date.now()
+      if (now - lastPrefAt < 750) return
+      lastPrefAt = now
+      void updateSessionLayoutPrefs(base, sessionId, { page }, target.token)
+        .catch(() => undefined)
     },
     close(): void {
       closed = true

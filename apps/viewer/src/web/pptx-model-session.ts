@@ -1,4 +1,5 @@
-import { openServerSession, openingStateText } from './server-session'
+import { readingLayoutPrefs } from './reading-position'
+import { openServerSession, openingStateText, updateSessionLayoutPrefs } from './server-session'
 /**
  * Offline-capable PPTX session: the parse server exports parsed slide models and a
  * Worker lays them out here with the bundled metric fonts plus the browser's own
@@ -7,6 +8,7 @@ import { openServerSession, openingStateText } from './server-session'
  */
 import type { PptxDeck } from './pptx-session'
 import { METRIC_FONTS } from './metric-fonts'
+import { needsResourceRefresh, originOf } from './signed-url'
 
 export interface ModelTarget {
   server: string
@@ -77,11 +79,17 @@ const EMPTY_PLAYBACK = {
 
 export function createModelPptxSession(target: ModelTarget) {
   const base = target.server.replace(/\/+$/, '')
+  const baseOrigin = originOf(base)
+  const unitNeedsRefresh = (unit: Unit): boolean =>
+    needsResourceRefresh(unit.slide, { baseOrigin }) ||
+    (unit.mediaRefs ?? []).some((ref) => needsResourceRefresh(ref.url, { baseOrigin }))
   let sessionId: string | null = null
   let deck: PptxDeck | undefined
   let info: LayoutInfo | undefined
   let widthPx = 960
   let closed = false
+  // Page changes are throttled before hitting the heartbeat channel.
+  let lastPrefAt = 0
   let worker: Worker | null = null
   let nextId = 0
   let heartbeat: ReturnType<typeof setInterval> | undefined
@@ -160,6 +168,10 @@ export function createModelPptxSession(target: ModelTarget) {
       }>({
         ...target,
         width: widthPx,
+        ...(() => {
+          const layoutPrefs = readingLayoutPrefs(target.fileId)
+          return layoutPrefs ? { layoutPrefs } : {}
+        })(),
         signal: abort.signal,
         onState: (state) => target.onStatus?.(openingStateText(state)),
       })
@@ -239,6 +251,12 @@ export function createModelPptxSession(target: ModelTarget) {
       } finally {
         if (loading.get(index) === pending) loading.delete(index)
       }
+      // A slide kept loaded across the signature window may still carry expired
+      // image/part URLs; refresh the worker's cached description once, then use it.
+      if (unitNeedsRefresh(state.unit)) {
+        await call('refresh', { index })
+        state = await call<UnitState>('unit', { index })
+      }
       applyUnit(index, state.unit)
       return {
         slide: state.unit.slide,
@@ -304,10 +322,27 @@ export function createModelPptxSession(target: ModelTarget) {
         applyUnit(index, state.unit)
         refs = state.unit.mediaRefs ?? []
       }
-      const ref = refs.find((item) => item.sourceId === sourceId)
+      let ref = refs.find((item) => item.sourceId === sourceId)
+      // Audio/video part URLs are signed; a slide kept open past the signature
+      // window refreshes its description instead of failing to load.
+      if (ref && needsResourceRefresh(ref.url, { baseOrigin })) {
+        await call('refresh', { index })
+        const state = await call<UnitState>('unit', { index })
+        applyUnit(index, state.unit)
+        refs = state.unit.mediaRefs ?? []
+        ref = refs.find((item) => item.sourceId === sourceId)
+      }
       return ref ? { kind: ref.kind, dataUrl: ref.url } : null
     },
 
+    updateReadingPosition(page: number): void {
+      if (!sessionId || closed) return
+      const now = Date.now()
+      if (now - lastPrefAt < 750) return
+      lastPrefAt = now
+      void updateSessionLayoutPrefs(base, sessionId, { page }, target.token)
+        .catch(() => undefined)
+    },
     close(): void {
       closed = true
       abort.abort()

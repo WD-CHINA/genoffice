@@ -26,6 +26,7 @@ test('async opening follows queued/building/ready with one creation and preserve
     token: 'secret',
     width: 1200,
     signal: controller.signal,
+    skipCapabilities: true,
     onState: (state) => states.push(state),
   })
   assert.deepEqual(states, ['queued', 'building'])
@@ -49,7 +50,11 @@ test('older and offline servers fall back to v1 only when v2 is unsupported', as
       ? json({ message: 'not found' }, 404)
       : json({ sessionId: 'offline', model: { unitCount: 1 } }, 201)
   })
-  const result = await openServerSession({ server: 'http://local', fileId: 'file' })
+  const result = await openServerSession({
+    server: 'http://local',
+    fileId: 'file',
+    skipCapabilities: true,
+  })
   assert.equal(result.sessionId, 'offline')
   assert.deepEqual(paths, ['http://local/v2/sessions', 'http://local/v1/sessions'])
 })
@@ -60,7 +65,10 @@ test('queue saturation does not retry through v1 and bypass admission', async (c
     paths.push(url)
     return json({ message: 'queue full' }, 429)
   })
-  await assert.rejects(openServerSession({ server: 'http://parse', fileId: 'file' }), /queue full/)
+  await assert.rejects(
+    openServerSession({ server: 'http://parse', fileId: 'file', skipCapabilities: true }),
+    /queue full/,
+  )
   assert.deepEqual(paths, ['http://parse/v2/sessions'])
 })
 
@@ -78,6 +86,7 @@ test('cancelling during a polling delay deletes only this waiter using a fresh r
       server: 'http://parse',
       fileId: 'file',
       signal: controller.signal,
+      skipCapabilities: true,
       onState: () => controller.abort(),
     }),
     { name: 'AbortError' },
@@ -102,7 +111,7 @@ test('failed jobs report their error, clean up the waiter, and never poll foreve
     })
   })
   await assert.rejects(
-    openServerSession({ server: 'http://parse', fileId: 'file' }),
+    openServerSession({ server: 'http://parse', fileId: 'file', skipCapabilities: true }),
     /memory limit/,
   )
   assert.deepEqual(calls, [
@@ -135,11 +144,12 @@ test('closing a remote deck at the ready boundary does not resurrect heartbeat t
   try {
     await assert.rejects(session.open(new ArrayBuffer(0)), /Presentation closed/)
     assert.deepEqual(calls, [
+      'GET http://parse/v2/capabilities',
       'POST http://parse/v2/sessions',
       'DELETE http://parse/v1/sessions/ready-boundary',
     ])
     context.mock.timers.tick(60 * 60_000)
-    assert.equal(calls.length, 2)
+    assert.equal(calls.length, 3)
   } finally {
     session.close()
     context.mock.timers.reset()

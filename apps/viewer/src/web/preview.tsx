@@ -64,6 +64,7 @@ createRoot(document.getElementById('root')!).render(
           fileId={fileId}
           token={token || undefined}
           name={params.get('name') || undefined}
+          localFallback={params.get('docxLocalFallback') === '1'}
         />
       ) : (
         <Docs src={src} />

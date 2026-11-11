@@ -1,0 +1,106 @@
+name: genoffice-validation
+
+x-runtime: &runtime
+  image: genoffice-validation:local
+  build:
+    context: ../../../..
+    dockerfile: apps/parse-server/deploy/validation/Dockerfile
+  networks: [validation]
+
+x-environment: &environment
+  PARSE_SERVER_HOST: 0.0.0.0
+  PARSE_SERVER_DATA_DIR: /data
+  PARSE_SERVER_TOKEN: validation-local
+  PARSE_SERVER_ALLOWED_ORIGINS: http://127.0.0.1:11019
+  PARSE_SERVER_ARTIFACT_BACKEND: catalog
+  PARSE_SERVER_STORAGE_ADMISSION: shared
+  PARSE_SERVER_BUILD_FINGERPRINT: validation-local
+  PARSE_SERVER_CACHE_MODE: redis
+  PARSE_SERVER_WORKER_MEMORY_MB: 512
+  PARSE_SERVER_WORKER_RSS_MB: 1024
+  PARSE_SERVER_PARSE_MEMORY_MB: 2048
+  MYSQL_DATABASE: genoffice_validation
+  MYSQL_SOCKET: /sockets/mysql.sock
+  REDIS_SOCKET: /sockets/redis.sock
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ALLOW_EMPTY_PASSWORD: 'yes'
+      MYSQL_DATABASE: genoffice_validation
+    command: ['--socket=/sockets/mysql.sock', '--innodb-buffer-pool-size=128M', '--max-connections=200']
+    mem_limit: 768m
+    volumes: [sockets:/sockets, mysql:/var/lib/mysql]
+    networks: [validation]
+    healthcheck:
+      test: ['CMD', 'mysqladmin', '--socket=/sockets/mysql.sock', 'ping', '--silent']
+      interval: 2s
+      timeout: 2s
+      retries: 60
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--unixsocket', '/sockets/redis.sock', '--unixsocketperm', '777', '--maxmemory', '64mb', '--maxmemory-policy', 'allkeys-lru']
+    mem_limit: 128m
+    volumes: [sockets:/sockets]
+    networks: [validation]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+  app-a:
+    <<: *runtime
+    environment: *environment
+    cpus: 8
+    mem_limit: 4g
+    memswap_limit: 4g
+    ports: ['127.0.0.1:18787:8787']
+    volumes: [data:/data, sockets:/sockets]
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  app-b:
+    <<: *runtime
+    environment: *environment
+    cpus: 2
+    mem_limit: 2g
+    memswap_limit: 2g
+    ports: ['127.0.0.1:18788:8787']
+    volumes: [data:/data, sockets:/sockets]
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  tests:
+    <<: *runtime
+    profiles: [test]
+    cpus: 8
+    mem_limit: 4g
+    memswap_limit: 4g
+    environment:
+      PARSE_TEST_MYSQL_SOCKET: /sockets/mysql.sock
+      PARSE_TEST_REDIS_SOCKET: /sockets/redis.sock
+    volumes:
+      - sockets:/sockets
+      - ${EVIDENCE_DIR:-/tmp/genoffice-validation}:/evidence
+    command: ['node', '/workspace/node_modules/vitest/vitest.mjs', 'run', '--no-file-parallelism', '--reporter=json', '--outputFile=/evidence/suite.json']
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+  load:
+    <<: *runtime
+    profiles: [load]
+    cpus: 8
+    mem_limit: 6g
+    memswap_limit: 6g
+    volumes:
+      - ${CORPUS_DIR:-/tmp}:/samples:ro
+      - ${EVIDENCE_DIR:-/tmp/genoffice-validation}:/evidence
+    command: ['node', '--import', 'tsx', 'scripts/load-profile.mts', '--corpus-file', '/samples/${CORPUS_FILE:-sample.pptx}', '--out', '/evidence/load.json']
+
+networks:
+  validation:
+volumes:
+  sockets:
+  mysql:
+  data:

@@ -1,6 +1,6 @@
 # Web / Android / 解析服务整体优化方案
 
-日期：2026-11-06，更新：2026-11-10。状态：分阶段实施中，已完成项与验证边界见 [实施进度](parse-optimization-progress.zh-CN.md)。基线：单机 8 核 CPU、16 GiB 内存，已有本地磁盘及可选 MySQL；Redis 为可选热缓存，不改变真值路径（见 5.1）。
+日期：2026-11-06，更新：2026-11-10。状态：分阶段实施中，已完成项与验证边界见 [实施进度](parse-optimization-progress.zh-CN.md)，量化完成度与剩余缺口见 [完成度评估](parse-optimization-completion.zh-CN.md)。基线：单机 8 核 CPU、16 GiB 内存，已有本地磁盘及可选 MySQL；Redis 为可选热缓存，不改变真值路径（见 5.1）。
 
 ## 1. 目标与决策
 

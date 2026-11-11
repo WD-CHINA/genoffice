@@ -1,5 +1,7 @@
 # 解析优化实施进度
 
+> 当前验收以 [2026-11-11 Docker 验证记录](../../docs/parse-docker-validation.zh-CN.md) 为准；[隔离复现环境](deploy/validation/README.md)覆盖真实 MySQL/Redis、业务课件、资源限制与冷恢复。下文早期“当前限制”和计数保留用于追溯，部分已被后续实现替代。复杂 DOCX 仍有明确脚注与版式缺口，不能据旧完成度百分比宣布完成。
+
 更新：2026-11-07。对应方案：`parse-persistence-optimization.zh-CN.md`。整体目标仍在进行；磁盘持久化已接入实际预览，历史库保存/读取/移除已接入，生产任务与运维尚未完成。
 
 ## 已落地
@@ -286,10 +288,25 @@ its regular interval follows gcIntervalMs. ParseServer.gc also requests collecti
 asynchronously. Inspect health.maintenance.gcTasks and generationCollection for
 progress; awaiting gc does not wait for all generation batches.
 
-Shutdown drains current collection before closing MySQL. This does not impose
-hard OS/SQL IO timeouts or enable generation-backed parsing/HTTP readers.
+Shutdown drains current collection before closing MySQL. Every shutdown phase
+(parse queue, coordinator, artifact drain, async flights, HTTP close, GC flights,
+database close) is bounded by `PARSE_SERVER_SHUTDOWN_TIMEOUT_MS` (default 30 s); a
+stuck phase logs `shutdown_phase_timeout` and shutdown continues.
 
 ### Staged catalog HTTP backend
+
+Canonical export: `npm run artifact:export -w @genoffice/parse-server -- --data-dir
+<dir> --artifact-key <64-hex> --out <dir> [--catalog]` materializes one packed
+generation (local flat store, or with `--catalog` the ready MySQL generation,
+using `MYSQL_*`) as
+`document.json`, `units/<index>.json`, `fonts/<font-id>.sfnt`,
+`external-media.json` and `artifact-manifest.json` (plan §4.2 layout) without
+changing the runtime `units.bin` truth.
+
+Each generation's `manifest.json` now carries optional document metadata:
+`unitCount`, embedded `fonts`, parser `warnings`, and `dependencies` (a derived
+bundle records its model generation). They are validated on read and were added
+compatibly, so older manifests still open.
 
 `createParseServer({ mysql, dataDir, artifactBackend: 'catalog' })` opts the primary model session paths into SQL build coordination, immutable generations and view read leases. The default remains `local`. Real MySQL HTTP tests cover cold 202, cached 201 and restored PPTX rendering without another source parse. This is a staged integration option: auxiliary offline bundles still use the local artifact layout; legacy migration, corrupt-ready repair, cross-node task state and global resource admission are incomplete. It does not yet authorize shared-root multi-instance production deployment. There is no CLI environment switch at this checkpoint.
 
@@ -299,10 +316,14 @@ hard OS/SQL IO timeouts or enable generation-backed parsing/HTTP readers.
 Persistence is not a backup. `src/backup-manifest.ts` writes a versioned, SHA-256
 sealed manifest covering the durable subset of a deployment: MySQL directory rows
 (`parse_files`, `library_entries`, `parse_artifacts` with ready pointers and
+artifact dependencies,
 identity-derived keys, jobs, retirements, flat archives and high-water tombstones),
 content-addressed source bytes, `meta/*.json`, `library.json`, and every canonical
 `g-N` generation's `manifest.json` / `units.bin`. Sessions, read leases, storage
 reservations, staging and scratch are intentionally excluded as transient state.
+
+A second instance sharing the same `dataDir` + MySQL catalog can take the
+snapshot while another instance keeps serving (`tests/backup-manifest-cross-node-mysql.test.ts`).
 
 The catalog is read inside `START TRANSACTION WITH CONSISTENT SNAPSHOT`; files are
 hashed while that transaction is open; a **separate** pool connection then re-reads
@@ -324,7 +345,8 @@ PARSE_SERVER_DATA_DIR=/srv/parse MYSQL_DATABASE=genoffice \
   --data-dir=/srv/parse --in=/backup/genoffice-manifest.json --deep
 ```
 
-`verify` reconciles source rows, saved history, references, tombstones and
+`verify` reconciles source rows, saved history, references, tombstones, artifact
+dependency edges (dangling/missing parents or targets fail closed) and
 artifact dependencies; proves each file's size and hash; and opens every live
 ready pointer through `ArtifactGenerations.open` (plus per-frame gzip/sha256 with
 `--deep`). Missing sources or lost history are fatal. A generation that cannot be
@@ -338,6 +360,289 @@ ready pointer; `/v1/health` exposes `restore` with the result and counts. This i
 a same-directory restore verification, not an off-site backup/copy mechanism:
 scheduling, retention, off-host media and a full cross-machine recovery exercise
 still belong to deployment.
+
+## Optional cross-node hot cache (plan §5.1, P3.5)
+
+`src/hot-cache.ts` is the facade over the in-process preview and an optional
+Redis projection. The default is `cacheMode: 'memory'`: nothing changes, no
+Redis client is created and no command is issued. `cacheMode: 'redis'` mirrors
+two things only — committed preview frames (`genoffice:{db}:` + `pv:{artifactKey}:{jobId}`,
+TTL 60 s, at most `previewMaxUnits` units, a field above 256 KiB suppresses the
+frame) and build progress (`job:{jobId}`, TTL 5 min, one process-wide 200 ms
+throttle, forced at the end). Keys are bound to the build lease `jobId` resolved
+through `parse_jobs`, so a rebuild or retry never reads an older attempt.
+
+The cache carries no truth. Ready pointers, generations, build/read/download
+leases, quotas, pressure ledgers and artifact indexes stay in MySQL and on disk;
+a cache hit is only negative evidence ("there is a first frame / a progress
+value"), and every positive `ready` decision still performs the normal claim and
+ready-pointer validation. `lookup`/progress reads fall back to "unknown" on a
+miss, timeout, malformed value, breaker-open or connection error, and the HTTP
+layer keeps returning the normal `202 pending`/`409` states — never a 5xx. A
+failed build deletes both keys. `FLUSHALL`, eviction and a replica switch are
+just cache misses.
+
+Configuration: `cacheMode` (`PARSE_SERVER_CACHE_MODE=redis`), `redis` config
+(`REDIS_HOST`/`REDIS_PORT` or `REDIS_SOCKET`, optional
+`REDIS_USERNAME`/`REDIS_PASSWORD`/`REDIS_DB`/`REDIS_TLS`), and
+`cacheCommandTimeoutMs` (default 80, one attempt, no retry),
+`cacheBreakerMs` (default 5 s after three consecutive failures),
+`cacheProgressTtlMs`, `cacheProgressThrottleMs` and `cacheMaxFieldBytes`.
+Redis mode requires MySQL plus `artifactBackend: 'catalog'`: the shared
+`parse_jobs` row is what lets another instance address the projection. Rollback
+is switching back to `memory`; keys expire by TTL and no persistent data is
+rewritten. `/v2/capabilities` advertises `thresholds {docxAutoRemoteBytes,
+pptxAutoRemoteBytes, docxFullRenderBytes}` so viewers do not hardcode deployment
+policies; the same limits are validated before startup.
+
+`/v1/health.cache` (`mode`, `enabled`, `hits`, `misses`,
+`hitRate`, `errors`, `timeouts`, `breaker`) and the
+`genoffice_cache_*` series (`_hit_total`, `_miss_total`, `_error_total`,
+`_timeout_total`, `_hit_rate`, `_latency_seconds` histogram, `_breaker_open`)
+report the layer. `cache_evictions`/`cache_bytes` are intentionally left to a
+Redis exporter or `MEMORY USAGE` sampling instead of parsing `INFO` on the
+request path. The first projection read on a waiting instance performs one
+`parse_jobs` lookup (via `activeJob`) to resolve the build's `jobId`; a local
+preview or a cached read never touches SQL.
+
+Cross-instance waiter attach: durable v2 waiters live in
+`parse_pending_sessions`, so an instance that did not create a session can
+resolve the row lazily and serve its current status, shared preview frames and
+progress. Such a waiter is read-only on the attaching instance: it never starts
+a competing build, heartbeat only renews the row, and DELETE forgets the local
+cache without deleting the builder's row. Attaching to *ready* generations still
+requires the instance to hold the same data directory because multi-instance
+shared local directories are not supported; the remote view is a status/first-
+screen view, not a full session migration.
+
+P3.5 boundary: one Redis instance with ACL/TLS support, the two channels above,
+and single-threaded command execution. Sentinel/Cluster, capacity drills,
+alerting, canary rollout and master/replica failover are part of P4 and have not
+been exercised on this checkout.
+
+Local drills exist but are not target-hardware acceptance:
+
+- `npm run sessions:load -w @genoffice/parse-server -- --sessions 500 --strict`
+  starts a real server, warms one shared artifact, opens 500 v2 reading sessions
+  against it and reports create/status latency plus per-session RSS growth.
+  File-mode run: 500/500 ready, 1 build, status p95 0.5 ms, +103 MiB / ~211 KiB
+  per session. `--mysql --catalog` (isolated DB) run: 500/500 ready, 1 build,
+  create p95 70 ms, status p95 0.6 ms, +31.6 MiB / ~65 KiB per session.
+  `--instances 2` (two servers sharing one dataDir + MySQL catalog) run:
+  500/500 ready, 251/250 sessions per instance, 1 shared build, create p95
+  75 ms, status p95 0.3 ms, +38.7 MiB / ~79 KiB per session. Local synthetic
+  baselines, not deployment claims.
+- `npm run cache:slo -w @genoffice/parse-server` (or
+  `PARSE_TEST_REDIS_SOCKET=… node --import tsx scripts/cache-slo-drill.mts --strict`)
+  seeds a committed preview through the observer path, drives concurrent reads
+  against real Redis and reports hit rate, p95 bucket, average latency and error
+  rate; `--strict` exits non-zero when the §5.1 SLO is missed. A loopback run of
+  800 requests measured hit rate 1.0 / p95 bucket 1 ms / 0 errors (not a
+  deployment claim).
+- Fault tests cover slow-but-alive Redis (reply delay → timeout + breaker
+  fail-fast), bulk simultaneous TTL expiry, hot-key read storms, cache-down
+  degradation without 5xx, and `FLUSHALL`/delete-as-miss behaviour. Cross-node *session* state (the durable waiter journal) is still
+instance-local, so a reader instance must know the session to attach.
+
+## Bearer token rotation
+
+Rotate the API bearer token without a hard cut-over:
+
+1. Deploy with `PARSE_SERVER_TOKEN=<new>` and `PARSE_SERVER_PREVIOUS_TOKEN=<old>`.
+2. Roll clients/proxies to the new token; old-token requests (including signed
+   content-url refreshes and font fetches) keep working.
+3. After the overlap window, redeploy without `PARSE_SERVER_PREVIOUS_TOKEN`.
+
+Media signatures are always minted with the current token; the previous token is
+only an auth overlap, never a second signing secret. `previousToken` without
+`token`, or equal to it, is rejected at startup.
+
+## Build fingerprint injection
+
+Source deployments must pin the artifact parser fingerprint in the build, not let
+each process hash sources at startup. The build step is:
+
+```sh
+export PARSE_SERVER_BUILD_FINGERPRINT=$(
+  npm run -s fingerprint -w @genoffice/parse-server -- --version "$PARSER_VERSION"
+)
+```
+
+`scripts/build-fingerprint.mts` hashes the parser packages and `pnpm-lock.yaml`;
+`--out build/parse-fingerprint.json` records the version/hash and `--check`
+fails the build (or CI) when the recorded value no longer matches the sources.
+The runtime only reads the injected value (`PARSE_SERVER_BUILD_FINGERPRINT`).
+
+## Deployment switches and v2 contract extras
+
+`bin.ts` parses deployment switches strictly and aborts startup on an unknown
+value: `PARSE_SERVER_ARTIFACT_BACKEND=local|catalog`,
+`PARSE_SERVER_STORAGE_ADMISSION=instance|shared`,
+`PARSE_SERVER_PREVIOUS_TOKEN` (accept the old bearer token during an explicit
+rotation window; new requests should use `PARSE_SERVER_TOKEN`),
+`PARSE_SERVER_CANONICAL_ARTIFACT_EXPORT=1` (staged: materialize
+`document.json`/`units/*.json`/`fonts/*.sfnt` sidecars next to each packed
+generation; bytes go through the storage reservation and are skipped on
+`storage_full`; packed `units.bin` remains the runtime truth), and
+`PARSE_SERVER_SHUTDOWN_TIMEOUT_MS` (hard cap per shutdown phase, default 30 s;
+a stuck phase logs `shutdown_phase_timeout` and shutdown continues),
+`PARSE_SERVER_DOCX_AUTO_REMOTE_BYTES` / `PARSE_SERVER_PPTX_AUTO_REMOTE_BYTES` /
+`PARSE_SERVER_DOCX_FULL_RENDER_BYTES` (client routing thresholds advertised via
+capabilities; defaults 32/64/64 MiB),
+`PARSE_SERVER_ASYNC_SESSIONS_V2=1|0` (process kill switch), and
+`PARSE_SERVER_V2_ROLLOUT_PERCENT=0..100` (deterministic canary: files whose
+`parseInt(fileId[0..4],16) % 100` is below the percentage use v2; the rest get
+404 and fall back to v1), `PARSE_SERVER_V2_ROLLOUT_HEADER` (optional header such
+as `x-tenant-id`; when present, its sha256 bucket replaces the file bucket so a
+tenant/user is rolled out consistently), `PARSE_SERVER_V2_ROLLOUT_RAMP_PER_HOUR`
+(time-based auto ramp: effective percentage = min(target, hours_of_uptime × ramp);
+default 0 keeps the target fixed), `PARSE_SERVER_V2_AUTO_PAUSE_ERROR_RATE`
+(0–100 server-error percentage over the last 60 s / ≥20 v2 creates that pauses
+the v2 route for 5 min with 404/v1 fallback; 0 disables), and the restore gate
+`PARSE_SERVER_RESTORE_MANIFEST=<manifest.json>` with
+`PARSE_SERVER_RESTORE_DEEP`, `PARSE_SERVER_RESTORE_READ_ONLY` and
+`PARSE_SERVER_RESTORE_INVALIDATE`. A restore toggle without a manifest path is a
+startup error, read-only wins over invalidate, and a malformed manifest aborts
+before any server resource is created. `local` stays the code default when the
+backend variable is absent; `catalog` makes the MySQL catalog/generation/lease
+paths the default for that process and requires MySQL. A subprocess test
+(`tests/deployment-e2e.test.ts`) starts `bin.ts` with only those environment
+variables, parses once, restarts and proves the artifact is reused without a
+source parse, then checks SIGTERM exits cleanly and the restore-gate/missing-MySQL
+startup failures.
+
+`parse_sessions` stores only the lightweight reading record:
+`id`, `file_id`, `width`, `parser_version`, `format`, `artifact_key`,
+`expires_at`, `created_at`, `last_used`. `artifact_key`/`expires_at`/`format`
+are added idempotently on startup (including on tables created by an older
+release), the legacy `base_url`/`model`/`fonts` columns are relaxed to NULL and
+are no longer written; rows written by an older release are still read as a
+fallback. GET/heartbeat touches refresh `expires_at` and the v2 ready body
+exposes it. v1 and v2 responses still return `model`/`fonts`, but by lazily
+reading the published artifact document (no parser worker; only a missing or
+damaged artifact falls back to a reopen/rebuild), so a session truly references
+its shared artifact. File-index mode stores the same fields in `sessions.json`.
+Rollback note: a previous release reading a new row sees `model = NULL` and
+cannot restore that session, although its artifact and source remain and can be
+rebuilt; the reading position/layout preferences are still client-side.
+
+Staged rollback: `PARSE_SERVER_ASYNC_SESSIONS_V2=0` disables the v2 async
+session routes (they answer 404, capabilities report `features.asyncSessions:
+false`) while the whole v1 synchronous contract stays functional, so clients
+fall back exactly as they do for older servers. Use it as the first rollback
+step (v2 async → v1, then optionally `artifactBackend=catalog → local`, then
+cache `mode=redis → memory`). This is a process-level switch; it does not delete
+sessions, artifacts or files.
+
+`POST /v2/sessions` optionally accepts bounded `layoutPrefs`
+(`zoom` 0.25–4, `page`, `anchor {unitId, blockIndex?, offsetPx?}`, ≤2 KiB,
+unknown keys rejected). The preference is carried through the durable waiter and
+persisted in `parse_sessions.layout_prefs`; `GET /v2/sessions/:id` echoes it
+while pending and after ready, and it survives a restart. It is a per-session
+reading hint only — it never enters the shared model/artifact cache, and v1
+bodies are unchanged.
+
+Cross-instance ready attach: any instance that shares the documented deployment
+precondition (one `dataDir` + one catalog) lazily loads a durable ready session
+created by another instance on `GET /v2/sessions/:id`, its units and heartbeat.
+Attaching opens the ready generation read-only through the catalog and never
+rebuilds the model or takes over a live builder's leases; `DELETE` stays owned
+by the creating instance. Crash takeover: if a remote **pending** waiter still
+exists and its shared build lease is gone (same parser version/fingerprint), the
+next status poll may resume the build here; SQL claim fencing still guarantees a
+single winner.
+
+Last-waiter cancellation: every instance serving a pending session registers a
+durable reader row (`parse_pending_readers`, 120 s TTL renewed by GET/heartbeat).
+`DELETE` removes only that instance's reader; the shared waiter and its build stay
+alive while any other reader remains. When the last reader leaves, the pending row
+is dropped and a build that finishes later discards its bytes instead of
+publishing them (a running build is not aborted mid-flight). Crashed readers
+expire by TTL. Object storage / instances without a shared filesystem are not
+supported yet.
+
+`POST /v2/sessions/:id/heartbeat` also accepts an optional bounded
+`layoutPrefs` body to update the reading position incrementally (ready sessions
+persist it in `parse_sessions.layout_prefs`, locally-owned waiters in their
+journal; remote waiters stay read-only).
+
+`POST /v1/files/:fileId/part-url` (bearer auth) re-signs one part path and
+returns `{url, expiresAt}`; viewers call it after a 403/expired signature or a
+deployment-origin change instead of reopening the reading session. Traversal and
+control characters are rejected.
+
+v2 ready views/document expose an opaque `layoutKey` (plan §4.1):
+sha256(artifactKey + rendererVersion + width + fontSetHash + measurementProfileHash).
+Layouts are immutable per key, so clients can cache a laid-out deck across
+sessions and re-lay out only when the width/font set/artifact changes.
+
+v2 DTO envelopes carry an independent version: `/v2/capabilities.dtoVersion`,
+`dtoVersion` on v2 session/document/status envelopes, and the
+`X-Genoffice-Dto-Version` header on every `/v2/` response. v1 envelopes are
+unchanged.
+
+v2 contract completions: `POST /v2/sessions/:id/heartbeat` renews only the
+lightweight reading session (200 with `state` and `pollAfterMs`; 404 for an
+unknown id) and never touches a build lease or ready pointer. `GET
+/v2/sessions/:id` on a ready session adds `artifactKey`, terminal `progress`
+(`unitsProduced`/`unitCount`/`percent`), `pollAfterMs: 0` and
+`complete: true`; the v1 body is unchanged. `GET
+/v2/sessions/:id/bundle-manifest` aliases the existing `/bundle` manifest (no
+sub-resources on the alias).
+
+Startup reconcile runs before the listener: canonical `g-N` directories older
+than one hour are removed when their artifact key has **no** `parse_artifacts` row
+(a publish that renamed but crashed before the SQL completion). Any catalog row,
+including a building lease, protects its generations; an unreadable catalog fails
+closed and only logs a sanitized code. The pass is bounded (500 keys per startup)
+and its result is exposed as `/v1/health.maintenance.startupReconcile`.
+
+Artifact dependencies are recorded in `parse_artifact_dependencies`: every
+ready artifact gets a `file` edge to its source inside the `complete()`
+transaction, and a derived offline bundle additionally records an `artifact`
+edge to the model generation it was hashed from (`ArtifactSession`).
+`fileInUse` consults `hasDependencyOnFile` as an extra conservative source-GC
+guard, and rows cascade when the directory row is archived.
+
+Saved history now carries the plan §5 columns: `library_scope` (instance),
+`retention` (`saved`) and `deleted_at`; `parse_files` gains
+`storage_state`/`verified_at`. Removing a history entry is a soft delete: the
+row keeps its identity for audit/backup reconciliation but clears its `file_id`
+reference, so it stops protecting the source from GC (temporary retention applies
+again) and disappears from listings. Tombstones are purged after 30 days.
+Re-saving the same file creates a fresh active row; file-index mode mirrors the
+same semantics in `library.json`.
+
+`POST /v2/sessions` accepts an `Idempotency-Key` header (8–128 chars,
+`[A-Za-z0-9._:-]`): a replay returns the same `sessionId` and its current
+state (201 ready or 202 building) instead of opening a second durable waiter.
+A bounded in-process cache (`idempotencyTtlMs`, default 10 min;
+`idempotencyMaxEntries`, default 256) serves fast replays. With MySQL configured
+the key is also written to the durable `parse_idempotency` ledger: another
+instance or a restarted process replays the same `sessionId`; concurrent retries
+merge via a pending claim (the loser waits for and replays the winner's body).
+File-index mode keeps the process-local cache only. Uploads are naturally
+idempotent by content addressing and `POST /v2/library` by its unique file
+reference.
+
+## Observability metrics (plan §11)
+
+`GET /metrics` now also exposes the metrics the plan asks for beyond requests and
+children RSS: `genoffice_parse_unit_read_latency_seconds` (histogram around one
+unit/model read; cache and artifact hits included, layout excluded),
+`genoffice_parse_job_queue_age_seconds` (oldest build waiting for CPU/memory),
+`genoffice_parse_gc_deleted_bytes_total` (source TTL/eviction bytes + legacy flat
+archives + physical bytes reported by the background sweeper, including
+generation, staging and pressure collections), `genoffice_parse_bundle_failure_total`,
+`genoffice_parse_signature_refresh_total` (DOCX resource descriptions re-signed at
+response time), `genoffice_parse_artifact_miss_total` /
+`genoffice_parse_artifact_corrupt_total` (artifact-store lookups that found
+nothing / corruption reports), and the storage split
+`genoffice_parse_storage_source_bytes` / `_artifact_bytes` / `_staging_bytes`
+alongside the existing total. `/v1/health.artifacts` carries the same
+`misses`/`corruptions` counters, and async-session failure logs include
+`sessionId` + `jobId`. The legacy `genoffice_parse_storage_bytes` remains the
+single content-store total for existing dashboards.
 
 ## Capacity pressure: withdrawing rebuildable ready generations
 
@@ -414,5 +719,6 @@ offline bundle requests stay closed while building, and `state` never becomes
 Configure with `previewMaxUnits` / `previewTtlMs` (or
 `PARSE_SERVER_PREVIEW_MAX_UNITS` / `PARSE_SERVER_PREVIEW_TTL_MS`);
 `/v1/health.maintenance.incrementalPreview` reports retained snapshots. The
-preview lives only in the build owner's process: a multi-instance fleet still
-needs cross-node task-state mapping before every waiter can see the first frame.
+preview lives only in the build owner's process by default; enable the optional
+hot cache below to share it across instances. Shared session journaling and
+cross-node task-state mapping remain separate gaps.

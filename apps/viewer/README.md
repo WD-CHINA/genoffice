@@ -1,6 +1,6 @@
 # GenOffice Web Viewer
 
-独立的静态预览页面，在浏览器里完成 `.pptx`、`.pdf`、`.docx` 只读展示和 PPT 放映。复杂文档的完整视觉还原仍在验收中。
+独立的静态预览页面，支持 `.pptx`、`.pdf`、`.docx` 只读展示和 PPT 放映；可使用浏览器本地解析，或连接独立 parse-server 读取远程模型。当前实际业务样本、Docker 容量 / 恢复结果与未通过项见 [2026-11-11 验收报告](../../docs/parse-docker-validation.zh-CN.md)。复杂文档的完整视觉还原仍在验收中。
 
 改动范围仅为 `apps/viewer` 和新增的 `packages/viewer-renderers`、`packages/viewer-services`。现有 app、package、根配置及根锁文件不修改。
 
@@ -64,7 +64,13 @@ console.log(link.href)
 
 ## URL 导入
 
-在顶部粘贴文件链接，点击“导入 URL”。浏览器直接 fetch 该地址，再进入 PPTX、DOCX、PDF 预览；PPT 可继续放映。文件服务器需要允许当前页面跨域访问。支持带签名参数的链接和 UTF-8 下载文件名；没有扩展名时通过文件内容识别格式。普通网页、需要浏览器登录的分享页不作为文档导入。本地文件不超过 1 GiB。
+在顶部粘贴文件链接，点击“导入 URL”。浏览器直接 fetch 该地址，再进入 PPTX、DOCX、PDF 预览；PPT 可继续放映。文件服务器需要允许当前页面跨域访问。支持带签名参数的链接和 UTF-8 下载文件名；没有扩展名时通过文件内容识别格式。普通网页、需要浏览器登录的分享页不作为文档导入。本地文件与 URL 导入均不超过 1 GiB；下载过程按块计数，超限会在读完前中止。
+
+像素级等价演练：`npm run test:pixel -w @genoffice/viewer` 在真实 Chrome 中渲染一张含主题色/组合形状/动画/图片的 slide，重启 parse server 后从同一产物重开并比较 canvas `toDataURL` 哈希；本机通过（before/after 同为 `8b5a01be…`），截图输出 `/tmp/genoffice-slide-pixel-{before,after}.png`。`--width 960|1280` 可跑视口矩阵：960 哈希 `39d89bf7…`、1280 哈希 `cc274e9a…`，四次采样均 equal。`--dpr` 可加 DPR 维度：960@2 与 1280@1.5 的 canvas backing 均为 1920×1080，哈希同为 `3e3ba62d…`，重启前后 equal。`--device` 可跑 Playwright 设备档：Pixel 5（393@2.75）哈希 `75b9e886…`、iPad Mini（768@2）哈希 `3902a9fe…`，均 equal。`--fail-first-part` 会先让首个 part 请求返回 403：viewer 通过 `POST /v1/files/:id/part-url` 刷新签名后重试，1200 宽哈希仍为 `8b5a01be…`，与无故障基线一致。
+
+PPTX 重新打开同一 `fileId` 会从上次停下的幻灯片继续（localStorage，30 天有效；不可用存储时静默跳过）。创建 v2 会话时会把保存的页码作为有界 `layoutPrefs` 回传服务端（服务端已持久化并在 pending/ready 回显）；后续翻页经 heartbeat 增量同步（750 ms 节流，失败静默）。DOCX 以源锚点（unitId/blockIndex/offset）保存在同一存储并在首次布局时恢复，创建会话时作为 `layoutPrefs.anchor` 上报；若锚点不在首个窗口，会按 cursor 继续加载（最多 20 个 chunk，超出则放弃）直到该 unit 出现再跳转；滚动停止后也经 heartbeat 增量同步锚点（750 ms 节流）。
+
+DOCX 服务端模式默认使用远程流式模型（分块/首帧/签名刷新）。旧的“整文件下载 + 本地完整排版”只是保真度回退，必须在链接显式加 `docxLocalFallback=1` 且文件不超过 64 MiB 才会启用；阈值与路由集中在 `format-policy.ts`，并按服务端 `/v2/capabilities` 声明的格式与 `thresholds` 下发值工作（缺省 32/64/64 MiB）；无法本地预览的大 DOCX 会在读取文件前提示。
 
 ## 独立发布
 

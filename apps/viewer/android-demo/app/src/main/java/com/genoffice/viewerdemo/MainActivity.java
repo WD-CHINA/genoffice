@@ -97,7 +97,7 @@ public class MainActivity extends Activity {
         root.addView(title, matchWrap());
 
         TextView hint = new TextView(this);
-        hint.setText("在线预览使用服务端兼容媒体；下载离线包会准备兼容音视频、校验完整性，之后可断网播放。");
+        hint.setText("支持 PPTX 和 Word 在线预览。下载离线包会校验正文、图片与字体，并为 PPT 准备兼容音视频，之后可断网阅读。");
         hint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         hint.setPadding(0, dp(8), 0, dp(16));
         root.addView(hint);
@@ -199,8 +199,10 @@ public class MainActivity extends Activity {
                     + " 的离线包；缓存共 " + size + "。");
             return;
         }
-        StringBuilder text = new StringBuilder("已有离线包：")
-                .append(store.unitCount()).append(" 页，可直接离线打开。");
+        boolean word = false;
+        try { word = "docx".equals(store.manifest().optString("format")); } catch (Exception ignored) { }
+        StringBuilder text = word ? new StringBuilder("已有 Word 离线包，可直接离线打开。")
+                : new StringBuilder("已有离线包：").append(store.unitCount()).append(" 页，可直接离线打开。");
         if (!store.claimsFullOffline())
             text.append(" 部分离线：").append(store.externalResourceCount())
                     .append(" 个外部资源需联网，未保证完整离线。");
@@ -386,7 +388,9 @@ public class MainActivity extends Activity {
         // Load the preview document directly: the host shell (header + iframe) would add a
         // second document load and a blank frame before the deck appears.
         String base = "http://127.0.0.1:" + port;
-        String url = base + "/viewer/preview.html?src=bundle&format=pptx&name="
+        String format = "pptx";
+        try { format = store.manifest().getString("format"); } catch (Exception ignored) { }
+        String url = base + "/viewer/preview.html?src=bundle&format=" + Uri.encode(format) + "&name="
                 + Uri.encode(fileId)
                 + "&server=" + Uri.encode(base)
                 + "&fileId=" + Uri.encode(fileId)
@@ -457,7 +461,7 @@ public class MainActivity extends Activity {
                 return;
             }
             view.evaluateJavascript(
-                    "!!document.querySelector('.viewer-slide-stage canvas')"
+                    "!!document.querySelector('.viewer-slide-stage canvas,.viewer-doc-remote-page')"
                             + " || !!document.querySelector('[role=alert],iframe,input[type=file]')",
                     value -> {
                         if ("true".equals(value)) {

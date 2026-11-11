@@ -2,6 +2,8 @@
 
 日期：2026-11-11。对应上轮 [Docker 验收记录](parse-docker-validation.zh-CN.md) 的三个未通过项。
 
+后续脚注正文、长段落 / 表格续页及 Android Word 离线阅读见 [Word 阅读修复验收](word-reading-fixes-validation.zh-CN.md)。本文测试数字保留为当轮历史结果。
+
 ## 修复内容
 
 | 问题 | 根因 | 当前行为 |

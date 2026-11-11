@@ -1,15 +1,15 @@
 # Office Viewer Android demo
 
-把 `apps/viewer` 的 Web Viewer 嵌进 WebView，支持在线预览和下载后断网播放 PPTX。
+把 `apps/viewer` 的 Web Viewer 嵌进 WebView，支持 PPTX / DOCX 在线预览和下载后断网阅读。
 
 ## 工作方式
 
 1. **下载**：设置页填写解析服务地址和文件 ID（sha256）。创建 v2 异步会话并等待 ready，
    仅 404/405 回退 v1。优先读取 `/v2/sessions/<id>/bundle` 权威清单，按声明的大小和
-   SHA-256 下载模型、嵌入字体及全部 `ppt/media` 资源（包括未引用媒体），逐文件验证后
+   SHA-256 下载模型、嵌入字体及全部文档媒体（PPTX 的 `ppt/media`，DOCX 的 `word/media` / `word/embeddings`），逐文件验证后
    原子发布到按 artifactKey 区分的版本目录（见「版本目录与缓存配额」）。现代包保留模型内部路径，字体按 `resourcePath`
-   定位；仅清单接口 404/405 时使用旧版资源发现及 URL 改写流程。
-2. **离线排版**：viewer 走 `pptx-model-session` + `pptx-model-worker`：排版引擎在 Worker 里
+   定位；PPTX 仅清单接口 404/405 时使用旧版资源发现及 URL 改写流程，DOCX 要求新版权威清单。
+2. **离线排版**：PPTX 走 `pptx-model-session` + `pptx-model-worker`：排版引擎在 Worker 里
    把解析模型排成渲染树，字宽由浏览器 canvas 实测回填。宽度回传只重建**依赖这些 key 的页**；
    离屏页（保留当前页 ±1 和可见缩略图）连同模型一起淘汰，回访时按需重新拉取。
    Web 端同样默认走这条路径，`?layout=server` 可回退到服务端渲染树。
@@ -45,6 +45,23 @@
 APK 开启硬件加速、视频全屏支持，并修复重复打开和返回页面时的 WebView 生命周期。
 前端为 Chromium 114 补充 `AbortSignal.any` 兼容实现。该版本实机报告见
 [Android 在线与离线媒体验收](../../../docs/android-media-validation.zh-CN.md)。
+
+## Word 离线包
+
+DOCX 使用同一套权威清单、哈希校验、断点续传、版本目录和失败保留旧包逻辑。
+服务端导出 `document.json`（含分节、页眉页脚、脚注 / 尾注上下文）、`styles.json`、
+`units/<n>.json`、嵌入字体，以及全部 `word/media` / `word/embeddings` 原始资源。
+模型保存稳定内部路径；回放时本地服务移除部署域名和签名参数，图片及字体均从本机读取。
+外部图片引用仍会标记部分离线；外部超链接不属于保证可离线访问的内容。
+
+旧服务没有 DOCX 权威清单时明确要求升级，不回退到缺少样式、注释或资源清单的下载方式。
+DOCX 的 unitCount 是正文分块数，应用不把它显示为排版页数。前端仍在设备上测量并虚拟分页，
+支持脚注正文、尾注、长段落和表格续页；未读完全部分块时，NUMPAGES 显示待计算标记。
+
+真机复现：`ANDROID_SERIAL=... ANDROID_WORD_INPUTS=/tmp/word-inputs.json PARSE_SERVER_TOKEN=...`
+运行 `node apps/viewer/scripts/android-docx-smoke.mjs`。输入为 `[{"name":"business","fileId":"64位sha256"}]`。
+脚本验证在线和下载后断开服务端口映射时的本地重放，保留应用数据并恢复原 USB reverse 映射。
+详细结果见 [Word 阅读修复验收](../../../docs/word-reading-fixes-validation.zh-CN.md)。
 
 ## 构建
 

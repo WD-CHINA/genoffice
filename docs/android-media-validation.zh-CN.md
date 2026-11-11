@@ -4,6 +4,8 @@
 实际 WebView 内核为 Chromium 114.0.5735.196。APK 为 debug 构建，覆盖安装时保留应用数据。
 本文不代表外部线上部署或其他型号设备验收。
 
+后续 Word 在线与下载后离线阅读见 [Word 阅读修复验收](word-reading-fixes-validation.zh-CN.md)。
+
 ## 接入方式
 
 - 在线入口使用部署的 Viewer 和解析服务，复用自动媒体准备、进度、错误和重试逻辑。

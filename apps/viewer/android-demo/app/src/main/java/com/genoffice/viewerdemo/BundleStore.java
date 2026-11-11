@@ -189,7 +189,7 @@ final class BundleStore {
         if (marker && (!new File(dir, "complete").isFile() || new File(dir, "complete").length() != 64 || !readText(new File(dir, "complete")).equals(digest(manifestFile()))))
             throw new IOException("offline manifest seal mismatch");
         JSONObject manifest = manifest();
-        if (manifest.optInt("bundleSchemaVersion") != 1 || !fileId.equals(manifest.optString("fileId")) || !"pptx".equals(manifest.optString("format")))
+        if (manifest.optInt("bundleSchemaVersion") != 1 || !fileId.equals(manifest.optString("fileId")) || !("pptx".equals(manifest.optString("format")) || "docx".equals(manifest.optString("format"))))
             throw new IOException("unsupported offline bundle version or identity");
         int count = manifest.getInt("unitCount");
         if (count <= 0 || count > 100000) throw new IOException("invalid offline slide count");
@@ -214,8 +214,10 @@ final class BundleStore {
             if (size < 0 || !hash.matches("[a-f0-9]{64}") || !file.isFile() || file.length() != size) throw new IOException("offline resource missing or truncated: " + path);
             if (hashes && !hash.equals(digest(file))) throw new IOException("offline checksum mismatch: " + path);
         }
-        if (!paths.contains("layout.json")) throw new IOException("offline layout missing");
-        for (int index = 0; index < count; index++) if (!paths.contains("layout/" + index + ".json")) throw new IOException("offline slide missing");
+        boolean docx = "docx".equals(manifest.optString("format"));
+        if (docx && (!paths.contains("document.json") || !paths.contains("styles.json"))) throw new IOException("offline DOCX context missing");
+        if (!docx && !paths.contains("layout.json")) throw new IOException("offline layout missing");
+        for (int index = 0; index < count; index++) if (!paths.contains((docx ? "units/" : "layout/") + index + ".json")) throw new IOException("offline slide missing");
         JSONArray fonts = manifest.optJSONArray("fonts");
         if (fonts != null) for (int index = 0; index < fonts.length(); index++)
             if (!paths.contains(fonts.getJSONObject(index).optString("resourcePath", "fonts/" + safe(fonts.getJSONObject(index).getString("id")) + ".sfnt"))) throw new IOException("offline font missing");

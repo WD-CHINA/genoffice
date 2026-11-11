@@ -133,10 +133,11 @@ final class BundleDownloader {
                 catch (Exception ignored) { /* the active download reports connection failures */ }
             }, 60, 60, TimeUnit.SECONDS);
             JSONObject model = created.optJSONObject("model");
-            if (model != null && !"pptx".equals(model.optString("format", "pptx")))
-                throw new IOException("离线包目前仅支持 PPTX");
+            String format = model == null ? "pptx" : model.optString("format", "pptx");
+            if (!"pptx".equals(format) && !"docx".equals(format)) throw new IOException("离线包支持 PPTX 和 DOCX");
             // The authoritative manifest identifies the generation before any staging is chosen.
             JSONObject declared = fetchDeclaredManifest();
+            if (declared != null && !format.equals(declared.optString("format"))) throw new IOException("离线清单文档类型与会话不符");
             if (cache != null && declared != null) {
                 destination = cache.versionStore(fileId, declared.getString("artifactKey"));
                 staging = cache.stagingStore(fileId);
@@ -163,6 +164,7 @@ final class BundleDownloader {
             JSONObject manifest;
             int count;
             if (declared == null) {
+                if ("docx".equals(format)) throw new IOException("DOCX 离线需要支持权威清单的新版解析服务");
                 JSONArray fonts = created.optJSONArray("fonts");
                 String sessionPath = server + "/v1/sessions/" + encode(sessionId);
                 JSONObject layout = requestJson(sessionPath + "/layout", "GET", null);
@@ -204,7 +206,8 @@ final class BundleDownloader {
                 manifest.put("parts", partsDownloaded);
                 JSONArray external = manifest.optJSONArray("externalResources");
                 manifest.put("offlineScope", external != null && external.length() > 0 ? "partial" : "complete");
-                prepareOfflineMedia(manifest, count);
+                if ("pptx".equals(format)) prepareOfflineMedia(manifest, count);
+                else manifest.put("mediaPreparation", "not-needed");
                 if (cache != null && manifest.has("sourceArtifactKey")) {
                     destination = cache.versionStore(fileId, manifest.getString("artifactKey"));
                     destination.recoverPrevious();
@@ -265,12 +268,13 @@ final class BundleDownloader {
             manifest = new JSONObject(new String(readAll(connection.getInputStream(), 16 * 1024 * 1024), StandardCharsets.UTF_8));
         } finally { release(connection); }
         checkCancelled();
+        boolean docx = "docx".equals(manifest.optString("format"));
         if (manifest.optInt("bundleSchemaVersion") != 1 || manifest.optInt("modelSchemaVersion") != 2
-                || !fileId.equals(manifest.optString("fileId")) || !"pptx".equals(manifest.optString("format"))
+                || !fileId.equals(manifest.optString("fileId")) || (!docx && !"pptx".equals(manifest.optString("format")))
                 || !manifest.optString("artifactKey").matches("[a-f0-9]{64}")
                 || !manifest.optString("modelArtifactKey").matches("[a-f0-9]{64}")
                 || manifest.optString("parserVersion").isEmpty() || manifest.optString("parserFingerprint").isEmpty()
-                || !"ppt-media-v1".equals(manifest.optString("inventory"))) throw new IOException("不支持的离线清单版本或资源身份");
+                || !(docx ? "docx-media-v1" : "ppt-media-v1").equals(manifest.optString("inventory"))) throw new IOException("不支持的离线清单版本或资源身份");
         int count = manifest.getInt("unitCount");
         if (count <= 0 || count > 100000) throw new IOException("无效的离线页数");
         JSONArray external = manifest.getJSONArray("externalResources");
@@ -288,8 +292,11 @@ final class BundleDownloader {
             checkCancelled();
             JSONObject resource = resources.getJSONObject(index);
             String path = resource.getString("path");
-            if (!paths.add(path) || !(path.equals("layout.json") || path.matches("layout/(0|[1-9][0-9]*)\\.json")
-                    || path.startsWith("parts/ppt/media/") || path.matches("fonts/[^/]+\\.sfnt")))
+            boolean allowed = path.matches("fonts/[^/]+\\.sfnt") || (docx
+                ? path.equals("document.json") || path.equals("styles.json") || path.matches("units/(0|[1-9][0-9]*)\\.json")
+                    || path.startsWith("parts/word/media/") || path.startsWith("parts/word/embeddings/")
+                : path.equals("layout.json") || path.matches("layout/(0|[1-9][0-9]*)\\.json") || path.startsWith("parts/ppt/media/"));
+            if (!paths.add(path) || !allowed)
                 throw new IOException("离线资源路径无效或重复");
             long size = resource.getLong("size");
             if (size < 0 || size > 9007199254740991L || resource.getDouble("size") != size
@@ -297,8 +304,8 @@ final class BundleDownloader {
                 throw new IOException("离线资源大小或哈希无效");
             total += size;
         }
-        if (total != manifest.getLong("totalBytes") || manifest.getDouble("totalBytes") != total || !paths.contains("layout.json")) throw new IOException("离线清单总量不匹配");
-        for (int index = 0; index < count; index++) if (!paths.contains("layout/" + index + ".json")) throw new IOException("离线清单缺少页面");
+        if (total != manifest.getLong("totalBytes") || manifest.getDouble("totalBytes") != total || !paths.contains(docx ? "document.json" : "layout.json") || (docx && !paths.contains("styles.json"))) throw new IOException("离线清单总量不匹配");
+        for (int index = 0; index < count; index++) if (!paths.contains((docx ? "units/" : "layout/") + index + ".json")) throw new IOException("离线清单缺少页面");
         JSONArray fonts = manifest.getJSONArray("fonts");
         for (int index = 0; index < fonts.length(); index++) if (!paths.contains(fonts.getJSONObject(index).getString("resourcePath")))
             throw new IOException("离线清单缺少字体");

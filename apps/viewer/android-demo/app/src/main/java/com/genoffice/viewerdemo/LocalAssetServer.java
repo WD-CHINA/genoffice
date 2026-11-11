@@ -85,6 +85,7 @@ final class LocalAssetServer extends Thread {
         String path;
         final Map<String, String> headers = new HashMap<>();
         byte[] body;
+        String query = "";
     }
 
     private void handle(Socket client) {
@@ -126,7 +127,7 @@ final class LocalAssetServer extends Thread {
         request.method = start[0];
         String target = start[1];
         int query = target.indexOf('?');
-        if (query >= 0) target = target.substring(0, query);
+        if (query >= 0) { request.query = target.substring(query + 1); target = target.substring(0, query); }
         request.path = target;
         for (int i = 1; i < lines.length; i++) {
             int colon = lines[i].indexOf(':');
@@ -193,6 +194,12 @@ final class LocalAssetServer extends Thread {
                 sendJson(out, 404, "{\"code\":\"bundle_missing\",\"message\":\"离线包不存在\"}");
                 return;
             }
+            if ("docx".equals(store.manifest().optString("format"))) {
+                JSONObject document = new JSONObject(new String(modelBytes(store.resourceFile("document.json")), StandardCharsets.UTF_8));
+                sendJson(out, 200, new JSONObject().put("sessionId", "local").put("model", document.getJSONObject("model"))
+                    .put("fonts", document.optJSONArray("fonts") == null ? new JSONArray() : document.getJSONArray("fonts")).toString());
+                return;
+            }
             JSONObject model = new JSONObject();
             model.put("format", "pptx");
             model.put("parserVersion", "android-demo");
@@ -227,6 +234,29 @@ final class LocalAssetServer extends Thread {
         }
         if (raw.length == 4 && "DELETE".equals(method)) {
             sendEmpty(out, 204, "No Content");
+            return;
+        }
+        if (raw.length == 5 && "styles".equals(raw[4]) && "GET".equals(method)) {
+            File styles = store.resourceFile("styles.json");
+            if (!styles.isFile()) { sendText(out, 404, "Not Found"); return; }
+            sendBytes(out, 200, "application/json; charset=utf-8", modelBytes(styles), false, null); return;
+        }
+        if (raw.length == 5 && "units".equals(raw[4]) && "GET".equals(method)) {
+            int start = 0, limit = 8;
+            try {
+                android.net.Uri query = android.net.Uri.parse("http://localhost/?" + request.query);
+                String cursor = query.getQueryParameter("cursor"), requested = query.getQueryParameter("limit");
+                if (cursor != null) start = Integer.parseInt(cursor);
+                if (requested != null) limit = Integer.parseInt(requested);
+            } catch (Exception invalid) { sendText(out, 400, "Invalid cursor"); return; }
+            if (start < 0 || start > store.unitCount() || limit <= 0 || limit > 100) { sendText(out, 400, "Invalid cursor"); return; }
+            JSONArray items = new JSONArray(); int end = Math.min(store.unitCount(), start + limit);
+            try {
+                for (int index = start; index < end; index++) items.put(new JSONObject().put("id", String.valueOf(index)));
+                JSONObject listing = new JSONObject().put("items", items);
+                if (end < store.unitCount()) listing.put("next", String.valueOf(end));
+                sendJson(out, 200, listing.toString());
+            } catch (Exception failure) { throw new IOException(failure); }
             return;
         }
         if (raw.length >= 6 && "units".equals(raw[4]) && "GET".equals(method)) {
@@ -345,8 +375,37 @@ final class LocalAssetServer extends Thread {
         try {
             JSONObject model = new JSONObject(new String(readFile(file), StandardCharsets.UTF_8));
             PreparedMedia.rewrite(model, store);
+            rewriteLocalParts(model);
             return model.toString().getBytes(StandardCharsets.UTF_8);
         } catch (Exception failure) { throw new IOException("invalid offline media mapping", failure); }
+    }
+
+    private void rewriteLocalParts(Object value) throws Exception {
+        String marker = "/v1/files/" + store.fileId() + "/parts/";
+        if (value instanceof JSONObject) {
+            JSONObject object = (JSONObject) value;
+            java.util.Iterator<String> keys = object.keys();
+            while (keys.hasNext()) {
+                String key = keys.next(); Object item = object.get(key);
+                if (item instanceof String) {
+                    try {
+                        java.net.URI uri = new java.net.URI((String) item);
+                        if (uri.getRawPath() != null && uri.getRawPath().startsWith(marker)) object.put(key, uri.getRawPath());
+                    } catch (java.net.URISyntaxException ignored) { }
+                } else rewriteLocalParts(item);
+            }
+        } else if (value instanceof JSONArray) {
+            JSONArray array = (JSONArray) value;
+            for (int index = 0; index < array.length(); index++) {
+                Object item = array.get(index);
+                if (item instanceof String) {
+                    try {
+                        java.net.URI uri = new java.net.URI((String) item);
+                        if (uri.getRawPath() != null && uri.getRawPath().startsWith(marker)) array.put(index, uri.getRawPath());
+                    } catch (java.net.URISyntaxException ignored) { }
+                } else rewriteLocalParts(item);
+            }
+        }
     }
 
     private void serveAsset(Request request, OutputStream out) throws IOException {

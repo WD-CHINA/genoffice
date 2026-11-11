@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
 import { ToolbarIcon } from './toolbar-icon'
 import { ViewerBar } from './viewer-bar'
 import {
@@ -12,6 +12,7 @@ import {
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/legacy/build/pdf.mjs'
 import worker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url'
 import type { PDFDocumentProxy } from 'pdfjs-dist'
+import { installReadableStreamAsyncIterator } from './readable-stream-compat'
 import { PdfPage, useVisibleSet } from '@genoffice/viewer-renderers/pdf/renderer/PdfPage'
 import { PdfThumb } from '@genoffice/viewer-renderers/pdf/renderer/PdfThumb'
 import { FormLayer } from '@genoffice/viewer-renderers/pdf/renderer/FormLayer'
@@ -46,6 +47,7 @@ import { pdfRectToCss, pdfToView } from '@genoffice/viewer-renderers/pdf/rendere
 import '@genoffice/viewer-renderers/pdf/renderer/styles.css'
 import '@genoffice/ui/dropdown.css'
 GlobalWorkerOptions.workerSrc = worker
+installReadableStreamAsyncIterator()
 const noop = () => {}
 const labels: Record<string, string> = {
   noteAnonymous: '匿名',
@@ -87,6 +89,20 @@ export function Pdf({ src }: { src: string }) {
     !!doc && sidebar === 'thumbs',
   )
   const renderState = useCallback(noop, [])
+  const scaleValue = useRef(scale)
+  scaleValue.current = scale
+  const fitAnchor = useRef<{ doc: PDFDocumentProxy; page: number; offset: number } | null>(null)
+  useLayoutEffect(() => {
+    const anchor = fitAnchor.current
+    fitAnchor.current = null
+    const element = scroll.current
+    const page = element?.querySelector<HTMLElement>(`[data-idx="${anchor?.page}"]`)
+    if (anchor && anchor.doc === doc && element && page)
+      element.scrollTop +=
+        page.getBoundingClientRect().top -
+        element.getBoundingClientRect().top +
+        anchor.offset * scale
+  }, [scale, doc])
   useEffect(() => {
     let stopped = false
     const task = getDocument({ url: src, ...DOC_OPTS })
@@ -205,21 +221,30 @@ export function Pdf({ src }: { src: string }) {
         odd = (geom.rot + rotation) % 180 !== 0,
         w = odd ? geom.ph : geom.pw,
         h = odd ? geom.pw : geom.ph
-      setScale(
-        Math.max(
-          MIN_SCALE,
-          Math.min(
-            MAX_SCALE,
-            fit === 'width' ? area.width / w : Math.min(area.width / w, area.height / h),
-          ),
+      const nextScale = Math.max(
+        MIN_SCALE,
+        Math.min(
+          MAX_SCALE,
+          fit === 'width' ? area.width / w : Math.min(area.width / w, area.height / h),
         ),
       )
+      if (Math.abs(nextScale - scaleValue.current) < 0.0001) return
+      const page = element.querySelector<HTMLElement>(`[data-idx="${current - 1}"]`)
+      if (doc && page)
+        fitAnchor.current = {
+          doc,
+          page: current - 1,
+          offset:
+            (element.getBoundingClientRect().top - page.getBoundingClientRect().top) /
+            scaleValue.current,
+        }
+      setScale(nextScale)
     }
     const observer = new ResizeObserver(update)
     observer.observe(element)
     update()
     return () => observer.disconnect()
-  }, [fit, geoms, current, rotation, sidebar])
+  }, [fit, geoms, current, rotation, sidebar, doc])
   async function search() {
     if (!doc) return
     try {
@@ -395,7 +420,12 @@ export function Pdf({ src }: { src: string }) {
             )}
           </aside>
         )}
-        <div ref={scroll} onScroll={track} className="viewer-pdf-scroll">
+        <div
+          ref={scroll}
+          onScroll={track}
+          className="viewer-pdf-scroll"
+          style={{ overflowAnchor: 'none' }}
+        >
           {doc &&
             geoms.map((geom, i) => {
               const rot = (geom.rot + rotation) % 360,

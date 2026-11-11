@@ -1,7 +1,8 @@
 /** Small-deck auto routing, visible preparation states and retry against the real server. */
 import assert from 'node:assert/strict'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
-import { resolve, join } from 'node:path'
+import { resolve, join, dirname } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { chromium } from 'playwright-core'
 import { createServer } from 'vite'
 import JSZip from 'jszip'
@@ -40,6 +41,22 @@ try {
   await warm.frameLocator('iframe').locator('canvas').first().waitFor({ timeout: 90_000 })
   await warm.waitForTimeout(2000)
   await warm.close()
+  if (business) {
+    // A repeated run must not hit the previous force-conversion result: append
+    // a legal MP4 free atom in a private PPTX variant, keeping the source intact.
+    const inventory = JSON.parse(await readFile(join(dirname(option('business-report')), 'transcode.json'), 'utf8'))
+    const original = inventory.documents.find((d: any) => d.name === business.name)
+    const variant = await JSZip.loadAsync(await readFile(original.source))
+    const part = 'ppt/media/media1.mp4'
+    const video = await variant.file(part)!.async('nodebuffer')
+    const free = Buffer.alloc(44); free.writeUInt32BE(free.length); free.write('free', 4); free.write(randomUUID(), 8)
+    variant.file(part, Buffer.concat([video, free]))
+    const uploaded = await fetch(base + '/v2/files', { method: 'POST',
+      body: await variant.generateAsync({ type: 'arraybuffer', compression: 'STORE' }),
+      headers: token ? { Authorization: `Bearer ${token}` } : {} })
+    assert.ok(uploaded.ok)
+    business.fileId = (await uploaded.json() as { fileId: string }).fileId
+  }
   for (const [name, path] of [['auto-small-wmv', option('input')], ['invalid-and-retry', invalid],
     ...(business ? [['force-conversion-progress', '']] : [])]) {
     const context = await browser.newContext({ viewport: { width: 1200, height: 900 } })

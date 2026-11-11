@@ -125,7 +125,8 @@ export class MediaService {
       return { dto }
     }
     return { dto: { ...dto, strategy: result.strategy, cacheHit: job.cacheHit,
-      mime: result.mime, bytes: result.bytes }, result }
+      mime: result.mime, bytes: result.bytes, sha256: result.sha256,
+      sourceSha256: result.sourceSha256, profile: job.profile }, result }
   }
   private async tick(): Promise<void> {
     if (this.ticking || this.closed) return

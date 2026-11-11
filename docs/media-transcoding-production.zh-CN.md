@@ -87,3 +87,10 @@ docker compose -f apps/parse-server/deploy/validation/compose.yml \
 回滚使用 `PARSE_SERVER_MEDIA_ENABLED=false` 并重启。停止领取新任务、能力标志关闭，但已存在缓存目录和数据库时保留只读播放服务，使已发出的兼容媒体 URL 在有效期内继续可用。
 
 验证结论见 [生产流程验收](media-transcoding-production-validation.zh-CN.md)；前期独立转码实验见 [FFmpeg 可行性验证](media-transcode-validation.zh-CN.md)。
+
+## Android 下载接入
+
+准备成功的 DTO 增加输出 `sha256`、原始 `sourceSha256`、配置身份 `profile`；
+`features.mediaPreparationIntegrity=true` 表示支持安卓验证下载。
+安卓在线使用相同媒体任务接口；离线下载保留原始资源，另存已验证兼容媒体和派生版本映射。
+构建、USB 联调与兼容性边界见 [Android demo](../apps/viewer/android-demo/README.md)。

@@ -70,6 +70,7 @@ export interface Capabilities {
   features: {
     lazyAssets: boolean
     mediaTranscoding?: boolean
+    mediaPreparationIntegrity?: boolean
     rangeRequests: boolean
     fontWidthFeedback: boolean
     streamingUnits: boolean
@@ -355,5 +356,9 @@ export interface MediaPreparation {
   url?: string
   mime?: string
   bytes?: number
+  /** Ready output identity for verified offline downloads. */
+  sha256?: string
+  sourceSha256?: string
+  profile?: string
   errorCode?: string
 }

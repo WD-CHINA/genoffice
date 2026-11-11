@@ -438,6 +438,7 @@ function capabilitiesOf(ctx: Context): Capabilities {
     thresholds: ctx.parseThresholds,
     features: {
       mediaTranscoding: ctx.media?.options.enabled === true,
+      mediaPreparationIntegrity: ctx.media?.options.enabled === true,
       lazyAssets: true,
       rangeRequests: true,
       fontWidthFeedback: true,

@@ -4,6 +4,8 @@
 
 ## 已落地
 
+- 在线音视频：已接入独立 MySQL 媒体队列、内容哈希缓存、跨实例租约与原子发布；兼容资源优先复用，必要时重新封装或转换为 MP4/MP3。Web 提供处理状态和重试，小型含媒体 PPT 自动走服务端。部署及回滚见 [媒体生产流程](media-transcoding-production.zh-CN.md)，本机双实例验收见 [媒体生产验收](media-transcoding-production-validation.zh-CN.md)。
+
 - P0：创建会话在启动 worker 前预占并发名额，成功登记或失败后释放；恢复会话使用 single-flight。会话在恢复期间被删除时，关闭迟到 worker 并清理其记录。
 - P0：未提供的 ServerLimits 不覆盖默认值；拒绝非正、非整数及非有限数值。
 - P0：DOCX unit 响应递归重写内部资源 origin 并生成即时签名，不修改持久化 chunk；返回 private/no-store。

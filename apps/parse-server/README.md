@@ -1,5 +1,7 @@
 # 解析优化实施进度
 
+> 2026-11-11 新增：[在线音视频自动准备](../../docs/media-transcoding-production.zh-CN.md)，包含兼容媒体复用、MP4/MP3 转换、MySQL 持久队列、共享缓存、前端状态及回滚。验收见 [媒体生产流程验证](../../docs/media-transcoding-production-validation.zh-CN.md)。
+
 > 当前功能修复见 [DOCX / PPT 验收记录](../../docs/parse-viewer-fixes-validation.zh-CN.md)；容量 / 恢复边界见 [Docker 验证记录](../../docs/parse-docker-validation.zh-CN.md)。[隔离复现环境](deploy/validation/README.md)覆盖真实 MySQL/Redis、业务课件、资源限制与冷恢复。脚注编号、分节 / 页眉页脚和远程 EMF 加载已修复；下文早期“当前限制”和计数保留用于追溯，部分已被后续实现替代，不能据旧完成度百分比宣布完成。
 
 更新：2026-11-07。对应方案：`parse-persistence-optimization.zh-CN.md`。整体目标仍在进行；磁盘持久化已接入实际预览，历史库保存/读取/移除已接入，生产任务与运维尚未完成。

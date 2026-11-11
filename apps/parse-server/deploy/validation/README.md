@@ -95,3 +95,7 @@ Recorded results and unresolved acceptance failures:
 [2026-11-11 validation report](../../../../docs/parse-docker-validation.zh-CN.md).
 The three document defects from that initial report were subsequently fixed:
 [repair verification](../../../../docs/parse-viewer-fixes-validation.zh-CN.md).
+
+## 音视频自动准备验证
+
+`compose.media.yml` 是本目录配置的可选 overlay，使用生产 Dockerfile 启动双实例，并给测试运行时提供 FFmpeg。构建和执行方法见 [媒体生产验收](../../../../docs/media-transcoding-production-validation.zh-CN.md)。默认基础验证镜像不含 FFmpeg，只跳过需要真实编码器的集成用例；overlay 环境覆盖全部媒体用例。

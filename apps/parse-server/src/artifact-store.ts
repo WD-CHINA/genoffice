@@ -1,5 +1,9 @@
 import type { StorageBudget, StorageReservation } from './storage-budget'
 import type { BuildPreviewEvent } from './artifact-preview'
+import { recordBytes, type ModelCache } from './model-cache'
+import type { WorkPools } from './work-pools'
+import { setTimeout as delay } from 'node:timers/promises'
+import { isRecoverableInfrastructureError, retryDelayMs } from './retry-policy'
 import { createHash, randomUUID } from 'node:crypto'
 import { lstat, mkdir, open, readFile, readdir, rename, rm, rmdir, stat, unlink, utimes } from 'node:fs/promises'
 import type { FileHandle } from 'node:fs/promises'
@@ -42,6 +46,19 @@ export interface ArtifactIdentity {
   options: JsonValue
 }
 
+/**
+ * Normalize artifact identity options (plan §4.1): absent/null becomes `{}`,
+ * only plain JSON is accepted, and `artifactKey` canonicalizes key order later.
+ */
+export function normalizeArtifactOptions(value?: unknown): Record<string, JsonValue> {
+  if (value === undefined || value === null) return {}
+  if (typeof value !== 'object' || Array.isArray(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype)
+    throw new Error('invalid artifact options')
+  canonicalJson(value)
+  return value as Record<string, JsonValue>
+}
+
 export function artifactKey(identity: ArtifactIdentity): string {
   if (
     !HASH.test(identity.fileId) ||
@@ -63,7 +80,18 @@ interface RecordEntry {
   sha256: string
 }
 
-export interface ArtifactManifest {
+export interface ArtifactManifestMetadata {
+  /** Parsed unit count (plan §4 manifest completeness). */
+  unitCount?: number
+  /** Embedded font ids baked into the artifact. */
+  fonts?: string[]
+  /** Parser warnings carried with the document. */
+  warnings?: string[]
+  /** Artifact keys this generation was derived from (e.g. a bundle's model). */
+  dependencies?: string[]
+}
+
+export interface ArtifactManifest extends ArtifactManifestMetadata {
   version: 1
   key: string
   identity: ArtifactIdentity
@@ -80,7 +108,15 @@ function validateManifest(value: ArtifactManifest, key: string, maxBytes: number
     !Number.isSafeInteger(value.dataBytes) ||
     value.dataBytes < 0 ||
     !Array.isArray(value.records) ||
-    value.records.length > MAX_ENTRIES
+    value.records.length > MAX_ENTRIES ||
+    (value.unitCount !== undefined &&
+      (!Number.isSafeInteger(value.unitCount) || value.unitCount < 0)) ||
+    (value.fonts !== undefined &&
+      (!Array.isArray(value.fonts) || value.fonts.some((id) => typeof id !== 'string'))) ||
+    (value.warnings !== undefined &&
+      (!Array.isArray(value.warnings) || value.warnings.some((text) => typeof text !== 'string'))) ||
+    (value.dependencies !== undefined &&
+      (!Array.isArray(value.dependencies) || value.dependencies.some((key) => !HASH.test(key))))
   ) {
     throw new ArtifactCorruptionError('invalid artifact manifest')
   }
@@ -123,7 +159,8 @@ export class ArtifactCorruptionError extends Error {
 export class ArtifactReader {
   static async openDirectory(
     directory: string, key: string, maxRecordBytes = DEFAULT_MAX_RECORD_BYTES, manifestSha256?: string,
-    onCorruption?: (error: ArtifactCorruptionError) => void,
+    onCorruption?: (error: ArtifactCorruptionError) => void, cache?: ModelCache,
+    pools?: WorkPools,
   ): Promise<ArtifactReader> {
     const path = join(directory, 'manifest.json')
     try {
@@ -139,7 +176,7 @@ export class ArtifactReader {
       } catch (cause) { throw new ArtifactCorruptionError('invalid artifact manifest', { cause }) }
       if ((await stat(join(directory, 'units.bin'))).size !== manifest.dataBytes)
         throw new ArtifactCorruptionError('artifact data length mismatch')
-      return new ArtifactReader(directory, manifest, maxRecordBytes, onCorruption)
+      return new ArtifactReader(directory, manifest, maxRecordBytes, onCorruption, undefined, cache, pools)
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT')
         throw new ArtifactCorruptionError('artifact generation missing', { cause: error })
@@ -173,6 +210,8 @@ export class ArtifactReader {
     private readonly maxRecordBytes: number,
     private readonly onCorruption?: (error: ArtifactCorruptionError) => void,
     private readonly onRead?: () => Promise<void>,
+    private readonly cache?: ModelCache,
+    private readonly pools?: WorkPools,
   ) {
     this.entries = new Map(manifest.records.map((entry) => [entry.id, entry]))
   }
@@ -192,18 +231,36 @@ export class ArtifactReader {
     await this.onRead?.()
     const entry = this.entries.get(id)
     if (!entry) throw new Error(`artifact record not found: ${id}`)
-    const file = await open(join(this.directory, 'units.bin'), 'r')
+    // A record is immutable for one content digest; the generation is part of the
+    // key so repaired/rebuilt generations never share entries. Derived offline
+    // bundle records are excluded: corruption drills must still observe the
+    // damaged frame and rebuild that generation instead of being masked by cache.
+    const cacheKey = id === 'bundle' || id.startsWith('bundle:')
+      ? undefined
+      : `${this.manifest.key}:${this.contentDigest}:${id}`
+    const cached = cacheKey === undefined ? undefined : this.cache?.get(cacheKey)
+    if (cached !== undefined) return cached
     try {
-      const bytes = Buffer.alloc(entry.length)
-      let done = 0
-      while (done < bytes.length) {
-        const { bytesRead } = await file.read(bytes, done, bytes.length - done, entry.offset + done)
-        if (!bytesRead) throw new ArtifactCorruptionError('artifact record truncated')
-        done += bytesRead
-      }
+      const bytes = await this.runDisk(async () => {
+        const file = await open(join(this.directory, 'units.bin'), 'r')
+        try {
+          const buffer = Buffer.alloc(entry.length)
+          let done = 0
+          while (done < buffer.length) {
+            const { bytesRead } = await file.read(
+              buffer, done, buffer.length - done, entry.offset + done,
+            )
+            if (!bytesRead) throw new ArtifactCorruptionError('artifact record truncated')
+            done += bytesRead
+          }
+          return buffer
+        } finally {
+          await file.close()
+        }
+      })
       let raw: Buffer
       try {
-        raw = await decompress(bytes, { maxOutputLength: this.maxRecordBytes })
+        raw = await this.runInflate(() => decompress(bytes, { maxOutputLength: this.maxRecordBytes }))
       } catch (cause) {
         throw new ArtifactCorruptionError('artifact record compression invalid', { cause })
       }
@@ -213,7 +270,9 @@ export class ArtifactReader {
       ) {
         throw new ArtifactCorruptionError('artifact record checksum mismatch')
       }
-      return entry.encoding === 'bytes' ? raw : (JSON.parse(raw.toString('utf8')) as JsonValue)
+      const value = entry.encoding === 'bytes' ? raw : (JSON.parse(raw.toString('utf8')) as JsonValue)
+      if (cacheKey !== undefined) this.cache?.set(cacheKey, value, recordBytes(value))
+      return value
     } catch (error) {
       if (error instanceof ArtifactCorruptionError) {
         // Report once per reader: concurrent reads of the same damaged frame must
@@ -223,9 +282,15 @@ export class ArtifactReader {
         if (first) this.onCorruption?.(error)
       }
       throw error
-    } finally {
-      await file.close()
     }
+  }
+
+  private runDisk<T>(task: () => Promise<T>): Promise<T> {
+    return this.pools ? this.pools.disk.run(task) : task()
+  }
+
+  private runInflate<T>(task: () => Promise<T>): Promise<T> {
+    return this.pools ? this.pools.inflate.run(task) : task()
   }
 }
 
@@ -236,6 +301,7 @@ export class ArtifactWriter {
   private offset = 0
   private finished = false
   private busy = false
+  private metadata: ArtifactManifestMetadata = {}
 
   constructor(
     private readonly file: FileHandle,
@@ -285,6 +351,21 @@ export class ArtifactWriter {
     }
   }
 
+  /** Optional document metadata; must be set before publish and is validated there. */
+  setMetadata(metadata: ArtifactManifestMetadata): void {
+    if (this.finished || this.busy) throw new Error('artifact writer is closed or busy')
+    if (metadata.unitCount !== undefined &&
+      (!Number.isSafeInteger(metadata.unitCount) || metadata.unitCount < 0))
+      throw new Error('invalid artifact unit count')
+    for (const font of metadata.fonts ?? [])
+      if (typeof font !== 'string' || !font) throw new Error('invalid artifact font id')
+    for (const warning of metadata.warnings ?? [])
+      if (typeof warning !== 'string') throw new Error('invalid artifact warning')
+    for (const dependency of metadata.dependencies ?? [])
+      if (!HASH.test(dependency)) throw new Error('invalid artifact dependency')
+    this.metadata = { ...metadata }
+  }
+
   describe(id: string): { size: number; sha256: string } {
     const entry = this.ids.get(id)
     if (!entry) throw new Error('unknown artifact record')
@@ -304,6 +385,7 @@ export class ArtifactWriter {
         createdAt: Date.now(),
         dataBytes: this.offset,
         records: this.records,
+        ...this.metadata,
       }
       const bytes = Buffer.from(canonicalJson(manifest))
       if (bytes.length > MAX_MANIFEST_BYTES)
@@ -348,7 +430,8 @@ export class ArtifactStore {
    * of this object rather than the session input: inputs are structured-cloned
    * into the isolated parse worker, where a function cannot be sent.
    */
-  previewObserver?: (key: string, event: BuildPreviewEvent) => void
+  /** Observation only; `jobId` is the shared build lease (catalog backend) when known. */
+  previewObserver?: (key: string, event: BuildPreviewEvent, jobId?: string) => void
   private readonly building = new Map<string, Promise<ArtifactReader>>()
   private readonly ownedTasks = new Map<Promise<unknown>, string>()
   private readonly buildingFiles = new Map<string, string>()
@@ -402,6 +485,9 @@ export class ArtifactStore {
     archivedRetiredRows: 0,
     evicted: 0,
     evictedBytes: 0,
+    misses: 0,
+    corruptions: 0,
+    buildRetries: 0,
   }
   get activeBuilds(): number {
     return this.building.size
@@ -410,9 +496,16 @@ export class ArtifactStore {
     readonly root: string,
     private readonly maxRecordBytes = DEFAULT_MAX_RECORD_BYTES,
     private readonly storageBudget?: StorageBudget,
+    private readonly modelCache?: ModelCache,
+    private readonly pools?: WorkPools,
+    private readonly maxBuildRetries = 2,
+    private readonly retryBaseMs = 50,
   ) {
     if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes <= 0)
       throw new Error('invalid artifact byte budget')
+    for (const value of [maxBuildRetries, retryBaseMs])
+      if (!Number.isSafeInteger(value) || value < 0)
+        throw new Error('invalid artifact build retry policy')
   }
 
   scratchReservation(): StorageReservation | undefined {
@@ -426,7 +519,9 @@ export class ArtifactStore {
 
   async find(key: string): Promise<ArtifactReader | null> {
     try {
-      return await this.findUnchecked(key)
+      const reader = await this.findUnchecked(key)
+      if (!reader) this.stats.misses++
+      return reader
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT')
         throw new ArtifactCorruptionError('artifact data missing', { cause: error })
@@ -480,7 +575,10 @@ export class ArtifactStore {
       this.maxRecordBytes,
       (error) => {
         // Keep the fault independent of WeakRef lifetime, but fence late old readers.
-        if (this.readers.get(key)?.reader.deref() === reader) this.corruptions.set(key, error)
+        if (this.readers.get(key)?.reader.deref() === reader) {
+          if (!this.corruptions.has(key)) this.stats.corruptions++
+          this.corruptions.set(key, error)
+        }
       },
       async () => {
         const now = Date.now()
@@ -490,6 +588,8 @@ export class ArtifactStore {
         // Best-effort coalesced access hint; cache reads still work on read-only mounts.
         await utimes(directory, new Date(now), new Date(now)).catch(() => undefined)
       },
+      this.modelCache,
+      this.pools,
     )
     const info = await stat(join(directory, 'manifest.json'))
     if (this.readers.size >= 512) this.readers.delete(this.readers.keys().next().value!)
@@ -658,6 +758,27 @@ export class ArtifactStore {
     return (await this.diskEntries()).reduce((sum, entry) => sum + entry.bytes, 0)
   }
 
+  /** Bytes currently held by unpublished staging directories (plan §11 storage_bytes). */
+  async stagingBytes(): Promise<number> {
+    let total = 0
+    const walk = async (directory: string): Promise<void> => {
+      let entries
+      try {
+        entries = await readdir(directory, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        if (entry.isSymbolicLink()) continue
+        const path = join(directory, entry.name)
+        if (entry.isDirectory()) await walk(path)
+        else if (entry.isFile()) total += await lstat(path).then((value) => value.size, () => 0)
+      }
+    }
+    await walk(join(this.root, 'staging'))
+    return total
+  }
+
   /**
    * Redundant pre-generation flat bytes that a catalog-backed generation has
    * already superseded. Report only; deletion needs a catalog transaction.
@@ -741,9 +862,10 @@ export class ArtifactStore {
 
   async getOrBuild(
     identity: ArtifactIdentity,
-    build: (writer: ArtifactWriter) => Promise<void>,
+    build: (writer: ArtifactWriter, signal?: AbortSignal) => Promise<void>,
     onAdmission?: () => void,
     validateCached?: (reader: ArtifactReader) => Promise<void>,
+    demand?: AbortSignal,
   ): Promise<ArtifactReader> {
     const key = artifactKey(identity)
     this.observeAdmission(key, onAdmission)
@@ -778,35 +900,48 @@ export class ArtifactStore {
         this.markAdmitted(key)
         return cached
       }
-      this.stats.buildsStarted++
-      const staging = join(this.root, 'staging', randomUUID())
-      this.staging.add(staging)
-      try {
-        await mkdir(staging, { recursive: true })
-        const file = await open(join(staging, 'units.bin'), 'wx')
-        const reservation = this.storageBudget?.reservation()
-        const writer = new ArtifactWriter(
-          file,
-          staging,
-          this.directory(key),
-          identity,
-          this.maxRecordBytes,
-          reservation,
-        )
+      let attempt = 0
+      for (;;) {
+        this.stats.buildsStarted++
+        const staging = join(this.root, 'staging', randomUUID())
+        this.staging.add(staging)
+        let failure: unknown
         try {
-          await build(writer)
-          await writer.publish()
+          await mkdir(staging, { recursive: true })
+          const file = await open(join(staging, 'units.bin'), 'wx')
+          const reservation = this.storageBudget?.reservation()
+          const writer = new ArtifactWriter(
+            file,
+            staging,
+            this.directory(key),
+            identity,
+            this.maxRecordBytes,
+            reservation,
+          )
+          try {
+            await build(writer, demand)
+            await writer.publish()
+          } catch (error) {
+            await writer.abort()
+            throw error
+          } finally {
+            await reservation?.release()
+          }
+          const reader = await this.find(key)
+          if (!reader) throw new Error('published artifact is missing')
+          return reader
         } catch (error) {
-          await writer.abort()
-          throw error
+          failure = error
         } finally {
-          await reservation?.release()
+          this.staging.delete(staging)
         }
-        const reader = await this.find(key)
-        if (!reader) throw new Error('published artifact is missing')
-        return reader
-      } finally {
-        this.staging.delete(staging)
+        // Plan §6: only transient infrastructure failures get a bounded retry;
+        // parse/model errors and storage exhaustion surface immediately.
+        attempt++
+        if (attempt > this.maxBuildRetries || !isRecoverableInfrastructureError(failure))
+          throw failure
+        this.stats.buildRetries++
+        await delay(retryDelayMs(attempt, this.retryBaseMs))
       }
     })()
     this.building.set(key, task)

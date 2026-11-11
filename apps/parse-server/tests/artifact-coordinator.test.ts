@@ -31,6 +31,7 @@ async function setup() {
       return true
     }),
     fail: vi.fn(async () => true),
+    cancel: vi.fn(async () => true),
   }
   const disk = new ArtifactGenerations(root)
   const coordinator = new ArtifactCoordinator(catalog, disk, 5, 1000)
@@ -91,6 +92,8 @@ it('shutdown cancels cooperative work while reader-only cancellation leaves shar
   await coordinator.close()
   await rejected
   expect(catalog.complete).not.toHaveBeenCalled()
+  expect(catalog.cancel).toHaveBeenCalledWith(expect.objectContaining({ jobId: 'job' }), 'build_cancelled')
+  expect(catalog.fail).not.toHaveBeenCalled()
 })
 
 it('busy waits are bounded and never invoke the local builder', async () => {
@@ -155,4 +158,61 @@ it('does not invalidate a ready generation for an ordinary filesystem permission
   cleanup.push(() => coordinator.close())
   await expect(coordinator.getOrBuild(identity, async () => { throw new Error('must not build') })).rejects.toMatchObject({ code: 'EACCES' })
   expect(invalidateReady).not.toHaveBeenCalled()
+})
+
+it('retries a recoverable infrastructure failure once with a fresh generation', async () => {
+  const { catalog, disk } = await setup()
+  const retry = new ArtifactCoordinator(catalog, disk, 5, 1000, { attempts: 2, baseDelayMs: 5 })
+  cleanup.push(() => retry.close())
+  let claims = 0
+  catalog.claim.mockImplementation(async (identity, owner) => {
+    claims++
+    return { kind: 'acquired', lease: { key: artifactKey(identity), owner, jobId: `job-${claims}`,
+      generation: claims, leaseUntil: Date.now() + 1000 } }
+  })
+  let builds = 0
+  const reader = await retry.getOrBuild(identity, async (writer) => {
+    builds++
+    if (builds === 1) throw Object.assign(new Error('connection reset'), { code: 'ECONNRESET' })
+    await writer.append('unit:0', { text: 'after-retry' })
+  })
+  expect(claims).toBe(2)
+  expect(retry.stats.retries).toBe(1)
+  expect(catalog.fail).toHaveBeenCalledTimes(1)
+  expect(await reader.read('unit:0')).toEqual({ text: 'after-retry' })
+})
+
+it('does not retry a parse/model error', async () => {
+  const { catalog, disk } = await setup()
+  const retry = new ArtifactCoordinator(catalog, disk, 5, 1000, { attempts: 2, baseDelayMs: 5 })
+  cleanup.push(() => retry.close())
+  let claims = 0
+  catalog.claim.mockImplementation(async (identity, owner) => {
+    claims++
+    return { kind: 'acquired', lease: { key: artifactKey(identity), owner, jobId: 'job',
+      generation: 1, leaseUntil: Date.now() + 1000 } }
+  })
+  await expect(retry.getOrBuild(identity, async () => {
+    throw new Error('malformed slide XML')
+  })).rejects.toThrow('malformed slide XML')
+  expect(claims).toBe(1)
+})
+
+it('stops after the configured retry budget', async () => {
+  const { catalog, disk } = await setup()
+  const retry = new ArtifactCoordinator(catalog, disk, 5, 1000, { attempts: 1, baseDelayMs: 5 })
+  cleanup.push(() => retry.close())
+  let claims = 0
+  catalog.claim.mockImplementation(async (identity, owner) => {
+    claims++
+    return { kind: 'acquired', lease: { key: artifactKey(identity), owner, jobId: 'job',
+      generation: claims, leaseUntil: Date.now() + 1000 } }
+  })
+  let builds = 0
+  await expect(retry.getOrBuild(identity, async () => {
+    builds++
+    throw Object.assign(new Error('deadlock'), { code: 'ER_LOCK_DEADLOCK' })
+  })).rejects.toThrow('deadlock')
+  expect(claims).toBe(2)
+  expect(builds).toBe(2)
 })

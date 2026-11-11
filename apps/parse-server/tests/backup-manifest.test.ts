@@ -391,3 +391,71 @@ describe('recovery drill with SQL-shaped catalog rows', () => {
       .rejects.toThrow(/invalid generation path/)
   })
 })
+
+describe('artifact dependency graph in backups', () => {
+  it('records dependency edges and verifies them against the manifest and live catalog', async () => {
+    const f = await fixture()
+    const otherKey = 'c'.repeat(64)
+    const snapshot = sqlSnapshot(f, {
+      artifacts: [
+        ...sqlSnapshot(f).artifacts,
+        { key: otherKey, fileId: f.sha, generation: 1, identityValid: true, ready: null, readyInvalid: false },
+      ],
+      dependencies: [
+        { artifactKey: f.ready.key, type: 'file', id: f.sha },
+        { artifactKey: f.ready.key, type: 'artifact', id: otherKey },
+      ],
+    })
+    const injected = injectedSource(snapshot)
+    const manifest = await createBackupManifest({ dataDir: f.dataDir, source: injected.source })
+    expect(manifest.catalog.dependencies).toHaveLength(2)
+    const report = await verifyRestore({ dataDir: f.dataDir, manifest, source: injected.source })
+    expect(report.ok).toBe(true)
+    expect(report.errors).toEqual([])
+  })
+
+  it('fails closed on a manifest that points a dependency at missing bytes', async () => {
+    const f = await fixture()
+    const injected = injectedSource(sqlSnapshot(f))
+    const manifest = await createBackupManifest({ dataDir: f.dataDir, source: injected.source })
+    const tampered = { ...manifest, catalog: { ...manifest.catalog, dependencies: [
+      { artifactKey: f.ready.key, type: 'file', id: 'd'.repeat(64) },
+      { artifactKey: 'e'.repeat(64), type: 'file', id: f.sha },
+    ] } }
+    const sealed = {
+      schemaVersion: tampered.schemaVersion, createdAt: tampered.createdAt,
+      catalog: tampered.catalog, entries: tampered.entries,
+      digest: createHash('sha256').update(canonicalJson({
+        schemaVersion: tampered.schemaVersion, createdAt: tampered.createdAt,
+        catalog: tampered.catalog, entries: tampered.entries,
+      })).digest('hex'),
+    }
+    // The shape/catalog consistency gate rejects the tampered catalog before the
+    // drill can produce a report: dangling edges never become "ok".
+    await expect(verifyRestore({ dataDir: f.dataDir, manifest: sealed, source: injected.source }))
+      .rejects.toThrow(/dangling (file|artifact) dependency/)
+  })
+
+  it('warns when the live catalog has an edge the backup did not capture', async () => {
+    const f = await fixture()
+    const before = sqlSnapshot(f)
+    const source = injectedSource(before, {
+      ...before,
+      dependencies: [{ artifactKey: f.ready.key, type: 'file', id: f.sha }],
+    })
+    const manifest = await createBackupManifest({ dataDir: f.dataDir, source: source.source })
+    const report = await verifyRestore({ dataDir: f.dataDir, manifest, source: source.source })
+    expect(report.ok).toBe(true)
+    expect(report.warnings.some((warning) => warning.code === 'dependency_added_after_backup')).toBe(true)
+  })
+
+  it('refuses to snapshot a catalog with dangling dependency edges', async () => {
+    const f = await fixture()
+    const snapshot = sqlSnapshot(f, {
+      dependencies: [{ artifactKey: f.ready.key, type: 'file', id: 'f'.repeat(64) }],
+    })
+    await expect(createBackupManifest({
+      dataDir: f.dataDir, source: injectedSource(snapshot).source,
+    })).rejects.toThrow(/dangling file dependency/)
+  })
+})

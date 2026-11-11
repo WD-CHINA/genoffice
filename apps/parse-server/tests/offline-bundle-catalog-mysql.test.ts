@@ -107,6 +107,17 @@ describe.skipIf(!socketPath)('catalog-backed offline bundle over HTTP', () => {
     )
     expect(leases).toHaveLength(2)
     expect(leases.every((row) => Number(row.n) >= 1)).toBe(true)
+    // Dependency graph (plan §5): both ready artifacts depend on the source
+    // file, and the derived bundle additionally depends on the model generation.
+    const [deps] = await h.server.db!.pool.query<RowDataPacket[]>(
+      `SELECT artifact_key, dependency_type, dependency_id FROM parse_artifact_dependencies
+       WHERE artifact_key IN (?, ?)`, [bundle.artifact_key, model.artifact_key],
+    )
+    const fileDeps = deps.filter((row) => row.dependency_type === 'file')
+    expect(fileDeps).toHaveLength(2)
+    expect(fileDeps.every((row) => row.dependency_id === h.fileId)).toBe(true)
+    expect(deps.some((row) => row.artifact_key === bundle.artifact_key &&
+      row.dependency_type === 'artifact' && row.dependency_id === model.artifact_key)).toBe(true)
   }, 20_000)
 
   it('rebuilds only a damaged bundle generation through the HTTP route', async () => {

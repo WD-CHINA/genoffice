@@ -6,11 +6,14 @@ interface Options {
   batchSize?: number
   graceMs?: number
   errorBackoffMs?: number
+  /** Observability hook; failures here must never interrupt collection. */
+  onResult?: (result: GenerationSweepResult) => void
 }
 
 /** Owns scheduling, coalescing and shutdown; it does not bypass the sweeper's retirement checks. */
 export class ArtifactCollectionService {
-  private readonly options: Required<Options>
+  private readonly options: Required<Omit<Options, 'onResult'>>
+  private readonly onResult?: (result: GenerationSweepResult) => void
   private timer?: ReturnType<typeof setTimeout>
   private active?: Promise<void>
   private closing?: Promise<void>
@@ -26,6 +29,7 @@ export class ArtifactCollectionService {
 
   constructor(private readonly sweeper: Pick<ArtifactGenerationSweeper, 'sweep' | 'close'>,
     options: Options = {}) {
+    this.onResult = options.onResult
     this.options = { intervalMs: options.intervalMs ?? 10 * 60_000,
       continuationMs: options.continuationMs ?? 25, batchSize: options.batchSize ?? 64,
       graceMs: options.graceMs ?? 60 * 60_000, errorBackoffMs: options.errorBackoffMs ?? 1000 }
@@ -77,6 +81,7 @@ export class ArtifactCollectionService {
         const result = await this.sweeper.sweep(this.options.batchSize, this.options.graceMs, { urgent })
         this.lastResult = result
         this.lastErrorCode = undefined
+        try { this.onResult?.(result) } catch { /* observability only */ }
         this.passes++
         if (urgent) this.urgentPasses++
         this.retryAfter = result.failed ? performance.now() + this.options.errorBackoffMs : 0

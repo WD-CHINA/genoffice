@@ -1,9 +1,11 @@
+import { join } from 'node:path'
 import type { MysqlArtifactCatalog } from './artifact-catalog'
 import type { ArtifactGenerations } from './artifact-generations'
 import type { ArtifactCoordinator } from './artifact-coordinator'
 import { randomUUID } from 'node:crypto'
 import { ArtifactReadHandle } from './artifact-read-handle'
 import { writeOfflineBundle, externalMedia, validBundlePath } from './offline-bundle'
+import { exportArtifactDirectory, type ArtifactExportResult } from './artifact-export'
 import type { OfflineBundleManifest, OfflineBundleResource } from '@genoffice/parse-contract'
 import type { WidthItem } from './metrics'
 import type { ParseQueue } from './parse-queue'
@@ -13,6 +15,7 @@ import {
   ArtifactCorruptionError,
   artifactKey,
   canonicalJson,
+  normalizeArtifactOptions,
   type ArtifactReader,
   type ArtifactWriter,
   type ArtifactIdentity,
@@ -183,18 +186,39 @@ export class ArtifactSession {
       format: input.format,
       parserFingerprint: `${input.parserVersion}:${input.parserFingerprint}`,
       schemaVersion: MODEL_SCHEMA_VERSION,
-      options: {},
+      options: normalizeArtifactOptions(),
     }
+  }
+
+  /**
+   * Canonical sidecar layout (plan §4.2, staged/opt-in): materialize
+   * document.json/units/fonts next to the packed units.bin of this generation.
+   * The packed format remains the runtime truth; this is for inspection,
+   * portability and backup tooling.
+   */
+  canonicalDirectory(dataDir: string): string {
+    return this.reader instanceof ArtifactReadHandle
+      ? join(dataDir, this.reader.artifact.storagePath)
+      : this.reader.directory
+  }
+
+  async materializeCanonical(
+    dataDir: string,
+    reserve?: (bytes: number) => Promise<void>,
+  ): Promise<ArtifactExportResult> {
+    return await exportArtifactDirectory(this.reader, this.canonicalDirectory(dataDir), { reserve })
   }
 
   /** Shared source build used by both storage backends; signal belongs to the build, never a viewer. */
   static async build(store: ArtifactStore, input: ArtifactSessionInput, writer: ArtifactWriter,
-    queue?: ParseQueue, signal?: AbortSignal, onAdmission?: () => void): Promise<void> {
+    queue?: ParseQueue, signal?: AbortSignal, onAdmission?: () => void,
+    jobId?: string): Promise<void> {
     const key = artifactKey(this.identity(input))
     const notify = (event: BuildPreviewEvent): void => {
       // Observation only: a broken observer must never fail a build or a lease.
       // The observer lives on the parent-process store, never on the cloned input.
-      try { store.previewObserver?.(key, event) } catch { /* ignore */ }
+      // `jobId` (catalog build lease) binds preview/projection keys to one attempt.
+      try { store.previewObserver?.(key, event, jobId) } catch { /* ignore */ }
     }
     const build = async () => {
       try {
@@ -210,6 +234,7 @@ export class ArtifactSession {
         const chunksDir = chunkDir(input.chunkRoot, input.id)
         store.stats.sourceParsesStarted++
         let parser: PptxSession | DocxSession | undefined
+        let metadata: { unitCount: number; fonts: string[]; warnings: string[] } | undefined
         const scratch = input.format === 'docx' ? store.scratchReservation() : undefined
         try {
           await removeChunks(chunksDir)
@@ -263,6 +288,12 @@ export class ArtifactSession {
           }
           signal?.throwIfAborted()
           if (input.format === 'pptx') await writer.append('external-media', [...external].sort())
+          metadata = {
+            unitCount: parser.model.unitCount ?? 0,
+            fonts: parser.fonts.map((font) => font.id),
+            warnings: (parser.model.warnings ?? []).map((warning) =>
+              String((warning as { message?: unknown }).message ?? warning)),
+          }
         } finally {
           try {
             await parser?.dispose()
@@ -271,6 +302,7 @@ export class ArtifactSession {
             await scratch?.release()
           }
         }
+        if (metadata) await writer.setMetadata(metadata)
         // Every frame is committed, but the manifest has not been published and
         // the catalog has not been completed: `done` is never `ready`.
         notify({ type: 'done' })
@@ -428,10 +460,11 @@ export class ArtifactSession {
     input: ArtifactSessionInput,
     queue?: ParseQueue,
     onAdmission?: () => void,
+    demand?: AbortSignal,
   ): Promise<ArtifactSession> {
     const reader = await store.getOrBuild(
       this.identity(input),
-      (writer) => this.build(store, input, writer, queue),
+      (writer, signal) => this.build(store, input, writer, queue, signal ?? demand),
       onAdmission,
       async (cached) => {
         if (input.format === 'pptx' && !cached.has('external-media'))
@@ -446,6 +479,7 @@ export class ArtifactSession {
         )
           throw new ArtifactCorruptionError('artifact document schema mismatch')
       },
+      demand,
     )
     const document = (await reader.read('document')) as unknown as StoredDocument
     if (document.model.format !== input.format || !Array.isArray(document.fonts))
@@ -455,7 +489,8 @@ export class ArtifactSession {
 
   static openShared(store: ArtifactStore, input: ArtifactSessionInput,
     backend: SharedArtifactBackend,
-    queue?: ParseQueue, onAdmission?: () => void): Promise<ArtifactSession> {
+    queue?: ParseQueue, onAdmission?: () => void,
+    demand?: AbortSignal): Promise<ArtifactSession> {
     return store.runOwned(input.fileId, async () => {
       const identity = this.identity(input)
       const key = artifactKey(identity)
@@ -465,7 +500,7 @@ export class ArtifactSession {
       }> => {
         for (let attempt = 0; ; attempt++) {
           await backend.coordinator.getOrBuild(identity,
-            async (writer, signal) => {
+            async (writer, signal, jobId) => {
               store.stats.buildsStarted++
               // A verified old-layout cache becomes generation N without re-parsing
               // the source. Damage or version mismatch falls back to a real build.
@@ -475,8 +510,8 @@ export class ArtifactSession {
                 notify?.()
                 return
               }
-              return this.build(store, input, writer, queue, signal, notify)
-            }, undefined, notify)
+              return this.build(store, input, writer, queue, signal, notify, jobId)
+            }, undefined, notify, demand)
           const handle = await ArtifactReadHandle.open(backend.catalog, backend.disk, key, `view:${randomUUID()}`)
           if (!handle) throw new Error('ready artifact disappeared before view admission')
           try { return { handle, document: await this.validatePinned(handle, input) } }
@@ -580,11 +615,11 @@ export class ArtifactSession {
   private bundleIdentity(): ArtifactIdentity {
     return {
       ...ArtifactSession.identity(this.input),
-      options: {
+      options: normalizeArtifactOptions({
         purpose: 'offline-bundle',
         modelArtifactKey: this.reader.manifest.key,
         modelContentDigest: this.reader.contentDigest,
-      },
+      }),
     }
   }
 
@@ -650,6 +685,12 @@ export class ArtifactSession {
           await handle.close()
           throw new ArtifactCorruptionError('offline bundle identity mismatch')
         }
+        // Record the derived-bundle dependency graph (plan §5): the bundle was
+        // hashed from this model generation and its media resolve from the file.
+        if (typeof backend.catalog.recordDependency === 'function')
+          await backend.catalog
+            .recordDependency(key, 'artifact', this.reader.manifest.key)
+            .catch(() => undefined)
         this.bundlePins.push(handle)
         return handle
       } finally { this.store.finishProgress(key) }
@@ -664,6 +705,7 @@ export class ArtifactSession {
       const build = async () => {
         signal?.throwIfAborted()
         const external = (await source.read('external-media')) as string[]
+        await writer.setMetadata({ dependencies: [source.manifest.key] })
         await writeOfflineBundle(
           writer,
           {

@@ -43,8 +43,13 @@ export interface ByteSource {
 /** Stages a parser can complete. Stage 4 (DOM measure/pagination) always stays in the browser. */
 export type ParseStage = 'index' | 'model' | 'layout' | 'measure' | 'pagination'
 
+/** Independent version tag for the v2 HTTP DTO envelope (plan §4). */
+export const PARSE_DTO_VERSION = 1
+
 export interface Capabilities {
   contractVersion: number
+  /** Optional DTO envelope version; absent on older servers. */
+  dtoVersion?: number
   parserVersion: string
   /** Remote capabilities must only list formats the server actually parses (pptx/pdf). */
   formats: DocFormat[]
@@ -53,6 +58,15 @@ export interface Capabilities {
   maxBytes: number
   /** Font-set fingerprint; local and remote must agree before results are comparable. */
   fontSetHash: string
+  /**
+   * Client routing thresholds advertised by the deployment (plan §8.1). Optional
+   * for older servers; clients fall back to their own defaults when absent.
+   */
+  thresholds?: {
+    docxAutoRemoteBytes: number
+    pptxAutoRemoteBytes: number
+    docxFullRenderBytes: number
+  }
   features: {
     lazyAssets: boolean
     rangeRequests: boolean

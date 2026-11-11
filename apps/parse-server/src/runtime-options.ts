@@ -1,4 +1,6 @@
 import { isAbsolute } from 'node:path'
+import { CACHE_DEFAULTS } from './cache-contract'
+import { WORK_POOL_DEFAULTS } from './work-pools'
 import type { ParseServerOptions } from './server'
 
 const MAX_TIMER = 2_147_483_647
@@ -47,7 +49,79 @@ export function validateRuntimeOptions(options: ParseServerOptions): void {
     throw new Error('pressure cooldown must not exceed the pressure round duration')
   integer('previewMaxUnits', 8, 1, 64)
   integer('previewTtlMs', 60_000, 1000, MAX_TIMER)
-  integer('sessionTtlMs', 900_000, 0, Number.MAX_SAFE_INTEGER)
+  const cacheMode = options.cacheMode ?? 'memory'
+  if (cacheMode !== 'memory' && cacheMode !== 'redis')
+    throw new Error("invalid cacheMode: expected 'memory' or 'redis'")
+  if (cacheMode === 'redis') {
+    // Cross-node preview only makes sense with shared truth: the MySQL database
+    // gives the key scope, and two instances are the documented enablement
+    // criterion (plan §5.1). Single-node deployments stay on the default.
+    if (!options.mysql) throw new Error('cacheMode redis requires mysql')
+    // Only the catalog backend publishes a shared parse_jobs row, which is what
+    // lets another instance resolve the preview/progress key by jobId.
+    if (options.artifactBackend !== 'catalog')
+      throw new Error('cacheMode redis requires the catalog artifact backend')
+    if (!options.redis && !options.cacheStore)
+      throw new Error('cacheMode redis requires a redis configuration')
+  }
+  if (options.redis) {
+    const { host, port, socketPath, username, password, db, tls } = options.redis
+    if (host !== undefined && (typeof host !== 'string' || !host.trim()))
+      throw new Error('invalid redis host')
+    if (port !== undefined && (!Number.isSafeInteger(port) || port < 1 || port > 65535))
+      throw new Error('invalid redis port')
+    if (socketPath !== undefined && (!socketPath || !isAbsolute(socketPath)))
+      throw new Error('redis socketPath must be an absolute path')
+    if (socketPath === undefined && host === undefined)
+      throw new Error('redis configuration needs host/port or socketPath')
+    if (username !== undefined && typeof username !== 'string')
+      throw new Error('invalid redis username')
+    if (password !== undefined && typeof password !== 'string')
+      throw new Error('invalid redis password')
+    if (db !== undefined && (!Number.isSafeInteger(db) || db < 0 || db > 1024))
+      throw new Error('invalid redis database index')
+    if (tls !== undefined && typeof tls !== 'boolean') throw new Error('invalid redis tls flag')
+  }
+  integer('cacheCommandTimeoutMs', CACHE_DEFAULTS.commandTimeoutMs, 10, 5000)
+  integer('cacheBreakerMs', CACHE_DEFAULTS.breakerMs, 100, 60_000)
+  integer('cacheProgressTtlMs', CACHE_DEFAULTS.progressTtlMs, 1000, MAX_TIMER)
+  integer('cacheProgressThrottleMs', CACHE_DEFAULTS.progressThrottleMs, 0, 60_000)
+  integer('cacheMaxFieldBytes', CACHE_DEFAULTS.maxFieldBytes, 1024, 16 * 1024 ** 2)
+  integer('idempotencyTtlMs', 600_000, 1000, MAX_TIMER)
+  integer('idempotencyMaxEntries', 256, 1, 100_000)
+  if (options.asyncSessionsV2 !== undefined && typeof options.asyncSessionsV2 !== 'boolean')
+    throw new Error('invalid asyncSessionsV2: expected a boolean')
+  integer('v2RolloutPercent', 100, 0, 100)
+  integer('v2RolloutRampPerHour', 0, 0, 100)
+  integer('v2AutoPauseErrorRate', 0, 0, 100)
+  if (options.canonicalArtifactExport !== undefined &&
+    typeof options.canonicalArtifactExport !== 'boolean')
+    throw new Error('invalid canonicalArtifactExport')
+  if (options.previousToken !== undefined) {
+    if (typeof options.previousToken !== 'string' || options.previousToken.length < 1)
+      throw new Error('invalid previousToken')
+    if (!options.token) throw new Error('previousToken requires token')
+    if (options.previousToken === options.token)
+      throw new Error('previousToken must differ from token')
+  }
+  if (options.v2RolloutHeader !== undefined &&
+    (typeof options.v2RolloutHeader !== 'string' ||
+      !/^[a-z0-9-]{1,64}$/.test(options.v2RolloutHeader)))
+    throw new Error('invalid v2RolloutHeader')
+  integer('shutdownTimeoutMs', 30_000, 1, 600_000)
+  integer('docxAutoRemoteBytes', 32 * 1024 * 1024, 1, 1024 ** 3)
+  integer('pptxAutoRemoteBytes', 64 * 1024 * 1024, 1, 1024 ** 3)
+  integer('docxFullRenderBytes', 64 * 1024 * 1024, 1, 1024 ** 3)
+  const memoryCacheBudgetBytes = integer('memoryCacheBudgetBytes', 2 * 1024 ** 3, 0,
+    Number.MAX_SAFE_INTEGER)
+  const modelCacheMaxBytes = integer('modelCacheMaxBytes', 256 * 1024 ** 2, 0, Number.MAX_SAFE_INTEGER)
+  if (modelCacheMaxBytes > memoryCacheBudgetBytes)
+    throw new Error('model cache budget must not exceed the HTTP/index/read memory cache budget')
+  integer('httpMaxConcurrency', 128, 1, 100_000)
+  integer('diskIoConcurrency', WORK_POOL_DEFAULTS.diskIoConcurrency, 1, 4096)
+  integer('inflateConcurrency', WORK_POOL_DEFAULTS.inflateConcurrency, 1, 256)
+  integer('buildRetryAttempts', 2, 0, 10)
+  integer('sessionTtlMs', 1_800_000, 0, Number.MAX_SAFE_INTEGER)
   integer('contentTtlMs', 604_800_000, 0, Number.MAX_SAFE_INTEGER)
   integer('maxStoreBytes', 20 * 1024 ** 3, 0, Number.MAX_SAFE_INTEGER)
   integer('storageReservationLeaseMs', 300_000, 10_000, 3_600_000)

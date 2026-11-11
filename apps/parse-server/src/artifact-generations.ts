@@ -4,11 +4,14 @@ import { dirname, join } from 'node:path'
 import { artifactGenerationPath, type ArtifactArchive, type MysqlArtifactCatalog, type ReadyArtifact } from './artifact-catalog'
 import { ArtifactCorruptionError, ArtifactReader, ArtifactWriter, artifactKey, syncArtifactDirectory, type ArtifactIdentity } from './artifact-store'
 import type { StorageBudget } from './storage-budget'
+import type { ModelCache } from './model-cache'
+import type { WorkPools } from './work-pools'
 
 /** Immutable disk generations; readiness and lease fencing are managed by the catalog. */
 export class ArtifactGenerations {
   constructor(readonly root: string, private readonly maxRecordBytes = 64 * 1024 * 1024,
-    private readonly budget?: StorageBudget) {
+    private readonly budget?: StorageBudget, private readonly modelCache?: ModelCache,
+    private readonly pools?: WorkPools) {
     if (!Number.isSafeInteger(maxRecordBytes) || maxRecordBytes < 1) throw new Error('invalid artifact byte budget')
   }
 
@@ -55,7 +58,7 @@ export class ArtifactGenerations {
         !/^[a-f0-9]{64}$/.test(ready.manifestSha256)) throw new Error('invalid generation pointer')
     const directory = join(this.root, ready.storagePath)
     const reader = await ArtifactReader.openDirectory(directory, ready.key, this.maxRecordBytes,
-      ready.manifestSha256, onCorruption)
+      ready.manifestSha256, onCorruption, this.modelCache, this.pools)
     const manifestSize = (await stat(join(directory, 'manifest.json'))).size
     if (manifestSize + reader.manifest.dataBytes !== ready.bytes ||
         reader.manifest.records.filter((record) => /^unit:\d+$/.test(record.id)).length !== ready.unitCount)

@@ -1,0 +1,407 @@
+{
+  "title": "Genoffice parse service",
+  "uid": "genoffice-parse",
+  "schemaVersion": 39,
+  "editable": true,
+  "tags": [
+    "genoffice",
+    "parse-server"
+  ],
+  "timezone": "browser",
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "instance",
+        "type": "query",
+        "query": "label_values(genoffice_parse_build_info, instance)",
+        "multi": true,
+        "includeAll": true
+      }
+    ]
+  },
+  "panels": [
+    {
+      "title": "Requests by status",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum by (status) (rate(genoffice_parse_responses_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "Errors by code",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum by (code) (rate(genoffice_parse_errors_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "Queue depth / age",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "genoffice_parse_jobs_queued",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "Queue age (s)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "genoffice_parse_job_queue_age_seconds",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "Parse memory reserved",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "genoffice_parse_reserved_memory_bytes",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "Child RSS",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "genoffice_parse_children_resident_memory_bytes",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "Unit read p95 (s)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(genoffice_parse_unit_read_latency_seconds_bucket[5m])) by (le))",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "Storage bytes",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "genoffice_parse_storage_bytes",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "Storage split",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "genoffice_parse_storage_source_bytes",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "GC deleted bytes",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "rate(genoffice_parse_gc_deleted_bytes_total[10m])",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "Artifact hits/misses",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(genoffice_parse_artifact_miss_total[5m]))",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "Cache hit rate",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "genoffice_cache_hit_rate",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "Cache errors/timeouts",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "rate(genoffice_cache_error_total[5m]) + rate(genoffice_cache_timeout_total[5m])",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    },
+    {
+      "title": "Cache latency p95 (s)",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(genoffice_cache_latency_seconds_bucket[5m])) by (le))",
+          "refId": "A",
+          "legendFormat": "{{label}}"
+        }
+      ]
+    }
+  ]
+}

@@ -8,6 +8,7 @@ import {
   ArtifactStore,
   artifactKey,
   canonicalJson,
+  normalizeArtifactOptions,
   type ArtifactIdentity,
 } from '../src/artifact-store'
 
@@ -317,4 +318,53 @@ it('observes failed owned dependency acquisition and removes its source referenc
   await expect(task).rejects.toThrow('dependency failed')
   await store.drain()
   expect(store.activeFileIds.size).toBe(0)
+})
+
+it('carries document metadata in the artifact manifest', async () => {
+  const { store } = await setup()
+  const dependency = 'd'.repeat(64)
+  const reader = await store.getOrBuild(identity, async (writer) => {
+    writer.setMetadata({
+      unitCount: 3,
+      fonts: ['f1', 'f2'],
+      warnings: ['font substituted'],
+      dependencies: [dependency],
+    })
+    await writer.append('unit:0', { ok: true })
+  })
+  const manifest = JSON.parse(
+    await (await import('node:fs/promises')).readFile(join(reader.directory, 'manifest.json'), 'utf8'),
+  ) as Record<string, unknown>
+  expect(manifest).toMatchObject({
+    unitCount: 3,
+    fonts: ['f1', 'f2'],
+    warnings: ['font substituted'],
+    dependencies: [dependency],
+  })
+})
+
+it('rejects invalid document metadata before publication', async () => {
+  const { store } = await setup()
+  await expect(store.getOrBuild(identity, async (writer) => {
+    writer.setMetadata({ unitCount: -1 })
+    await writer.append('unit:0', { ok: true })
+  })).rejects.toThrow(/invalid artifact unit count/)
+  await expect(store.getOrBuild(identity, async (writer) => {
+    writer.setMetadata({ dependencies: ['not-a-key'] })
+    await writer.append('unit:0', { ok: true })
+  })).rejects.toThrow(/invalid artifact dependency/)
+})
+
+it('normalizes artifact options to plain JSON with explicit defaults', () => {
+  expect(normalizeArtifactOptions()).toEqual({})
+  expect(normalizeArtifactOptions(null)).toEqual({})
+  expect(normalizeArtifactOptions({ purpose: 'offline-bundle', b: [1, { c: true }] }))
+    .toEqual({ purpose: 'offline-bundle', b: [1, { c: true }] })
+  for (const invalid of [[], new Date(), () => 1, { a: Number.NaN }, { a: undefined }]) {
+    expect(() => normalizeArtifactOptions(invalid)).toThrow(/artifact/)
+  }
+  const left = artifactKey({ ...identity, options: { b: 2, a: 1 } })
+  const right = artifactKey({ ...identity, options: { a: 1, b: 2 } })
+  expect(left).toBe(right)
+  expect(artifactKey({ ...identity, options: { a: 1 } })).not.toBe(left)
 })

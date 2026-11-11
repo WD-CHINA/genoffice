@@ -34,7 +34,8 @@ async function setup(format: 'pptx' | 'docx' = 'pptx') {
     claim: vi.fn(async (): Promise<ArtifactClaim> => ({ kind: 'acquired', lease: {
       key: artifactKey(identity), owner: 'test', jobId: randomUUID(), generation: 1, leaseUntil: Date.now() + 30_000,
     } })),
-    renew: vi.fn(async () => true), complete: vi.fn(async (_lease: unknown, _summary: unknown) => true), fail: vi.fn(async () => true),
+    renew: vi.fn(async () => true), complete: vi.fn(async (_lease: unknown, _summary: unknown) => true),
+    fail: vi.fn(async () => true), cancel: vi.fn(async () => true),
   }
   const disk = new ArtifactGenerations(root)
   const coordinator = new ArtifactCoordinator(catalog, disk)
@@ -42,8 +43,9 @@ async function setup(format: 'pptx' | 'docx' = 'pptx') {
   cleanup.push(() => queue.close())
   cleanup.push(() => coordinator.close())
   const store = new ArtifactStore(root)
-  const build = () => coordinator.getOrBuild(identity,
-    (writer, signal) => ArtifactSession.build(store, input, writer, queue, signal))
+  const build = (demand?: AbortSignal) => coordinator.getOrBuild(identity,
+    (writer, signal) => ArtifactSession.build(store, input, writer, queue, signal),
+    undefined, undefined, demand)
   return { root, input, catalog, coordinator, queue, store, build, disk }
 }
 
@@ -85,7 +87,8 @@ it.each(['pptx', 'docx'] as const)('closing the coordinator during %s opening wa
   expect(isolatedMemory(input.processGroup!).processes).toBe(0)
   expect(queue.memorySnapshot.reservedMb).toBe(0)
   expect(catalog.complete).not.toHaveBeenCalled()
-  expect(catalog.fail).toHaveBeenCalled()
+  expect(catalog.cancel).toHaveBeenCalledWith(expect.anything(), 'build_cancelled')
+  expect(catalog.fail).not.toHaveBeenCalled()
   expect(await readdir(join(root, 'staging'))).toEqual([])
 })
 
@@ -161,4 +164,40 @@ it('shared offline bundle construction retains its own generation pin after the 
     expect(cached?.has('bundle')).toBe(true)
     expect(reads.releaseRead).toHaveBeenCalledTimes(2)
   } finally { release(); await blocker; await session.dispose() }
+})
+
+it('cancels a queued shared build when the last waiter aborts demand', async () => {
+  const { input, catalog, queue, store, build } = await setup()
+  let release!: () => void
+  const blocker = queue.run(() => new Promise<void>((resolve) => { release = resolve }))
+  const demand = new AbortController()
+  const result = build(demand.signal)
+  const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' })
+  try {
+    await expect.poll(() => queue.snapshot.queued).toBe(1)
+    demand.abort(new DOMException('no waiters', 'AbortError'))
+    await rejected
+    expect(store.stats.sourceParsesStarted).toBe(0)
+    expect(catalog.cancel).toHaveBeenCalledWith(expect.anything(), 'build_cancelled')
+    expect(catalog.fail).not.toHaveBeenCalled()
+    expect(await readdir(join(input.chunkRoot, input.id)).catch(() => [])).toEqual([])
+  } finally { release(); await blocker }
+})
+
+it('local store cancels a queued build through the demand signal', async () => {
+  const { root, input, queue, store } = await setup()
+  let release!: () => void
+  const blocker = queue.run(() => new Promise<void>((resolve) => { release = resolve }))
+  const demand = new AbortController()
+  const result = store.getOrBuild(ArtifactSession.identity(input),
+    (writer, signal) => ArtifactSession.build(store, input, writer, queue, signal),
+    undefined, undefined, demand.signal)
+  const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' })
+  try {
+    await expect.poll(() => queue.snapshot.queued).toBe(1)
+    demand.abort(new DOMException('no waiters', 'AbortError'))
+    await rejected
+    expect(store.stats.sourceParsesStarted).toBe(0)
+    expect(await readdir(join(root, 'staging')).catch(() => [])).toEqual([])
+  } finally { release(); await blocker }
 })

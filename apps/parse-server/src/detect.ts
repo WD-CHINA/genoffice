@@ -4,7 +4,7 @@ import type { DocFormat } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
 
 /** Formats the sniffer can name; anything else returns null and the server rejects it. */
-export type DetectedFormat = DocFormat | 'xlsx'
+export type DetectedFormat = DocFormat | 'xlsx' | 'encrypted'
 
 function fileSource(handle: Awaited<ReturnType<typeof open>>, size: number): ByteSource {
   return {
@@ -37,6 +37,20 @@ export async function detectFormat(
     const head = Buffer.alloc(Math.min(size, 1024))
     await handle.read(head, 0, head.length, 0)
     if (head.includes(Buffer.from('%PDF-'))) return 'pdf'
+    // OOXML files opened with a password are OLE compound files (CFB), not
+    // zip packages. Report them explicitly: the parser has no decryption path
+    // and must never treat the binary container as an unknown/corrupt zip.
+    if (
+      head.length >= 8 &&
+      head[0] === 0xd0 &&
+      head[1] === 0xcf &&
+      head[2] === 0x11 &&
+      head[3] === 0xe0 &&
+      head[4] === 0xa1 &&
+      head[5] === 0xb1 &&
+      head[6] === 0x1a &&
+      head[7] === 0xe1
+    ) return 'encrypted'
     if (
       head.length >= 4 &&
       head[0] === 0x50 &&

@@ -4,9 +4,10 @@ import type { MysqlArtifactCatalog, ArtifactLease } from './artifact-catalog'
 import type { ArtifactGenerations } from './artifact-generations'
 import { ArtifactCorruptionError, artifactKey, type ArtifactIdentity, type ArtifactReader, type ArtifactWriter } from './artifact-store'
 import { observeUntilAbort as abortable } from './artifact-signals'
+import { isRecoverableInfrastructureError, retryDelayMs } from './retry-policy'
 
 type Catalog = Pick<MysqlArtifactCatalog, 'leaseMs' | 'claim' | 'renew' | 'complete' | 'fail'>
-  & Partial<Pick<MysqlArtifactCatalog, 'invalidateReady'>>
+  & Partial<Pick<MysqlArtifactCatalog, 'invalidateReady' | 'cancel'>>
 type Disk = Pick<ArtifactGenerations, 'publish' | 'open'>
 
 export class ArtifactLeaseLostError extends Error {
@@ -23,17 +24,30 @@ export class ArtifactCoordinator {
   private readonly owner = randomUUID()
   private readonly stopped = new AbortController()
   private readonly pending = new Map<string, Promise<ArtifactReader>>()
+  readonly stats = { retries: 0 }
+
+  private readonly maxRetries: number
+  private readonly retryBaseMs: number
+  private readonly retryMaxMs: number
 
   constructor(private readonly catalog: Catalog, private readonly disk: Disk,
-    private readonly pollMs = 250, private readonly maxWaitMs = 10 * 60_000) {
+    private readonly pollMs = 250, private readonly maxWaitMs = 10 * 60_000,
+    retry: { attempts?: number; baseDelayMs?: number; maxDelayMs?: number } = {}) {
     for (const value of [pollMs, maxWaitMs, catalog.leaseMs])
       if (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647)
         throw new Error('invalid artifact coordinator timing')
+    this.maxRetries = retry.attempts ?? 2
+    this.retryBaseMs = retry.baseDelayMs ?? 50
+    this.retryMaxMs = retry.maxDelayMs ?? 2000
+    for (const value of [this.maxRetries, this.retryBaseMs, this.retryMaxMs])
+      if (!Number.isSafeInteger(value) || value < 0 || value > 2_147_483_647)
+        throw new Error('invalid artifact coordinator retry policy')
   }
 
   getOrBuild(identity: ArtifactIdentity,
-    build: (writer: ArtifactWriter, signal: AbortSignal) => Promise<void>,
-    readerSignal?: AbortSignal, onWaiting?: () => void): Promise<ArtifactReader> {
+    build: (writer: ArtifactWriter, signal: AbortSignal, jobId: string) => Promise<void>,
+    readerSignal?: AbortSignal, onWaiting?: () => void,
+    demand?: AbortSignal): Promise<ArtifactReader> {
     this.stopped.signal.throwIfAborted()
     readerSignal?.throwIfAborted()
     const key = artifactKey(identity)
@@ -42,6 +56,7 @@ export class ArtifactCoordinator {
       task = Promise.resolve().then(async () => {
         const deadline = performance.now() + this.maxWaitMs
         let repaired = false
+        let retries = 0
         for (;;) {
           this.stopped.signal.throwIfAborted()
           const started = performance.now()
@@ -55,7 +70,20 @@ export class ArtifactCoordinator {
               continue
             }
           }
-          if (claim.kind === 'acquired') return this.buildOwned(identity, claim.lease, started, build)
+          if (claim.kind === 'acquired') {
+            try {
+              return await this.buildOwned(identity, claim.lease, started, build, demand)
+            } catch (error) {
+              this.stopped.signal.throwIfAborted()
+              if (retries >= this.maxRetries || !isRecoverableInfrastructureError(error))
+                throw error
+              retries++
+              this.stats.retries++
+              await delay(retryDelayMs(retries, this.retryBaseMs, this.retryMaxMs), undefined,
+                { signal: this.stopped.signal })
+              continue
+            }
+          }
           onWaiting?.()
           const remaining = deadline - performance.now()
           if (remaining <= 0) throw new ArtifactWaitTimeoutError()
@@ -73,9 +101,13 @@ export class ArtifactCoordinator {
   }
 
   private async buildOwned(identity: ArtifactIdentity, lease: ArtifactLease, claimStarted: number,
-    build: (writer: ArtifactWriter, signal: AbortSignal) => Promise<void>): Promise<ArtifactReader> {
+    build: (writer: ArtifactWriter, signal: AbortSignal, jobId: string) => Promise<void>,
+    demand?: AbortSignal): Promise<ArtifactReader> {
     const lost = new AbortController()
-    const signal = AbortSignal.any([lost.signal, this.stopped.signal])
+    // Plan §6: demand aborts only after the last waiter leaves (server-side),
+    // never from one viewer closing while others still read the same artifact.
+    const signal = AbortSignal.any([lost.signal, this.stopped.signal,
+      ...(demand ? [demand] : [])])
     const heartbeatStop = new AbortController()
     const heartbeatSignal = AbortSignal.any([heartbeatStop.signal, signal])
     let watchdog: ReturnType<typeof setTimeout> | undefined
@@ -104,7 +136,7 @@ export class ArtifactCoordinator {
       signal.throwIfAborted()
       const published = await this.disk.publish(identity, lease.generation, async (writer) => {
         signal.throwIfAborted()
-        await build(writer, signal)
+        await build(writer, signal, lease.jobId)
         signal.throwIfAborted()
       })
       heartbeatStop.abort()
@@ -119,7 +151,14 @@ export class ArtifactCoordinator {
       // Never delete a generation on false/ambiguous SQL completion: it may already be ready.
       return await abortable(this.disk.open(published), signal)
     } catch (error) {
-      await this.catalog.fail(lease, signal.aborted ? 'build_interrupted' : 'build_failed').catch(() => undefined)
+      // Plan §6: a deliberate abort (shutdown) is a cancellation, while lease
+      // loss or a real build error stays failed/build_interrupted.
+      const reason = signal.aborted ? signal.reason as { name?: string } | undefined : undefined
+      const cancelled = reason?.name === 'AbortError' && this.catalog.cancel
+      const outcome = cancelled
+        ? this.catalog.cancel!(lease, 'build_cancelled')
+        : this.catalog.fail(lease, signal.aborted ? 'build_interrupted' : 'build_failed')
+      await outcome.catch(() => undefined)
       throw signal.aborted ? signal.reason : error
     } finally {
       clearTimeout(watchdog)

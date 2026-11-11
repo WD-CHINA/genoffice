@@ -268,6 +268,23 @@ it('unsupported uploads remove temporary bytes and release their reservation', a
   expect(health.artifacts.reservedBytes).toBe(0)
 })
 
+it('encrypted Office containers are rejected explicitly instead of being treated as corrupt zips', async () => {
+  const app = await setup()
+  // OLE compound-file magic (CFB): what Word writes for a password-protected .docx.
+  const container = Buffer.concat([
+    Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),
+    Buffer.alloc(504, 0),
+  ])
+  const response = await app.request('/v1/files', { method: 'POST', body: container })
+  expect(response.status).toBe(415)
+  const body = (await response.json()) as { code?: string; message?: string }
+  expect(body.code).toBe('encrypted_document')
+  expect(body.message).toContain('password')
+  expect(await readdir(join(app.dataDir, 'tmp'))).toEqual([])
+  const health = (await (await app.request('/v1/health')).json()) as any
+  expect(health.artifacts.reservedBytes).toBe(0)
+})
+
 it('DOCX scratch quota failure crosses the child-process protocol and frees chunks, worker and reservation', async () => {
   const bytes = await readFile(join(process.cwd(), 'tests/fixtures/docx/table.docx'))
   const app = await setup({ maxStoreBytes: bytes.length + 1 })

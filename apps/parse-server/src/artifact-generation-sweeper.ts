@@ -1,6 +1,6 @@
 import { lstat, readdir, rm } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import type { ArtifactArchive, MysqlArtifactCatalog } from './artifact-catalog'
+import { artifactGenerationPath, type ArtifactArchive, type MysqlArtifactCatalog } from './artifact-catalog'
 import { syncArtifactDirectory } from './artifact-store'
 import type { ArtifactGenerations } from './artifact-generations'
 import type { ArtifactReadyEviction } from './artifact-ready-eviction'
@@ -29,6 +29,8 @@ export interface GenerationSweepResult {
   readyWithdrawn: number
   readyCollected: number
   readyBytes: number
+  /** Bytes physically removed this pass (generation dirs, staging, legacy flat). */
+  collectedBytes?: number
   errors: Array<Cursor & { code: string }>
   stopped: boolean
 }
@@ -223,8 +225,36 @@ export class ArtifactGenerationSweeper {
     yield* this.emptyKeyCandidates(after?.emptyKey ? after.key : undefined)
   }
 
+  /** Best-effort on-disk size of a candidate; symlinks are never followed. */
+  private async pathBytes(path: string): Promise<number> {
+    let info
+    try {
+      info = await lstat(path)
+    } catch {
+      return 0
+    }
+    if (info.isSymbolicLink()) return 0
+    if (info.isFile()) return info.size
+    if (!info.isDirectory()) return 0
+    let total = 0
+    let entries
+    try {
+      entries = await readdir(path, { withFileTypes: true })
+    } catch {
+      return 0
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) total += await this.pathBytes(join(path, entry.name))
+      else if (entry.isFile()) {
+        total += await lstat(join(path, entry.name)).then((value) => value.size, () => 0)
+      }
+    }
+    return total
+  }
+
   private async collect(candidate: Cursor): Promise<{
-    collected: boolean; flatBytes: number; archive?: ArtifactArchive
+    collected: boolean; flatBytes: number; bytes?: number; archive?: ArtifactArchive
   }> {
     if (candidate.emptyKey) {
       if (!this.archiveCatalog) return { collected: false, flatBytes: 0 }
@@ -236,16 +266,22 @@ export class ArtifactGenerationSweeper {
       const flatBytes = await this.disk.collectLegacyFlat(candidate.key, this.flatCatalog)
       return { collected: flatBytes > 0, flatBytes }
     }
-    if (!candidate.staging)
-      return { collected: await this.disk.collect(candidate.key, candidate.generation, this.catalog), flatBytes: 0 }
+    if (!candidate.staging) {
+      const directory = join(this.disk.root, artifactGenerationPath(candidate.key, candidate.generation))
+      const bytes = await this.pathBytes(directory)
+      const collected = await this.disk.collect(candidate.key, candidate.generation, this.catalog)
+      return { collected, flatBytes: 0, ...(collected ? { bytes } : {}) }
+    }
     // Retirement is irreversible and fences renew/complete before touching another process's staging.
     // Ready, unknown and live generations remain protected, regardless of directory age.
     if (!await this.catalog.retireGeneration(candidate.key, candidate.generation))
       return { collected: false, flatBytes: 0 }
     const directory = join(this.disk.root, 'staging')
-    await rm(join(directory, candidate.staging), { recursive: true, force: true })
+    const stagingPath = join(directory, candidate.staging)
+    const bytes = await this.pathBytes(stagingPath)
+    await rm(stagingPath, { recursive: true, force: true })
     await syncArtifactDirectory(directory)
-    return { collected: true, flatBytes: 0 }
+    return { collected: true, flatBytes: 0, bytes }
   }
 
   private async run(limit: number, graceMs: number, urgent: boolean): Promise<GenerationSweepResult> {
@@ -287,6 +323,7 @@ export class ArtifactGenerationSweeper {
           if (outcome.collected) result.collected++
           else result.protected++
           result.flatBytes += outcome.flatBytes
+          result.collectedBytes = (result.collectedBytes ?? 0) + (outcome.bytes ?? 0)
           if (outcome.flatBytes > 0) {
             result.flatCollected++
             // Observability only: a later pass can recompute the pending bytes.

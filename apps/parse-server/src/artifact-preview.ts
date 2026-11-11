@@ -55,6 +55,22 @@ export interface PreviewSnapshot {
   readonly updatedAt: number
 }
 
+/**
+ * Read-only, non-copying view of a retained build. The hot-cache mirror uses it
+ * to decide whether the local registry actually accepted a frame without paying
+ * for the defensive deep copy that `get()` performs.
+ */
+export interface PreviewMirrorState {
+  readonly format: 'pptx' | 'docx'
+  readonly unitCount: number
+  readonly unitsProduced: number
+  /** Number of units retained locally, as the half-open range [0, cachedUntil). */
+  readonly cachedUntil: number
+  /** The build finished writing every frame; still not ready until the manifest is published. */
+  readonly complete: boolean
+  readonly updatedAt: number
+}
+
 interface PreviewState {
   key: string
   format: 'pptx' | 'docx'
@@ -87,7 +103,11 @@ const DEFAULTS = {
   ttlMs: 60_000,
 }
 
-function parseDocument(value: unknown): PreviewDocument | null {
+/**
+ * Strict validator for a preview document record. Exported so the hot-cache
+ * reader applies exactly the same rules as the in-process registry.
+ */
+export function parsePreviewDocument(value: unknown): PreviewDocument | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const record = value as Record<string, unknown>
   const rawModel = record.model
@@ -144,7 +164,7 @@ export class PreviewRegistry {
         return
       }
       if (event.type === 'document') {
-        const document = parseDocument(event.document)
+        const document = parsePreviewDocument(event.document)
         const unitCount = event.unitCount
         if (!document || !Number.isSafeInteger(unitCount) || unitCount < 0 || unitCount > 100_000) {
           this.dropped++
@@ -187,6 +207,21 @@ export class PreviewRegistry {
     } catch {
       // Progress reporting is observational: a malformed event must never fail a build.
       this.dropped++
+    }
+  }
+
+  /** Read-only view without deep-copying retained units. Never hand this to consumers. */
+  peek(key: string): PreviewMirrorState | undefined {
+    this.prune()
+    const state = this.states.get(key)
+    if (!state) return undefined
+    return {
+      format: state.format,
+      unitCount: state.unitCount,
+      unitsProduced: state.unitsProduced,
+      cachedUntil: state.units.length,
+      complete: state.complete,
+      updatedAt: state.updatedAt,
     }
   }
 

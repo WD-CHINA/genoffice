@@ -77,6 +77,8 @@ export interface BackupCatalogSnapshot {
   archives: Array<{ key: string; fileId: string; generation: number }>
   /** Every durable row that points at a source file (FK-protected relations). */
   references: string[]
+  /** Artifact dependency graph rows (plan §5); optional for older manifests. */
+  dependencies?: Array<{ artifactKey: string; type: string; id: string }>
 }
 export interface BackupManifest {
   schemaVersion: 1
@@ -97,6 +99,7 @@ function critical(snapshot: BackupCatalogSnapshot): unknown {
       ready: row.ready, readyInvalid: row.readyInvalid,
     })),
     archives: snapshot.archives,
+    dependencies: snapshot.dependencies ?? [],
   }
 }
 function equalCritical(a: BackupCatalogSnapshot, b: BackupCatalogSnapshot): boolean {
@@ -150,6 +153,8 @@ async function readMysqlCatalog(q: Queryable): Promise<BackupCatalogSnapshot> {
   const archiveRows = await rows(q, `SELECT artifact_key, file_id, generation
     FROM parse_artifact_archives ORDER BY artifact_key`)
   const pendingRows = await rows(q, 'SELECT file_id FROM parse_pending_sessions')
+  const dependencyRows = await rows(q, `SELECT artifact_key, dependency_type, dependency_id
+    FROM parse_artifact_dependencies ORDER BY artifact_key, dependency_type, dependency_id`)
 
   const references = new Set<string>()
   for (const fileId of [
@@ -183,6 +188,8 @@ async function readMysqlCatalog(q: Queryable): Promise<BackupCatalogSnapshot> {
     archives: archiveRows.map((row) => ({ key: String(row.artifact_key),
       fileId: String(row.file_id), generation: int(row.generation) })),
     references: [...references].sort(),
+    dependencies: dependencyRows.map((row) => ({ artifactKey: String(row.artifact_key),
+      type: String(row.dependency_type), id: String(row.dependency_id) })),
   }
 }
 
@@ -216,7 +223,8 @@ async function readFilesystemCatalog(dataDir: string): Promise<BackupCatalogSnap
   }
   return { backend: 'filesystem', files, library: library.sort((a, b) => a.id < b.id ? -1 : 1),
     artifacts: [], jobs: [], retirements: [], flatArchives: [], archives: [],
-    references: [...new Set([...library.map((entry) => entry.fileId)])].sort() }
+    references: [...new Set([...library.map((entry) => entry.fileId)])].sort(),
+    dependencies: [] }
 }
 
 export interface BackupCatalogBoundary {
@@ -395,6 +403,19 @@ function assertConsistentCatalog(catalog: BackupCatalogSnapshot): void {
   }
   for (const row of [...catalog.jobs, ...catalog.retirements, ...catalog.flatArchives])
     if (!HASH.test(row.key)) throw new BackupManifestError('invalid artifact dependency key')
+  const artifactKeys = new Set(catalog.artifacts.map((row) => row.key))
+  for (const dependency of catalog.dependencies ?? []) {
+    if (!HASH.test(dependency.artifactKey) || !HASH.test(dependency.id) ||
+        (dependency.type !== 'file' && dependency.type !== 'artifact'))
+      throw new BackupManifestError('invalid artifact dependency row')
+    if (!artifactKeys.has(dependency.artifactKey))
+      throw new BackupManifestError('dangling artifact dependency parent')
+    if (dependency.type === 'file') {
+      if (!fileIds.has(dependency.id)) throw new BackupManifestError('dangling file dependency')
+    } else if (!artifactKeys.has(dependency.id)) {
+      throw new BackupManifestError('dangling artifact dependency target')
+    }
+  }
 }
 
 export async function createBackupManifest(options: CreateBackupOptions): Promise<BackupManifest> {
@@ -479,7 +500,8 @@ function assertManifestShape(manifest: BackupManifest): void {
       !manifest.catalog || !['mysql', 'filesystem'].includes(manifest.catalog.backend) ||
       !Array.isArray(manifest.catalog.files) || !Array.isArray(manifest.catalog.library) ||
       !Array.isArray(manifest.catalog.artifacts) || !Array.isArray(manifest.catalog.archives) ||
-      !Array.isArray(manifest.catalog.references))
+      !Array.isArray(manifest.catalog.references) ||
+      (manifest.catalog.dependencies !== undefined && !Array.isArray(manifest.catalog.dependencies)))
     throw new BackupManifestError('unsupported or malformed backup manifest')
   for (const entry of manifest.entries)
     if (!entry || !SAFE_PATH.test(entry.path) || typeof entry.kind !== 'string' ||
@@ -598,6 +620,44 @@ export async function verifyRestore(options: VerifyRestoreOptions): Promise<Rest
     const live = currentArchives.get(tombstone.key)
     if (!live || live.generation < tombstone.generation)
       error('tombstone_lost', `generation tombstone was lost or regressed: ${tombstone.key}`, { key: tombstone.key })
+  }
+  // Artifact dependency graph (plan §5): a backup that loses an edge or points
+  // at a missing artifact/source is incoherent even when every byte hashes.
+  const manifestDeps = manifest.catalog.dependencies ?? []
+  const manifestArtifactKeys = new Set(manifest.catalog.artifacts.map((row) => row.key))
+  const dependencyKey = (row: { artifactKey: string; type: string; id: string }) =>
+    `${row.artifactKey}|${row.type}|${row.id}`
+  for (const dependency of manifestDeps) {
+    if (!manifestArtifactKeys.has(dependency.artifactKey))
+      error('dependency_parent_missing',
+        `dependency parent is not in the manifest: ${dependency.artifactKey}`, { key: dependency.artifactKey })
+    else if (dependency.type === 'file' && !manifestFiles.has(dependency.id))
+      error('dependency_file_missing',
+        `dependency references a missing source: ${dependency.id}`, { fileId: dependency.id })
+    else if (dependency.type === 'artifact' && !manifestArtifactKeys.has(dependency.id))
+      error('dependency_artifact_missing',
+        `dependency references a missing artifact: ${dependency.id}`, { key: dependency.id })
+    else if (dependency.type !== 'file' && dependency.type !== 'artifact')
+      error('dependency_invalid', `dependency has an unknown type: ${dependency.type}`,
+        { key: dependency.artifactKey })
+  }
+  const manifestDepKeys = new Set(manifestDeps.map(dependencyKey))
+  for (const dependency of current.dependencies ?? []) {
+    if (!currentArtifacts.has(dependency.artifactKey)) {
+      error('dependency_parent_missing',
+        `live dependency parent is missing: ${dependency.artifactKey}`, { key: dependency.artifactKey })
+      continue
+    }
+    if (dependency.type === 'file' && !currentFiles.has(dependency.id))
+      error('dependency_file_missing',
+        `live dependency references a missing source: ${dependency.id}`, { fileId: dependency.id })
+    if (dependency.type === 'artifact' && !currentArtifacts.has(dependency.id))
+      error('dependency_artifact_missing',
+        `live dependency references a missing artifact: ${dependency.id}`, { key: dependency.id })
+    if (!manifestDepKeys.has(dependencyKey(dependency)))
+      warn('dependency_added_after_backup',
+        `artifact dependency added after the backup: ${dependencyKey(dependency)}`,
+        { key: dependency.artifactKey })
   }
   for (const row of [...manifest.catalog.jobs, ...manifest.catalog.retirements,
     ...manifest.catalog.flatArchives])

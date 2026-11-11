@@ -1,0 +1,56 @@
+rule_files:
+  - alerts.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: genoffice_parse_job_queue_age_seconds
+        values: 61+0x16
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: GenofficeParseQueueAgeHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: parse-server
+            exp_annotations:
+              summary: Builds are queued for over a minute
+              description: >-
+                genoffice_parse_job_queue_age_seconds > 60 for 10m; cached reads
+                still work, new cold jobs are slow.
+              runbook_url: apps/parse-server/deploy/observability/README.md#queue
+  - interval: 1m
+    input_series:
+      - series: genoffice_parse_errors_total{code="storage_full"}
+        values: 0+1x5
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: GenofficeStorageRejections
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: parse-server
+            exp_annotations:
+              summary: Uploads/builds are rejected for insufficient storage
+              description: >-
+                storage_full 507s observed; watch genoffice_parse_storage_bytes
+                (source/artifact/staging split) — GC/watermarks must reclaim
+                space or capacity must be added (plan §9).
+              runbook_url: apps/parse-server/deploy/observability/README.md#storage
+  - interval: 1m
+    input_series:
+      - series: genoffice_cache_breaker_open
+        values: 1+0x10
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: GenofficeCacheBreakerOpen
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: parse-server
+            exp_annotations:
+              summary: Hot cache circuit breaker stays open
+              description: >-
+                Redis commands keep failing; requests degrade to MySQL/disk.
+                Consider rolling back to mode=memory.
+              runbook_url: apps/parse-server/deploy/observability/README.md#cache

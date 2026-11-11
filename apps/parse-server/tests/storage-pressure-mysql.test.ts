@@ -17,6 +17,28 @@ const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { while (cleanups.length) await cleanups.pop()!() })
 
+/**
+ * Distinct ready artifacts need distinct source bytes.
+ * `createBlankPptx` embeds the JSZip DOS timestamp (2 s granularity), so two
+ * calls inside one window are byte-identical and the content-addressed upload
+ * collapses them into a single file. Regenerate until the bytes differ.
+ */
+async function distinctBlankDecks(count: number): Promise<Buffer[]> {
+  const decks: Buffer[] = []
+  for (let index = 0; index < count; index++) {
+    for (let attempt = 0; ; attempt++) {
+      const deck = Buffer.from(await createBlankPptx())
+      if (!decks.some((other) => other.equals(deck))) {
+        decks.push(deck)
+        break
+      }
+      if (attempt >= 8) throw new Error('blank decks did not become distinct in time')
+      await new Promise((resolve) => setTimeout(resolve, 1100))
+    }
+  }
+  return decks
+}
+
 describe.skipIf(!socketPath)('shared pressure budget over real MySQL', () => {
   async function setup(options: { roundMs?: number; cooldownMs?: number } = {}) {
     const database = `genoffice_pressure_${randomUUID().replaceAll('-', '')}`
@@ -116,9 +138,9 @@ describe.skipIf(!socketPath)('shared pressure budget over real MySQL', () => {
       headers: { Authorization: 'Bearer secret', ...init?.headers },
     })
     const sessionIds: string[] = []
-    for (let index = 0; index < 3; index++) {
+    for (const deck of await distinctBlankDecks(3)) {
       const uploaded = await request('/v1/files', {
-        method: 'POST', body: Buffer.from(await createBlankPptx()),
+        method: 'POST', body: deck,
       })
       expect(uploaded.status, await uploaded.clone().text()).toBe(201)
       const { fileId } = await uploaded.json() as { fileId: string }

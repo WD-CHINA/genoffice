@@ -1,0 +1,34 @@
+# Example Alertmanager routing for the parse-server alerts (plan §11/P4).
+# Copy to alertmanager.yml, replace the webhook URLs with the real on-call
+# receiver, and reload Alertmanager. This file is a template, not a deployment.
+route:
+  receiver: default-webhook
+  group_by: [alertname, severity, service]
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  routes:
+    - matchers: ['severity="critical"']
+      receiver: oncall-webhook
+      continue: false
+    - matchers: ['alertname=~"ParseCache.*"']
+      receiver: cache-webhook
+      continue: true
+inhibit_rules:
+  # A full storage budget explains most downstream errors; page on the root cause.
+  - source_matchers: ['alertname="ParseStorageFull"']
+    target_matchers: ['severity=~"warning|critical"']
+    equal: [service]
+receivers:
+  - name: default-webhook
+    webhook_configs:
+      - url: 'https://alerts.example.invalid/genoffice/default'
+        send_resolved: true
+  - name: oncall-webhook
+    webhook_configs:
+      - url: 'https://alerts.example.invalid/genoffice/oncall'
+        send_resolved: true
+  - name: cache-webhook
+    webhook_configs:
+      - url: 'https://alerts.example.invalid/genoffice/cache'
+        send_resolved: false

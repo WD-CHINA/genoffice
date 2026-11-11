@@ -46,7 +46,8 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     })
     await first.init()
     await second.init()
-    await first.pool.execute(`INSERT INTO parse_files VALUES (?, ?, 0, 'pptx', ?)`,
+    await first.pool.execute(
+      `INSERT INTO parse_files (file_id, sha256, size, format, created_at) VALUES (?, ?, 0, 'pptx', ?)`,
       [identity.fileId, identity.fileId, new Date().toISOString()])
     return { db: first, db2: second, a: new MysqlArtifactCatalog(first), b: new MysqlArtifactCatalog(second) }
   }
@@ -538,6 +539,62 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     expect(await (await disk.open(current)).read('unit:0')).toEqual({ generation: 2 })
     await expect(disk.open(old)).rejects.toThrow('generation missing')
     expect(await new ArtifactStore(root).totalBytes()).toBe(current.bytes)
+  })
+  it('requeues expired build leases on restart without touching live leases or ready pointers', async () => {
+    const { db, a } = await setup()
+    const stale = acquired(await a.claim(identity, 'stale-builder'))
+    const liveIdentity = { ...identity, options: { variant: 'live' } }
+    const live = acquired(await a.claim(liveIdentity, 'live-builder'))
+    await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [stale.key])
+
+    const result = await a.recoverExpiredBuilds()
+    expect(result).toEqual({ examined: 1, requeued: 1 })
+    const [jobs] = await db.pool.query(
+      'SELECT artifact_key, state, lease_owner, lease_until FROM parse_jobs WHERE artifact_key IN (?, ?) ORDER BY artifact_key',
+      [stale.key, live.key])
+    const staleJob = (jobs as Array<{ artifact_key: string; state: string; lease_owner: string | null; lease_until: number | null }>)
+      .find((row) => row.artifact_key === stale.key)!
+    expect(staleJob).toMatchObject({ state: 'queued', lease_owner: null, lease_until: null })
+    expect((jobs as Array<{ artifact_key: string; state: string }>)
+      .find((row) => row.artifact_key === live.key)).toMatchObject({ state: 'building' })
+    const [artifacts] = await db.pool.query(
+      'SELECT artifact_key, state FROM parse_artifacts WHERE artifact_key IN (?, ?)', [stale.key, live.key])
+    expect((artifacts as Array<{ artifact_key: string; state: string }>)
+      .find((row) => row.artifact_key === stale.key)!.state).toBe('queued')
+
+    // The requeued job is claimable again with a fresh generation.
+    const retried = acquired(await a.claim(identity, 'after-restart'))
+    expect(retried.generation).toBe(stale.generation + 1)
+
+    // A ready pointer survives recovery; only the job returns to queued.
+    const readyIdentity = { ...identity, options: { variant: 'ready-rebuild' } }
+    const built = acquired(await a.claim(readyIdentity, 'builder'))
+    expect(await a.complete(built, summary)).toBe(true)
+    const rebuild = acquired(await a.claim(readyIdentity, 'rebuilder', true))
+    await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [rebuild.key])
+    expect((await a.recoverExpiredBuilds()).requeued).toBe(1)
+    const [ready] = await db.pool.query(
+      'SELECT state, ready_generation FROM parse_artifacts WHERE artifact_key = ?', [rebuild.key])
+    expect((ready as Array<{ state: string; ready_generation: number }>)[0])
+      .toMatchObject({ state: 'ready', ready_generation: 1 })
+  })
+
+  it('records a deliberate cancellation as cancelled, not failed and never ready', async () => {
+    const { db, a } = await setup()
+    const lease = acquired(await a.claim(identity, 'cancel-writer'))
+    expect(await a.cancel(lease)).toBe(true)
+    const [jobs] = await db.pool.query(
+      'SELECT state, error_code FROM parse_jobs WHERE artifact_key = ?', [lease.key])
+    expect((jobs as Array<{ state: string; error_code: string }>)[0])
+      .toMatchObject({ state: 'cancelled', error_code: 'build_cancelled' })
+    const [artifacts] = await db.pool.query(
+      'SELECT state FROM parse_artifacts WHERE artifact_key = ?', [lease.key])
+    expect((artifacts as Array<{ state: string }>)[0].state).toBe('cancelled')
+    // A cancelled lease cannot publish, and the next claim still gets a fresh generation.
+    expect(await a.complete(lease, summary)).toBe(false)
+    const next = acquired(await a.claim(identity, 'after-cancel'))
+    expect(next.generation).toBe(lease.generation + 1)
+    expect(() => a.cancel(next, 'BAD CODE')).toThrow('invalid artifact error code')
   })
 })
 

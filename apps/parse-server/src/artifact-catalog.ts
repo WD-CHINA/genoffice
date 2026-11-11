@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { PoolConnection, RowDataPacket } from 'mysql2/promise'
+import type { PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise'
 import { artifactKey, canonicalJson, type ArtifactIdentity } from './artifact-store'
 import type { MysqlDatabase } from './mysql'
 
@@ -179,6 +179,86 @@ export class MysqlArtifactCatalog {
         bytes = 0, unit_count = 0, error_code = ? WHERE artifact_key = ?`, [reason, expected.key])
       return true
     })
+  }
+
+  /**
+   * Job id of the current in-flight build for an artifact key, if the catalog
+   * itself still considers it building. This is only used to address the
+   * optional preview/progress projection on another instance (plan §5.1): a
+   * missing or expired projection is treated as "unknown", never as ready.
+   */
+  async activeJob(artifactKey: string): Promise<string | null> {
+    if (!HASH.test(artifactKey)) return null
+    const [rows] = await this.db.pool.execute<RowDataPacket[]>(`
+      SELECT j.job_id FROM parse_jobs j
+      CROSS JOIN (SELECT CAST(UNIX_TIMESTAMP(CURRENT_TIMESTAMP(3)) * 1000 AS UNSIGNED) AS now_ms) clock
+      WHERE j.artifact_key = ? AND j.state = 'building' AND j.lease_until > clock.now_ms
+      LIMIT 1`, [artifactKey])
+    const jobId = rows[0]?.job_id
+    return typeof jobId === 'string' ? jobId : null
+  }
+
+  /**
+   * Record an artifact dependency (plan §5 `artifact_dependencies`). File rows
+   * protect the original source; artifact rows record a derived bundle's model
+   * generation so GC/backup tooling can explain why bytes are retained.
+   */
+  async recordDependency(
+    artifactKey: string,
+    type: 'file' | 'artifact',
+    dependencyId: string,
+  ): Promise<boolean> {
+    if (!HASH.test(artifactKey) || !HASH.test(dependencyId))
+      throw new Error('invalid artifact dependency')
+    if (type !== 'file' && type !== 'artifact') throw new Error('invalid artifact dependency type')
+    const [result] = await this.db.pool.execute(
+      `INSERT IGNORE INTO parse_artifact_dependencies
+         (artifact_key, dependency_type, dependency_id, created_at)
+       VALUES (?, ?, ?, ?)`,
+      [artifactKey, type, dependencyId, Date.now()],
+    )
+    return (result as { affectedRows: number }).affectedRows > 0
+  }
+
+  async dependenciesOf(artifactKey: string): Promise<Array<{ type: string; id: string }>> {
+    if (!HASH.test(artifactKey)) throw new Error('invalid artifact key')
+    const [rows] = await this.db.pool.execute<RowDataPacket[]>(
+      `SELECT dependency_type, dependency_id FROM parse_artifact_dependencies
+       WHERE artifact_key = ? ORDER BY dependency_type, dependency_id`,
+      [artifactKey],
+    )
+    return rows.map((row) => ({ type: String(row.dependency_type), id: String(row.dependency_id) }))
+  }
+
+  /** Conservative source protection: any recorded file dependency blocks GC. */
+  async hasDependencyOnFile(fileId: string): Promise<boolean> {
+    if (!HASH.test(fileId)) throw new Error('invalid artifact dependency source')
+    const [rows] = await this.db.pool.execute<RowDataPacket[]>(
+      `SELECT 1 FROM parse_artifact_dependencies
+       WHERE dependency_type = 'file' AND dependency_id = ? LIMIT 1`,
+      [fileId],
+    )
+    return rows.length > 0
+  }
+
+  /** Read-only lookup used by cross-instance attach before touching disk bytes. */
+  async getReady(artifactKey: string): Promise<ReadyArtifact | null> {
+    if (!HASH.test(artifactKey)) throw new Error('invalid artifact key')
+    const [rows] = await this.db.pool.execute<RowDataPacket[]>(
+      'SELECT * FROM parse_artifacts WHERE artifact_key = ? LIMIT 1', [artifactKey],
+    )
+    const row = rows[0]
+    if (!row) return null
+    return this.ready(row)
+  }
+
+  /** Any artifact row (building or ready) protects its generation directories. */
+  async hasArtifactRow(artifactKey: string): Promise<boolean> {
+    if (!HASH.test(artifactKey)) throw new Error('invalid artifact key')
+    const [rows] = await this.db.pool.execute<RowDataPacket[]>(
+      'SELECT 1 FROM parse_artifacts WHERE artifact_key = ? LIMIT 1', [artifactKey],
+    )
+    return rows.length > 0
   }
 
   async hasFileReference(fileId: string): Promise<boolean> {
@@ -478,6 +558,61 @@ export class MysqlArtifactCatalog {
         WHERE artifact_key = ?`, [lease.generation, path, info.manifestSha256, info.bytes, info.unitCount, now, lease.key])
       await connection.execute(`UPDATE parse_jobs SET state = 'ready', lease_owner = NULL,
         lease_until = NULL, progress = 100 WHERE artifact_key = ?`, [lease.key])
+      // Same transaction: the dependency row and the ready pointer publish
+      // together, so GC can never see a ready artifact without its source link.
+      await connection.execute(
+        `INSERT IGNORE INTO parse_artifact_dependencies
+           (artifact_key, dependency_type, dependency_id, created_at)
+         SELECT artifact_key, 'file', file_id, ? FROM parse_artifacts WHERE artifact_key = ?`,
+        [now, lease.key],
+      )
+    })
+  }
+
+  /**
+   * Plan §6: on restart, actively requeue builds whose lease expired so they are
+   * visible as queued instead of staying "building" forever. Live leases are
+   * never touched. A ready pointer is preserved; a non-ready artifact becomes
+   * queued again and can be claimed (generation+1) by the resumed waiter.
+   */
+  recoverExpiredBuilds(limit = 100): Promise<{ examined: number; requeued: number }> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+      throw new Error('invalid lease recovery limit')
+    return this.transaction(async (connection) => {
+      const now = await this.now(connection)
+      const [rows] = await connection.query<RowDataPacket[]>(
+        `SELECT job.artifact_key AS artifact_key, job.job_id AS job_id,
+           job.generation AS generation, job.lease_until AS lease_until,
+           artifact.state AS artifact_state
+         FROM parse_jobs job
+         JOIN parse_artifacts artifact ON artifact.artifact_key = job.artifact_key
+         WHERE job.state = 'building' AND (job.lease_until IS NULL OR job.lease_until <= ?)
+         ORDER BY job.lease_until ASC LIMIT ${limit} FOR UPDATE`, [now])
+      let requeued = 0
+      for (const row of rows) {
+        const key = String(row.artifact_key)
+        const [result] = await connection.execute<ResultSetHeader>(
+          `UPDATE parse_jobs SET state = 'queued', lease_owner = NULL, lease_until = NULL
+           WHERE artifact_key = ? AND job_id = ? AND state = 'building'`,
+          [key, String(row.job_id)])
+        if (!result.affectedRows) continue
+        await connection.execute(
+          `UPDATE parse_artifacts SET state = CASE WHEN ready_generation IS NULL THEN 'queued' ELSE state END,
+             error_code = NULL WHERE artifact_key = ? AND state = 'building'`, [key])
+        requeued++
+      }
+      return { examined: rows.length, requeued }
+    })
+  }
+
+  /** Plan §6: a deliberately abandoned build is cancelled, not failed. */
+  cancel(lease: ArtifactLease, errorCode = 'build_cancelled'): Promise<boolean> {
+    if (!/^[a-z0-9_]{1,64}$/.test(errorCode)) throw new Error('invalid artifact error code')
+    return this.withLease(lease, async (connection, artifact) => {
+      await connection.execute(`UPDATE parse_jobs SET state = 'cancelled', lease_owner = NULL,
+        lease_until = NULL, error_code = ? WHERE artifact_key = ?`, [errorCode, lease.key])
+      await connection.execute('UPDATE parse_artifacts SET state = ?, error_code = ? WHERE artifact_key = ?',
+        [artifact.ready_generation === null ? 'cancelled' : 'ready', errorCode, lease.key])
     })
   }
 

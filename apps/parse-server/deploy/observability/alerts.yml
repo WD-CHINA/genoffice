@@ -1,0 +1,114 @@
+# Prometheus alert rules for the parse service (plan §11/P4).
+# Every expression references a series exposed by GET /metrics.
+groups:
+  - name: genoffice-parse-server
+    rules:
+      - alert: GenofficeParseErrorRateHigh
+        expr: sum(rate(genoffice_parse_errors_total[5m])) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: parse-server
+        annotations:
+          summary: "Parse service error rate is high"
+          description: "More than 0.5 request errors/s over 5m (codes in genoffice_parse_errors_total)."
+          runbook_url: "apps/parse-server/deploy/observability/README.md#parse-errors"
+
+      - alert: GenofficeParseQueueAgeHigh
+        expr: genoffice_parse_job_queue_age_seconds > 60
+        for: 10m
+        labels:
+          severity: warning
+          service: parse-server
+        annotations:
+          summary: "Builds are queued for over a minute"
+          description: "genoffice_parse_job_queue_age_seconds > 60 for 10m; cached reads still work, new cold jobs are slow."
+          runbook_url: "apps/parse-server/deploy/observability/README.md#queue"
+
+      - alert: GenofficeParseMemoryBudgetHigh
+        expr: genoffice_parse_reserved_memory_bytes / genoffice_parse_memory_budget_bytes > 0.9
+        for: 10m
+        labels:
+          severity: warning
+          service: parse-server
+        annotations:
+          summary: "Parse memory budget is nearly exhausted"
+          description: "Reserved parse memory is above 90% of the configured budget (plan §6.1)."
+          runbook_url: "apps/parse-server/deploy/observability/README.md#memory"
+
+      - alert: GenofficeStorageRejections
+        expr: sum(increase(genoffice_parse_errors_total{code="storage_full"}[10m])) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: parse-server
+        annotations:
+          summary: "Uploads/builds are rejected for insufficient storage"
+          description: "storage_full 507s observed; watch genoffice_parse_storage_bytes (source/artifact/staging split) — GC/watermarks must reclaim space or capacity must be added (plan §9)."
+          runbook_url: "apps/parse-server/deploy/observability/README.md#storage"
+
+      - alert: GenofficeArtifactCorruption
+        expr: increase(genoffice_parse_artifact_corrupt_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: parse-server
+        annotations:
+          summary: "Artifact corruption reported"
+          description: "A ready artifact was withdrawn for repair; inspect source/hash health and the affected artifactKey logs."
+          runbook_url: "apps/parse-server/deploy/observability/README.md#corruption"
+
+      - alert: GenofficeBundleFailures
+        expr: rate(genoffice_parse_bundle_failure_total[10m]) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: parse-server
+        annotations:
+          summary: "Offline bundle failures are elevated"
+          description: "Bundle manifest/resource failures above 0.05/s; check source parts and catalog readiness."
+          runbook_url: "apps/parse-server/deploy/observability/README.md#bundles"
+
+      - alert: GenofficeUnitReadLatencyHigh
+        expr: histogram_quantile(0.95, sum(rate(genoffice_parse_unit_read_latency_seconds_bucket[5m])) by (le)) > 2
+        for: 10m
+        labels:
+          severity: warning
+          service: parse-server
+        annotations:
+          summary: "p95 unit read latency is above 2s"
+          description: "Cache/artifact reads are slow; check disk IO and whether rebuilds are evicting warm artifacts."
+          runbook_url: "apps/parse-server/deploy/observability/README.md#latency"
+
+      - alert: GenofficeCacheErrorRateHigh
+        expr: (rate(genoffice_cache_error_total[5m]) + rate(genoffice_cache_timeout_total[5m])) / clamp_min(rate(genoffice_cache_hit_total[5m]) + rate(genoffice_cache_miss_total[5m]), 0.001) > 0.001
+        for: 10m
+        labels:
+          severity: warning
+          service: parse-server
+        annotations:
+          summary: "Optional Redis hot cache error rate is above 0.1%"
+          description: "Correctness is unaffected (degrade-only), but the first-screen/progress projection is failing; check Redis health."
+          runbook_url: "apps/parse-server/deploy/observability/README.md#cache"
+
+      - alert: GenofficeCacheHitRateLow
+        expr: genoffice_cache_enabled == 1 and genoffice_cache_hit_rate < 0.8
+        for: 30m
+        labels:
+          severity: warning
+          service: parse-server
+        annotations:
+          summary: "Hot cache hit rate is below the §5.1 SLO"
+          description: "hitRate < 80% with cache enabled; either key/jobId churn or TTL too short."
+          runbook_url: "apps/parse-server/deploy/observability/README.md#cache"
+
+      - alert: GenofficeCacheBreakerOpen
+        expr: genoffice_cache_breaker_open > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: parse-server
+        annotations:
+          summary: "Hot cache circuit breaker stays open"
+          description: "Redis commands keep failing; requests degrade to MySQL/disk. Consider rolling back to mode=memory."
+          runbook_url: "apps/parse-server/deploy/observability/README.md#cache"

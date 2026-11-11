@@ -15,7 +15,13 @@
     "stress": "node --import tsx scripts/stress-smoke.mts",
     "stress:docx": "node --import tsx scripts/docx-stress.mts",
     "fixture:docx-large": "node --import tsx scripts/docx-large-fixture.mts",
-    "fixture:docx-1g": "node --import tsx scripts/docx-1g-fixture.mts"
+    "fixture:docx-1g": "node --import tsx scripts/docx-1g-fixture.mts",
+    "cache:slo": "node --import tsx scripts/cache-slo-drill.mts",
+    "sessions:load": "node --import tsx scripts/session-load.mts",
+    "fingerprint": "node --import tsx scripts/build-fingerprint.mts",
+    "artifact:export": "node --import tsx scripts/export-artifact.mts",
+    "load:profile": "node --import tsx scripts/load-profile.mts",
+    "restore:drill": "node --import tsx scripts/restore-drill.mts"
   },
   "dependencies": {
     "@genoffice/parse-contract": "*",

@@ -3,7 +3,7 @@ import { ArtifactReadHandle } from './artifact-read-handle'
 import { StorageBudget } from './storage-budget'
 import { SqlStorageReservations } from './storage-reservations'
 import { SqlPressureLedger } from './storage-pressure'
-import { statfs } from 'node:fs/promises'
+import { stat, statfs } from 'node:fs/promises'
 import { PendingSessionStore, type PendingSession } from './pending-session-store'
 import { artifactKey } from './artifact-store'
 import { isolatedMemory } from './isolated-worker'
@@ -16,13 +16,18 @@ import { ArtifactSession } from './artifact-session'
 import { MysqlArtifactCatalog } from './artifact-catalog'
 import { ArtifactGenerations } from './artifact-generations'
 import { ArtifactGenerationSweeper } from './artifact-generation-sweeper'
+import { reconcileOrphanGenerations, type GenerationReconcileResult } from './generation-reconcile'
 import { ArtifactCollectionService } from './artifact-collection-service'
 import { ArtifactReadyEviction } from './artifact-ready-eviction'
 import { PreviewRegistry } from './artifact-preview'
 import { parserFingerprint } from './parser-fingerprint'
 import { refreshDocxResourceUrls } from './resource-urls'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { effectiveRolloutPercent } from './rollout'
+import { layoutCacheKey } from './layout-key'
+import { CanaryGuard } from './canary-guard'
 import { join } from 'node:path'
+import { performance } from 'node:perf_hooks'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import {
@@ -38,18 +43,40 @@ import { parseRange } from './range'
 import { signResource, verifyResource } from './sign'
 import { chunkDir, collectOrphanChunks, removeChunks } from './docx-chunks'
 import { ParseLimitError } from './pptx-slim'
+import type { PptxFontSummary } from './pptx'
 import { SessionStore, type SessionRecord } from './session-store'
 import {
   createMetrics,
   logEvent,
+  recordBundleFailure,
   recordError,
+  recordGcBytes,
   recordRequest,
+  recordSignatureRefresh,
+  recordSweeperBytes,
+  recordUnitRead,
   renderPrometheus,
   type ServerMetrics,
 } from './telemetry'
 import { ContentStore, UploadTooLargeError, type StoredFile } from './storage'
 import { MysqlDatabase, type MysqlConfig } from './mysql'
+import {
+  CACHE_DEFAULTS,
+  cacheKeyPrefix,
+  type CacheMode,
+  type HotCache,
+  type HotCacheStore,
+  type RedisCacheConfig,
+} from './cache-contract'
+import { createHotCache } from './hot-cache'
+import { createRedisCacheStore } from './redis-cache-client'
+import { PARSE_DTO_VERSION } from '@genoffice/parse-contract'
+import { IdempotencyStore, readIdempotencyKey } from './idempotency'
+import { SharedIdempotencyStore } from './shared-idempotency'
+import { normalizeLayoutPrefs } from './layout-prefs'
 import { verifyRestore, type BackupManifest, type RestoreReport } from './backup-manifest'
+import { MEMORY_CACHE_BUDGET_DEFAULT_BYTES, MODEL_CACHE_DEFAULT_BYTES, ModelCache } from './model-cache'
+import { WORK_POOL_DEFAULTS, WorkPools } from './work-pools'
 
 export interface ParseServerOptions {
   /** Directory for the content-addressed store, metadata and temp uploads. */
@@ -66,6 +93,8 @@ export interface ParseServerOptions {
   fontSetHash?: string
   /** When set, every non-public route requires `Authorization: Bearer <token>`. */
   token?: string
+  /** Accepted only during token rotation; new requests should use `token`. */
+  previousToken?: string
   /** Browser origins allowed by CORS; empty means same-origin only. */
   allowedOrigins?: string[]
   /** Idle time before an open parse session is released. */
@@ -88,6 +117,18 @@ export interface ParseServerOptions {
   workerLifetimeMs?: number
   /** Lightweight reading session limit, independent of parse concurrency. */
   maxSessions?: number
+  /** Byte budget for the in-memory model read cache; 0 disables it (plan §6.1). */
+  modelCacheMaxBytes?: number
+  /** Aggregate HTTP/index/read cache target; the model cache is carved out of it. */
+  memoryCacheBudgetBytes?: number
+  /** Concurrent HTTP handler cap; health and metrics stay reachable when full. */
+  httpMaxConcurrency?: number
+  /** Concurrent artifact-read disk I/O operations (plan §6.1). */
+  diskIoConcurrency?: number
+  /** Concurrent artifact decompression operations (plan §6.1). */
+  inflateConcurrency?: number
+  /** Bounded retries for transient infrastructure build failures (plan §6). */
+  buildRetryAttempts?: number
   maxParseJobs?: number
   maxQueuedParseJobs?: number
   /** Delete unreferenced content older than this. */
@@ -120,6 +161,54 @@ export interface ParseServerOptions {
   previewMaxUnits?: number
   /** Retention for a completed preview snapshot; failed builds are dropped at once. */
   previewTtlMs?: number
+  /**
+   * Optional cross-node hot cache (plan §5.1). `memory` keeps the in-process
+   * preview only; `redis` mirrors preview frames and build progress and still
+   * never carries ready pointers, leases or quotas.
+   */
+  cacheMode?: CacheMode
+  /** Redis connection for `cacheMode: 'redis'`; ignored in memory mode. */
+  redis?: RedisCacheConfig
+  /** One command budget on the request path (plan §5.1: 50–100 ms). */
+  cacheCommandTimeoutMs?: number
+  /** Consecutive failures open the breaker for this long before a half-open probe. */
+  cacheBreakerMs?: number
+  /** TTL of the build-progress projection. */
+  cacheProgressTtlMs?: number
+  /** Process-wide progress write throttle. */
+  cacheProgressThrottleMs?: number
+  /** A single preview field above this size is not cached. */
+  cacheMaxFieldBytes?: number
+  /** Tests/embeddings may inject a store instead of opening Redis. */
+  cacheStore?: HotCacheStore
+  /**
+   * Staged-rollback switch (plan §10): when false the v2 async session routes
+   * answer 404 so clients use the v1 synchronous contract again.
+   */
+  asyncSessionsV2?: boolean
+  /**
+   * Deterministic per-file v2 canary (plan §10 gray switch): 0 disables the v2
+   * session route, 100 serves every file, values in between bucket by fileId.
+   */
+  v2RolloutPercent?: number
+  /** Optional request header used as the canary bucket (tenant/user id). */
+  v2RolloutHeader?: string
+  /** Time-based auto ramp: percentage points added per hour of uptime. */
+  v2RolloutRampPerHour?: number
+  /** 0–100 server-error rate that auto-pauses the v2 route; 0 disables. */
+  v2AutoPauseErrorRate?: number
+  /** Staged/opt-in: materialize document.json/units/fonts next to each generation. */
+  canonicalArtifactExport?: boolean
+  /** Hard cap for each shutdown phase (plan §6.3); defaults 30 s. */
+  shutdownTimeoutMs?: number
+  /** Advertised client routing thresholds (plan §8.1); defaults 32/64/64 MiB. */
+  docxAutoRemoteBytes?: number
+  pptxAutoRemoteBytes?: number
+  docxFullRenderBytes?: number
+  /** Retention of a v2 POST response keyed by Idempotency-Key (in-process). */
+  idempotencyTtlMs?: number
+  /** Bounded number of remembered idempotent v2 responses. */
+  idempotencyMaxEntries?: number
   /** MySQL persistence for file metadata and sessions; unset = filesystem only. */
   mysql?: MysqlConfig
   /**
@@ -142,13 +231,22 @@ export interface ParseServer {
 
 type SessionHandle = ArtifactSession
 
+interface StoredSessionDocument {
+  model: DocModel
+  fonts: PptxFontSummary[]
+}
+
 interface SessionEntry {
   record: SessionRecord
   session?: SessionHandle
   opening?: Promise<SessionHandle>
+  /** Artifact document lazily read for v1/v2 responses; never persisted per session. */
+  document?: StoredSessionDocument
+  documentOpening?: Promise<StoredSessionDocument>
 }
 
 interface Context {
+  dataDir: string
   store: ContentStore
   artifacts: ArtifactStore
   gcFlights: Set<Promise<void>>
@@ -159,6 +257,22 @@ interface Context {
   generationCollection?: ArtifactCollectionService
   readyEviction?: ArtifactReadyEviction
   previews: PreviewRegistry
+  cache: HotCache
+  asyncSessionsV2: boolean
+  v2RolloutPercent: number
+  v2RolloutHeader?: string
+  v2RolloutRampPerHour: number
+  canaryGuard: CanaryGuard
+  canonicalArtifactExport: boolean
+  shutdownTimeoutMs: number
+  parseThresholds: {
+    docxAutoRemoteBytes: number
+    pptxAutoRemoteBytes: number
+    docxFullRenderBytes: number
+  }
+  idempotency: IdempotencyStore
+  idempotencyTtlMs: number
+  sharedIdempotency?: SharedIdempotencyStore
   storageBudget: StorageBudget
   sharedAdmission?: SqlStorageReservations
   sharedPressure?: SqlPressureLedger
@@ -168,12 +282,23 @@ interface Context {
   parserFingerprint: string
   sessionStore: SessionStore
   pendingViews: PendingSessionStore
+  /** Durable reader identity for last-waiter cancellation. */
+  readerId: string
   asyncFlights: Map<string, Promise<void>>
+  /** Demand signal per async preview; aborted only when the last waiter leaves. */
+  asyncAborts: Map<string, { artifactKey: string; controller: AbortController }>
   metrics: ServerMetrics
+  modelCache?: ModelCache
+  workPools: WorkPools
+  memoryCacheBudgetBytes: number
+  httpInFlight: number
+  httpMaxConcurrency: number
+  httpRejected: number
   limits: ServerLimits
   parserVersion: string
   fontSetHash: string
   token?: string
+  previousToken?: string
   allowedOrigins: string[]
   sessions: Map<string, SessionEntry>
   sessionTtlMs: number
@@ -196,6 +321,8 @@ interface Context {
   chunkRoot: string
   db?: MysqlDatabase
   restoreReport?: RestoreReport
+  startupReconcile?: GenerationReconcileResult
+  startupLeaseRecovery?: { examined: number; requeued: number }
 }
 
 const CONTENT_TYPES: Record<DocFormat, string> = {
@@ -292,6 +419,7 @@ function baseUrlOf(req: IncomingMessage, ctx: Context): string {
 function capabilitiesOf(ctx: Context): Capabilities {
   return {
     contractVersion: CONTRACT_VERSION,
+    dtoVersion: PARSE_DTO_VERSION,
     parserVersion: ctx.parserVersion,
     formats: ['pptx', 'pdf', 'docx'],
     stages: {
@@ -301,12 +429,13 @@ function capabilitiesOf(ctx: Context): Capabilities {
     },
     maxBytes: ctx.limits.maxUploadBytes,
     fontSetHash: ctx.fontSetHash,
+    thresholds: ctx.parseThresholds,
     features: {
       lazyAssets: true,
       rangeRequests: true,
       fontWidthFeedback: true,
       streamingUnits: true,
-      asyncSessions: true,
+      asyncSessions: ctx.asyncSessionsV2,
       historyLibrary: true,
       offlineBundles: true,
       incrementalPreview: true,
@@ -337,11 +466,34 @@ function sessionUnits(
 
 function touchEntry(entry: SessionEntry, ctx: Context): void {
   entry.record.lastUsed = Date.now()
+  entry.record.expiresAt = entry.record.lastUsed + ctx.sessionTtlMs
   void ctx.sessionStore.set(entry.record).catch((error: unknown) =>
     logEvent('warn', 'session_touch_failed', {
       message: error instanceof Error ? error.message : String(error),
     }),
   )
+}
+
+/** Record one unit/model read; layout work is measured separately by the renderer. */
+async function measuredUnitRead<T>(ctx: Context, work: () => Promise<T>): Promise<T> {
+  const started = performance.now()
+  try {
+    return await work()
+  } finally {
+    recordUnitRead(ctx.metrics, (performance.now() - started) / 1000)
+  }
+}
+
+/** Sign DOCX resource descriptions at response time and count the refresh. */
+function signedDocxPayload(
+  ctx: Context,
+  value: unknown,
+  fileId: string,
+  baseUrl: string,
+): unknown {
+  const payload = refreshDocxResourceUrls(value, fileId, baseUrl, ctx.token)
+  if (ctx.token) recordSignatureRefresh(ctx.metrics)
+  return payload
 }
 
 function parseFailure(error: unknown): HttpError {
@@ -379,10 +531,10 @@ function parseFailure(error: unknown): HttpError {
 }
 
 function openDocument(ctx: Context, ...args: Parameters<typeof ArtifactSession.open>): Promise<ArtifactSession> {
-  const [store, input, queue, onAdmission] = args
+  const [store, input, queue, onAdmission, demand] = args
   return ctx.sharedArtifacts
-    ? ArtifactSession.openShared(store, input, ctx.sharedArtifacts, queue, onAdmission)
-    : ArtifactSession.open(...args)
+    ? ArtifactSession.openShared(store, input, ctx.sharedArtifacts, queue, onAdmission, demand)
+    : ArtifactSession.open(store, input, queue, onAdmission, demand)
 }
 
 /** Begin cancellation synchronously; keep asynchronous worker/lease cleanup owned by the server. */
@@ -431,6 +583,9 @@ async function openRestoredSession(
   }
   const path = await ctx.store.pathOf(entry.record.fileId)
   if (!path) throw new HttpError(404, 'not_found', 'file content is missing')
+  const format = entry.record.format ?? entry.record.model?.format
+  if (format !== 'pptx' && format !== 'docx')
+    throw new HttpError(409, 'session_expired', 'session record has no artifact identity')
   const baseUrl = baseUrlOf(req, ctx)
   try {
     entry.session = await openDocument(ctx,
@@ -440,7 +595,7 @@ async function openRestoredSession(
         fileId: entry.record.fileId,
         path,
         width: entry.record.width,
-        format: entry.record.model.format as 'pptx' | 'docx',
+        format,
         parserVersion: ctx.parserVersion,
         parserFingerprint: ctx.parserFingerprint,
         baseUrl,
@@ -461,12 +616,105 @@ async function openRestoredSession(
   } catch (error) {
     throw parseFailure(error)
   }
-  entry.record.baseUrl = baseUrl
-  entry.record.model = entry.session.model
-  entry.record.fonts = entry.session.fonts
+  // New records reference the artifact: no full model/fonts/baseUrl copy is
+  // written back. Only the identity and the transient document cache are kept.
+  entry.record.format = entry.session.model.format === 'pptx' ||
+    entry.session.model.format === 'docx'
+    ? entry.session.model.format
+    : format
+  entry.record.artifactKey ??= artifactKey(
+    ArtifactSession.identity({
+      fileId: entry.record.fileId,
+      format: entry.record.format,
+      parserVersion: ctx.parserVersion,
+      parserFingerprint: ctx.parserFingerprint,
+    }),
+  )
   entry.record.parserVersion = ctx.parserVersion
+  entry.document = { model: entry.session.model, fonts: entry.session.fonts }
   touchEntry(entry, ctx)
   return entry.session
+}
+
+/**
+ * Read the shared artifact document (model+fonts) without opening a parser
+ * worker. New session records store only the artifact identity; v1 keeps
+ * returning model/fonts by reading the published document JSON, falling back to
+ * a real reopen (and rebuild) only when the artifact is missing or damaged.
+ */
+async function sessionDocument(
+  entry: SessionEntry,
+  req: IncomingMessage,
+  ctx: Context,
+): Promise<StoredSessionDocument> {
+  if (entry.document) return entry.document
+  const record = entry.record
+  if (record.model && Array.isArray(record.fonts)) {
+    // Legacy row written before the staged migration: one read, then cached.
+    entry.document = { model: record.model, fonts: record.fonts }
+    return entry.document
+  }
+  if (entry.documentOpening) return entry.documentOpening
+  const load = (async (): Promise<StoredSessionDocument> => {
+    const format = record.format
+    if (format !== 'pptx' && format !== 'docx')
+      throw new HttpError(409, 'session_expired', 'session record has no artifact identity')
+    const key = record.artifactKey ?? artifactKey(
+      ArtifactSession.identity({
+        fileId: record.fileId,
+        format,
+        parserVersion: ctx.parserVersion,
+        parserFingerprint: ctx.parserFingerprint,
+      }),
+    )
+    let raw: Awaited<ReturnType<ArtifactReadHandle['read']>> | undefined
+    if (ctx.sharedArtifacts) {
+      const handle = await ArtifactReadHandle.open(
+        ctx.sharedArtifacts.catalog,
+        ctx.sharedArtifacts.disk,
+        key,
+        `session-document:${randomUUID()}`,
+      )
+      if (handle) {
+        try {
+          if (!handle.has('document'))
+            throw new ArtifactCorruptionError('artifact document record missing')
+          raw = await handle.read('document')
+        } finally {
+          await handle.close()
+        }
+      }
+    } else {
+      const reader = await ctx.artifacts.find(key)
+      if (reader) {
+        if (!reader.has('document'))
+          throw new ArtifactCorruptionError('artifact document record missing')
+        raw = await reader.read('document')
+      }
+    }
+    const document = raw && !Buffer.isBuffer(raw)
+      ? (raw as { model?: DocModel; fonts?: PptxFontSummary[] })
+      : undefined
+    if (document?.model && Array.isArray(document.fonts)) {
+      const documentFormat = document.model.format
+      if (documentFormat === 'pptx' || documentFormat === 'docx') {
+        record.format = documentFormat
+        record.artifactKey = key
+        entry.document = { model: document.model, fonts: document.fonts }
+        return entry.document
+      }
+    }
+    // Artifact unavailable: reopen from source, which rebuilds the shared artifact.
+    const session = await ensureSession(entry, req, ctx)
+    entry.document = { model: session.model, fonts: session.fonts }
+    return entry.document
+  })()
+  entry.documentOpening = load
+  try {
+    return await load
+  } finally {
+    if (entry.documentOpening === load) entry.documentOpening = undefined
+  }
 }
 
 async function handleCreateSession(
@@ -542,53 +790,160 @@ async function handleCreateSession(
       throw new HttpError(503, 'server_stopping', 'server is stopping')
     }
     ctx.metrics.sessionsCreated++
+    const createdAt = Date.now()
+    const format = session.model.format
     const record: SessionRecord = {
       id: sessionId,
       fileId,
       width,
       parserVersion: ctx.parserVersion,
-      baseUrl,
-      model: session.model,
-      fonts: session.fonts,
-      createdAt: Date.now(),
-      lastUsed: Date.now(),
+      format: format as SessionRecord['format'],
+      createdAt,
+      lastUsed: createdAt,
+      // Staged migration (plan §5): the shared artifact identity and idle
+      // deadline become columns; the full model/fonts copy stays for v1.
+      ...(format === 'pptx' || format === 'docx'
+        ? {
+            artifactKey: artifactKey(
+              ArtifactSession.identity({
+                fileId,
+                format,
+                parserVersion: ctx.parserVersion,
+                parserFingerprint: ctx.parserFingerprint,
+              }),
+            ),
+            expiresAt: createdAt + ctx.sessionTtlMs,
+          }
+        : {}),
     }
     ctx.sessions.set(sessionId, { record, session })
     await ctx.sessionStore.set(record)
+    await materializeCanonicalLayout(ctx, session)
     sendJson(res, 201, { sessionId, state: 'ready', model: session.model, fonts: session.fonts })
   } finally {
     release()
   }
 }
 
-function pendingBody(ctx: Context, record: PendingSession) {
+/**
+ * Local preview first; when the shared cache is enabled, resolve the catalog's
+ * current build job and read its cross-node projection. A missing or failed
+ * projection is "unknown", never evidence of readiness (plan §5.1).
+ */
+async function sharedPreview(ctx: Context, record: PendingSession) {
+  if (record.error) return undefined
+  const local = await ctx.cache.lookup(record.artifactKey, record.jobId)
+  if (local || !ctx.cache.enabled) return local
+  const jobId = await sharedBuildJob(ctx, record)
+  return jobId ? ctx.cache.lookup(record.artifactKey, jobId) : undefined
+}
+
+/** The catalog's in-flight job id, used only to address the shared projection. */
+async function sharedBuildJob(ctx: Context, record: PendingSession): Promise<string | undefined> {
+  const catalog = ctx.sharedArtifacts?.catalog
+  if (!catalog) return undefined
+  try { return (await catalog.activeJob(record.artifactKey)) ?? undefined } catch { return undefined }
+}
+
+/**
+ * Progress projection. The SQL `parse_jobs.progress` column is only 0/100 (100
+ * means ready), so there is no positive SQL value to merge during a build; the
+ * projection is the only source of intermediate progress, and a missing
+ * projection means "unknown", never ready.
+ */
+async function sharedProgress(ctx: Context, record: PendingSession) {
+  if (record.error || !ctx.cache.enabled) return undefined
+  const jobId = await sharedBuildJob(ctx, record)
+  return jobId ? ctx.cache.readProgress(jobId) : undefined
+}
+
+function layoutKeyOf(ctx: Context, record: { artifactKey?: string; width: number }): string | undefined {
+  if (!record.artifactKey) return undefined
+  try {
+    return layoutCacheKey({
+      artifactKey: record.artifactKey, width: record.width, fontSetHash: ctx.fontSetHash,
+    })
+  } catch {
+    return undefined
+  }
+}
+
+async function materializeCanonicalLayout(
+  ctx: Context,
+  session: SessionHandle | undefined,
+): Promise<void> {
+  if (!ctx.canonicalArtifactExport || !session) return
+  const reservation = ctx.storageBudget.reservation()
+  try {
+    const result = await session.materializeCanonical(ctx.dataDir, reservation.reserve)
+    logEvent('info', 'canonical_artifact_exported', {
+      units: result.units, fonts: result.fonts, documentBytes: result.documentBytes,
+    })
+  } catch (error) {
+    logEvent('warn', 'canonical_artifact_export_failed', {
+      message: error instanceof Error ? error.message : String(error),
+    })
+  } finally {
+    await reservation.release().catch(() => undefined)
+  }
+}
+
+async function pendingBody(ctx: Context, record: PendingSession) {
   const phase = ctx.artifacts.phase(record.artifactKey)
   if (phase === 'building') ctx.pendingViews.observeBuilding(record.id)
   // `state` deliberately stays queued/building: previewable is a capability of
   // an in-flight job, never an alternative to the full-manifest `ready` state.
-  const preview = record.error ? undefined : ctx.previews.get(record.artifactKey)
+  const preview = await sharedPreview(ctx, record)
+  const progress = preview?.previewable
+    ? { unitsProduced: preview.unitsProduced, unitCount: preview.unitCount }
+    : await sharedProgress(ctx, record)
   return {
     sessionId: record.id,
     jobId: record.jobId,
+    dtoVersion: PARSE_DTO_VERSION,
     artifactKey: record.artifactKey,
     state: record.error ? 'failed' : record.state === 'building' ? 'building' : phase,
+    ...(record.layoutPrefs ? { layoutPrefs: record.layoutPrefs } : {}),
     pollAfterMs: 500,
     ...(record.error ? { error: record.error } : {}),
-    ...(preview?.previewable
+    ...(progress
       ? {
-          previewable: true,
-          complete: false,
+          ...(preview?.previewable
+            ? { previewable: true, complete: false, availableUnits: { from: 0, to: preview.cachedUntil } }
+            : {}),
           progress: {
-            unitsProduced: preview.unitsProduced,
-            unitCount: preview.unitCount,
+            unitsProduced: progress.unitsProduced,
+            unitCount: progress.unitCount,
             percent: Math.min(
               99,
-              Math.floor((100 * preview.unitsProduced) / Math.max(1, preview.unitCount)),
+              Math.floor((100 * progress.unitsProduced) / Math.max(1, progress.unitCount)),
             ),
           },
-          availableUnits: { from: 0, to: preview.cachedUntil },
         }
       : {}),
+  }
+}
+
+/** Bound one shutdown phase; a stuck SQL/IO await must not hang the process. */
+async function shutdownDeadline(
+  work: Promise<unknown>,
+  phase: string,
+  timeoutMs: number,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      work.then(() => undefined, () => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          logEvent('warn', 'shutdown_phase_timeout', { phase, timeoutMs })
+          resolve()
+        }, timeoutMs)
+        timer.unref?.()
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
 }
 
@@ -601,6 +956,8 @@ function startAsyncWork(
   if (existing) return existing
   const work = (async () => {
     let release: (() => void) | undefined
+    const demand = new AbortController()
+    ctx.asyncAborts.set(record.id, { artifactKey: record.artifactKey, controller: demand })
     ctx.pendingSessionIds.add(record.id)
     try {
       if (
@@ -646,26 +1003,46 @@ function startAsyncWork(
         },
         ctx.parseQueue,
         onAdmission,
+        demand.signal,
       )
+      await materializeCanonicalLayout(ctx, session)
       try {
-        if (ctx.closing || !ctx.pendingViews.get(record.id)) return
+        if (ctx.closing) return
+        if (await ctx.pendingViews.readerCount(record.id) === 0) {
+          // Every waiting view went away while the build ran: discard instead of
+          // publishing bytes nobody can read.
+          await ctx.pendingViews.remove(record.id)
+          return
+        }
+        const now = Date.now()
         const ready: SessionRecord = {
           id: record.id,
           fileId: record.fileId,
           width: record.width,
           parserVersion: ctx.parserVersion,
-          baseUrl: '',
-          model: session.model,
-          fonts: session.fonts,
+          format: record.format,
+          ...(record.layoutPrefs ? { layoutPrefs: record.layoutPrefs } : {}),
           createdAt: record.createdAt,
-          lastUsed: Date.now(),
+          lastUsed: now,
+          artifactKey: artifactKey(
+            ArtifactSession.identity({
+              fileId: record.fileId,
+              format: record.format,
+              parserVersion: ctx.parserVersion,
+              parserFingerprint: ctx.parserFingerprint,
+            }),
+          ),
+          expiresAt: now + ctx.sessionTtlMs,
         }
         await ctx.sessionStore.set(ready)
-        if (!ctx.pendingViews.get(record.id)) {
+        if (await ctx.pendingViews.readerCount(record.id) === 0) {
           await ctx.sessionStore.remove(record.id)
           return
         }
-        ctx.sessions.set(record.id, { record: ready })
+        ctx.sessions.set(record.id, {
+          record: ready,
+          document: { model: session.model, fonts: session.fonts },
+        })
         await ctx.pendingViews.remove(record.id)
       } finally {
         closeSession(session, ctx)
@@ -682,6 +1059,7 @@ function startAsyncWork(
         })
       }
     } finally {
+      if (ctx.asyncAborts.get(record.id)?.controller === demand) ctx.asyncAborts.delete(record.id)
       release?.()
       ctx.pendingSessionIds.delete(record.id)
     }
@@ -689,6 +1067,7 @@ function startAsyncWork(
     .catch((error: unknown) =>
       logEvent('error', 'async_session_state_failed', {
         sessionId: record.id,
+        jobId: record.jobId,
         message: error instanceof Error ? error.message : String(error),
       }),
     )
@@ -700,7 +1079,15 @@ function startAsyncWork(
 }
 
 async function discardAsyncView(ctx: Context, id: string): Promise<void> {
-  await ctx.pendingViews.remove(id)
+  const pending = ctx.pendingViews.get(id)
+  if (pending) {
+    const remaining = await ctx.pendingViews.removeReader(id, ctx.readerId)
+    if (remaining > 0) ctx.pendingViews.forget(id)
+    else {
+      await ctx.pendingViews.remove(id)
+      cancelPendingBuild(ctx, id, pending.artifactKey)
+    }
+  }
   const ready = ctx.sessions.get(id)
   if (ready) {
     closeSession(ready.session, ctx)
@@ -709,12 +1096,127 @@ async function discardAsyncView(ctx: Context, id: string): Promise<void> {
   }
 }
 
+/**
+ * Plan §6: a temporary preview with no waiters left may cancel the shared build
+ * only while it is still queued; a running build keeps its worker and memory
+ * reservation until it settles (the queue owns that cleanup).
+ */
+export function cancelPendingBuild(
+  ctx: {
+    asyncAborts: Map<string, { artifactKey: string; controller: AbortController }>
+    pendingViews: { values(): Iterable<{ id: string; artifactKey: string }> }
+  },
+  id: string,
+  artifactKey: string,
+): void {
+  // Plan §6: never cancel a shared build another pending viewer still waits on.
+  for (const pending of ctx.pendingViews.values())
+    if (pending.id !== id && pending.artifactKey === artifactKey) return
+  // The shared build may be owned by any of the same-artifact async flights, so
+  // abort every controller for this artifact rather than only this session's.
+  for (const entry of ctx.asyncAborts.values()) {
+    if (entry.artifactKey === artifactKey && !entry.controller.signal.aborted)
+      entry.controller.abort(new DOMException('no waiters for pending preview', 'AbortError'))
+  }
+}
+
+/**
+ * Replay an `Idempotency-Key`-tagged create without opening a second waiter.
+ * The stored mapping is only the created session identity; the current ready or
+ * pending state is recomputed so a retry never replays a stale 202 forever.
+ */
+async function replayIdempotentSession(
+  ctx: Context,
+  req: IncomingMessage,
+  res: ServerResponse,
+  cached: { body: unknown },
+): Promise<void> {
+  const mapped = cached.body as { sessionId?: unknown; jobId?: unknown } | null
+  const sessionId = typeof mapped?.sessionId === 'string' ? mapped.sessionId : undefined
+  if (!sessionId)
+    throw new HttpError(409, 'idempotency_mismatch', 'stored idempotent response is unusable')
+  let ready = ctx.sessions.get(sessionId)
+  if (!ready && ctx.db) {
+    // The key may have been created by another instance: attach its ready view
+    // before deciding this is a closed session.
+    await attachReadySession(ctx, sessionId)
+    ready = ctx.sessions.get(sessionId)
+  }
+  if (ready) {
+    const document = await sessionDocument(ready, req, ctx)
+    sendJson(res, 201, {
+      dtoVersion: PARSE_DTO_VERSION,
+      sessionId,
+      jobId: mapped?.jobId,
+      state: 'ready',
+      model: document.model,
+      fonts: document.fonts,
+    })
+    return
+  }
+  let pending = ctx.pendingViews.get(sessionId)
+  if (!pending && ctx.db)
+    pending = await ctx.pendingViews.load(sessionId).catch(() => undefined)
+  if (pending?.error) {
+    await ctx.pendingViews.remove(sessionId)
+    throw new HttpError(pending.error.status, pending.error.code, pending.error.message)
+  }
+  if (!pending) throw new HttpError(404, 'not_found', 'session was closed')
+  res.setHeader('Location', `/v2/sessions/${sessionId}`)
+  res.setHeader('Retry-After', '1')
+  sendJson(res, 202, await pendingBody(ctx, pending))
+}
+
 async function handleCreateAsyncSession(
   req: IncomingMessage,
   res: ServerResponse,
   ctx: Context,
 ): Promise<void> {
-  const body = (await readJsonBody(req, 64 * 1024)) as { fileId?: unknown; width?: unknown } | null
+  let idempotencyKey: string | undefined
+  try {
+    idempotencyKey = readIdempotencyKey(
+      req.headers as { 'idempotency-key'?: string | string[] },
+    )
+  } catch {
+    throw new HttpError(400, 'invalid_request', 'invalid Idempotency-Key')
+  }
+  const idempotencyScope = 'v2:sessions'
+  if (idempotencyKey) {
+    const cached = ctx.idempotency.get(idempotencyScope, idempotencyKey)
+    if (cached) {
+      await replayIdempotentSession(ctx, req, res, cached)
+      return
+    }
+    if (ctx.sharedIdempotency) {
+      const shared = await ctx.sharedIdempotency.lookup(idempotencyScope, idempotencyKey)
+        .catch(() => undefined)
+      if (shared?.body) {
+        const entry = { status: 202, body: shared.body, headers: {} }
+        ctx.idempotency.remember(idempotencyScope, idempotencyKey, entry)
+        await replayIdempotentSession(ctx, req, res, entry)
+        return
+      }
+      if (shared?.pending) {
+        // Another instance is creating the same key: merge instead of opening a
+        // second waiter. Give it a bounded window, then fall through.
+        for (let attempt = 0; attempt < 120; attempt++) {
+          await new Promise((resolve) => setTimeout(resolve, 25))
+          const again = await ctx.sharedIdempotency.lookup(idempotencyScope, idempotencyKey)
+            .catch(() => undefined)
+          if (again?.body) {
+            const entry = { status: 202, body: again.body, headers: {} }
+            ctx.idempotency.remember(idempotencyScope, idempotencyKey, entry)
+            await replayIdempotentSession(ctx, req, res, entry)
+            return
+          }
+          if (!again) break
+        }
+      }
+    }
+  }
+  const body = (await readJsonBody(req, 64 * 1024)) as {
+    fileId?: unknown; width?: unknown; layoutPrefs?: unknown
+  } | null
   if (
     !body ||
     Array.isArray(body) ||
@@ -724,6 +1226,31 @@ async function handleCreateAsyncSession(
     throw new HttpError(400, 'invalid_request', 'fileId is required')
   }
   const fileId = body.fileId
+  // Deterministic per-file canary: same file always lands in the same bucket,
+  // so a rollout never flips mid-read. 404 makes clients fall back to v1.
+  const rolloutPercent = effectiveRolloutPercent(
+    ctx.v2RolloutPercent,
+    ctx.v2RolloutRampPerHour,
+    Date.now() - ctx.metrics.startedAt,
+  )
+  if (rolloutPercent < 100) {
+    const rawHeader = ctx.v2RolloutHeader
+      ? req.headers[ctx.v2RolloutHeader]
+      : undefined
+    const tenant = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader
+    const bucket = ctx.v2RolloutHeader && typeof tenant === 'string' && tenant.length > 0 &&
+      tenant.length <= 128
+      ? Number.parseInt(createHash('sha256').update(tenant).digest('hex').slice(0, 4), 16) % 100
+      : Number.parseInt(fileId.slice(0, 4), 16) % 100
+    if (bucket >= rolloutPercent)
+      throw new HttpError(404, 'not_found', 'v2 sessions are not enabled for this file')
+  }
+  let layoutPrefs: ReturnType<typeof normalizeLayoutPrefs>
+  try {
+    layoutPrefs = normalizeLayoutPrefs(body.layoutPrefs)
+  } catch {
+    throw new HttpError(400, 'invalid_request', 'invalid layoutPrefs')
+  }
   const release = await ctx.files.acquire(fileId)
   try {
     const meta = await ctx.store.stat(fileId)
@@ -766,21 +1293,60 @@ async function handleCreateAsyncSession(
     const now = Date.now()
     ctx.pendingSessions++
     let record: PendingSession
+    let sharedClaim = false
     try {
-      record = await ctx.pendingViews.create({
-        id: randomUUID(),
-        artifactKey: key,
-        fileId,
-        format: meta.format,
-        width,
-        parserVersion: ctx.parserVersion,
-        parserFingerprint: ctx.parserFingerprint,
-        createdAt: now,
-        lastUsed: now,
-      })
+      // Bind the waiter to the catalog's in-flight build when one exists so the
+      // v2 jobId and the shared progress projection describe the same attempt.
+      const sharedJobId = ctx.sharedArtifacts
+        ? await ctx.sharedArtifacts.catalog.activeJob(key).catch(() => null)
+        : null
+      if (idempotencyKey && ctx.sharedIdempotency) {
+        sharedClaim = await ctx.sharedIdempotency
+          .claim(idempotencyScope, idempotencyKey, ctx.idempotencyTtlMs)
+          .catch(() => false)
+        if (!sharedClaim) {
+          // Another instance owns this key. Wait for its response and replay it
+          // instead of opening a competing waiter.
+          let completed: { body?: unknown } | undefined
+          for (let attempt = 0; attempt < 120; attempt++) {
+            const existing = await ctx.sharedIdempotency
+              .lookup(idempotencyScope, idempotencyKey).catch(() => undefined)
+            if (existing?.body) { completed = existing; break }
+            if (!existing) break
+            await new Promise((resolve) => setTimeout(resolve, 25))
+          }
+          if (completed?.body) {
+            release()
+            const entry = { status: 202, body: completed.body, headers: {} }
+            ctx.idempotency.remember(idempotencyScope, idempotencyKey, entry)
+            await replayIdempotentSession(ctx, req, res, entry)
+            return
+          }
+        }
+      }
+      try {
+        record = await ctx.pendingViews.create({
+          id: randomUUID(),
+          artifactKey: key,
+          fileId,
+          format: meta.format,
+          width,
+          parserVersion: ctx.parserVersion,
+          parserFingerprint: ctx.parserFingerprint,
+          createdAt: now,
+          lastUsed: now,
+          ...(layoutPrefs ? { layoutPrefs } : {}),
+        }, sharedJobId ?? undefined)
+      } catch (error) {
+        if (sharedClaim && idempotencyKey && ctx.sharedIdempotency)
+          await ctx.sharedIdempotency.release(idempotencyScope, idempotencyKey)
+            .catch(() => undefined)
+        throw error
+      }
     } finally {
       ctx.pendingSessions--
     }
+    await ctx.pendingViews.registerReader(record.id, ctx.readerId)
     res.once('close', () => {
       if (!res.writableFinished)
         void discardAsyncView(ctx, record.id).catch((error: unknown) =>
@@ -791,6 +1357,27 @@ async function handleCreateAsyncSession(
       await discardAsyncView(ctx, record.id)
       return
     }
+    if (idempotencyKey) {
+      // Remember the created session immediately: a retry during the build says
+      // "202, same sessionId" instead of opening a second durable waiter.
+      const payload = { sessionId: record.id, jobId: record.jobId }
+      ctx.idempotency.remember(idempotencyScope, idempotencyKey, {
+        status: 202,
+        body: payload,
+        headers: {},
+      })
+      if (ctx.sharedIdempotency) {
+        if (sharedClaim) {
+          await ctx.sharedIdempotency
+            .complete(idempotencyScope, idempotencyKey, payload)
+            .catch(() => undefined)
+        } else {
+          await ctx.sharedIdempotency
+            .remember(idempotencyScope, idempotencyKey, payload, ctx.idempotencyTtlMs)
+            .catch(() => undefined)
+        }
+      }
+    }
     let admit!: () => void
     const admission = new Promise<void>((resolve) => {
       admit = resolve
@@ -800,13 +1387,18 @@ async function handleCreateAsyncSession(
     else await Promise.race([admission, work])
     const ready = ctx.sessions.get(record.id)
     if (ready) {
+      const document = ready.document
+      if (!document)
+        throw new HttpError(503, 'session_state', 'session document is unavailable')
       ctx.metrics.sessionsCreated++
       sendJson(res, 201, {
+        dtoVersion: PARSE_DTO_VERSION,
         sessionId: record.id,
         jobId: record.jobId,
         state: 'ready',
-        model: ready.record.model,
-        fonts: ready.record.fonts,
+        ...(layoutKeyOf(ctx, record) ? { layoutKey: layoutKeyOf(ctx, record) } : {}),
+        model: document.model,
+        fonts: document.fonts,
       })
       return
     }
@@ -819,7 +1411,7 @@ async function handleCreateAsyncSession(
     ctx.metrics.sessionsCreated++
     res.setHeader('Location', `/v2/sessions/${record.id}`)
     res.setHeader('Retry-After', '1')
-    sendJson(res, 202, pendingBody(ctx, pending))
+    sendJson(res, 202, await pendingBody(ctx, pending))
   } finally {
     release()
   }
@@ -912,6 +1504,52 @@ async function handleOfflineBundle(
   res.end(req.method === 'HEAD' ? undefined : payload)
 }
 
+/**
+ * Cross-instance ready attach (plan §5): a durable ready session created by
+ * another instance can be served read-only here once its artifact row is ready.
+ * Nothing is rebuilt and no build lease is touched.
+ */
+async function attachReadySession(ctx: Context, id: string): Promise<void> {
+  if (!ctx.db || ctx.sessions.has(id) || !ctx.artifactCatalog) return
+  const record = await ctx.sessionStore.load(id).catch(() => undefined)
+  if (!record) return
+  if (record.expiresAt !== undefined && record.expiresAt <= Date.now()) return
+  // Only attach when this instance can actually see the ready generation. With
+  // a shared dataDir the bytes are present; without one the session stays a
+  // 404 here rather than a half-working 503.
+  if (record.artifactKey) {
+    const ready = await ctx.artifactCatalog.getReady(record.artifactKey).catch(() => null)
+    if (!ready) return
+    try {
+      await stat(join(ctx.dataDir, ready.storagePath, 'manifest.json'))
+      await stat(join(ctx.dataDir, ready.storagePath, 'units.bin'))
+    } catch {
+      return
+    }
+  }
+  ctx.sessions.set(record.id, { record })
+}
+
+/**
+ * Crash takeover (plan §5): a remote waiter whose shared build lease is gone
+ * (builder died, lease expired/released) may be resumed by this instance on the
+ * next status poll. Claim fencing still guarantees only one build wins.
+ */
+async function maybeTakeoverPending(
+  ctx: Context,
+  id: string,
+  record: { artifactKey?: string; parserVersion: string; parserFingerprint: string; error?: unknown },
+): Promise<void> {
+  if (!ctx.sharedArtifacts || ctx.asyncFlights.has(id) || record.error) return
+  if (record.parserVersion !== ctx.parserVersion ||
+      record.parserFingerprint !== ctx.parserFingerprint) return
+  if (!record.artifactKey) return
+  const active = await ctx.sharedArtifacts.catalog.activeJob(record.artifactKey).catch(() => null)
+  if (active) return
+  logEvent('warn', 'pending_waiter_takeover', { sessionId: id })
+  await startAsyncWork(ctx, record as Parameters<typeof startAsyncWork>[1]).catch(() => undefined)
+}
+
 async function handleAsyncSession(
   req: IncomingMessage,
   res: ServerResponse,
@@ -923,9 +1561,71 @@ async function handleAsyncSession(
   res.setHeader('Cache-Control', 'private, no-store')
   const parts = url.pathname.split('/').filter(Boolean)
   const root = parts.length === 3
-  const pending = ctx.pendingViews.get(id)
+  let pending = ctx.pendingViews.get(id)
+  if (!pending && !ctx.sessions.has(id) && ctx.db) {
+    // Cross-instance attach: the durable waiter lives in MySQL, so any instance
+    // can serve its state. Such a waiter is read-only here: this instance must
+    // not start a competing build or delete the builder's row.
+    pending = await ctx.pendingViews.load(id).catch(() => undefined)
+  }
+  if (!pending && !ctx.sessions.has(id) && req.method !== 'DELETE')
+    await attachReadySession(ctx, id)
+  if (pending && ctx.pendingViews.isRemote(id) &&
+      !(await ctx.pendingViews.sharedExists(id).catch(() => true))) {
+    // Another instance published/discarded this waiter: drop the stale remote
+    // view and fall through to ready attach (or 404).
+    ctx.pendingViews.forget(id)
+    pending = undefined
+    if (req.method !== 'DELETE') await attachReadySession(ctx, id)
+  }
+  if (pending) await ctx.pendingViews.registerReader(id, ctx.readerId)
+  if (pending && req.method === 'GET' && ctx.pendingViews.isRemote(id) && !ctx.sessions.has(id))
+    void maybeTakeoverPending(ctx, id, pending)
+  // Plan §7: heartbeat renews only the lightweight reading session. It never
+  // touches a build lease, a ready pointer or a generation.
+  if (req.method === 'POST' && parts.length === 4 && parts[3] === 'heartbeat') {
+    const ready = ctx.sessions.get(id)
+    if (!ready && !pending) throw new HttpError(404, 'not_found', 'unknown session')
+    // Heartbeat is also the incremental reading-position channel (plan §4.1).
+    const body = (await readJsonBody(req, 16 * 1024).catch(() => null)) as {
+      layoutPrefs?: unknown
+    } | null
+    let layoutPrefs: ReturnType<typeof normalizeLayoutPrefs>
+    try {
+      layoutPrefs = normalizeLayoutPrefs(body?.layoutPrefs)
+    } catch {
+      throw new HttpError(400, 'invalid_request', 'invalid layoutPrefs')
+    }
+    if (layoutPrefs !== undefined) {
+      if (pending) await ctx.pendingViews.setLayoutPrefs(id, layoutPrefs)
+      if (ready) ready.record.layoutPrefs = layoutPrefs
+    }
+    if (pending) await ctx.pendingViews.touch(id)
+    if (ready) touchEntry(ready, ctx)
+    sendJson(res, 200, {
+      dtoVersion: PARSE_DTO_VERSION,
+      sessionId: id,
+      state: ready ? 'ready' : pending?.error ? 'failed' : pending?.state ?? 'queued',
+      pollAfterMs: ready ? 0 : 500,
+    })
+    return
+  }
   if (req.method === 'DELETE' && root) {
     if (!pending && !ctx.sessions.has(id)) throw new HttpError(404, 'not_found', 'unknown session')
+    if (pending) {
+      // Last-waiter cancellation: keep the shared waiter (and the build) alive
+      // while another instance is still reading; drop it when this was the last
+      // active reader.
+      const remaining = await ctx.pendingViews.removeReader(id, ctx.readerId)
+      if (remaining > 0) ctx.pendingViews.forget(id)
+      else {
+        await ctx.pendingViews.remove(id)
+        cancelPendingBuild(ctx, id, pending.artifactKey)
+      }
+      res.writeHead(204)
+      res.end()
+      return
+    }
     await discardAsyncView(ctx, id)
     res.writeHead(204)
     res.end()
@@ -937,8 +1637,20 @@ async function handleAsyncSession(
   }
   const entry = ctx.sessions.get(id)
   if (entry) {
-    if (parts[3] === 'bundle' && (req.method === 'GET' || req.method === 'HEAD')) {
-      await handleOfflineBundle(req, res, ctx, entry, parts)
+    if (
+      (parts[3] === 'bundle' || parts[3] === 'bundle-manifest') &&
+      (req.method === 'GET' || req.method === 'HEAD')
+    ) {
+      // Plan §7 names the route /bundle-manifest; /bundle is the existing path.
+      // Both return the same versioned manifest; the alias has no sub-resources.
+      if (parts[3] === 'bundle-manifest' && parts.length !== 4)
+        throw new HttpError(404, 'not_found', 'unknown bundle route')
+      try {
+        await handleOfflineBundle(req, res, ctx, entry, parts)
+      } catch (error) {
+        recordBundleFailure(ctx.metrics)
+        throw error
+      }
       return
     }
     if (
@@ -950,8 +1662,10 @@ async function handleAsyncSession(
       const session = await ensureSession(entry, req, ctx)
       if (parts[3] === 'document') {
         sendJson(res, 200, {
+          dtoVersion: PARSE_DTO_VERSION,
           model: session.model,
           fonts: session.fonts,
+          ...(layoutKeyOf(ctx, entry.record) ? { layoutKey: layoutKeyOf(ctx, entry.record) } : {}),
           ...(session.model.format === 'pptx'
             ? { layout: await session.layoutInfo() }
             : { styles: await session.styleContext() }),
@@ -960,12 +1674,12 @@ async function handleAsyncSession(
         const unitId = decodeURIComponent(parts[4])
         const unit =
           session.model.format === 'pptx'
-            ? await session.layoutModel(unitId)
-            : refreshDocxResourceUrls(
-                await session.unit(unitId),
+            ? await measuredUnitRead(ctx, () => session.layoutModel(unitId))
+            : signedDocxPayload(
+                ctx,
+                await measuredUnitRead(ctx, () => session.unit(unitId)),
                 entry.record.fileId,
                 baseUrlOf(req, ctx),
-                ctx.token,
               )
         sendJson(res, 200, unit)
       }
@@ -976,15 +1690,16 @@ async function handleAsyncSession(
   }
   const current = ctx.pendingViews.get(id)
   if (!current) throw new HttpError(404, 'not_found', 'session was closed')
-  if (!current.error && !ctx.closing) void startAsyncWork(ctx, current)
+  if (!current.error && !ctx.closing && !ctx.pendingViews.isRemote(id))
+    void startAsyncWork(ctx, current)
   if (req.method === 'GET' && root) {
-    sendJson(res, 200, pendingBody(ctx, current))
+    sendJson(res, 200, await pendingBody(ctx, current))
     return
   }
   // Incremental first frame: only units whose gzip+sha256 frames are already
   // committed to the writer may be read. This never touches a ready generation,
   // never marks anything ready, and never satisfies an offline bundle request.
-  const preview = current.error ? undefined : ctx.previews.get(current.artifactKey)
+  const preview = await sharedPreview(ctx, current)
   if (req.method === 'GET' && preview?.previewable) {
     await pinResponseFile(ctx, current.fileId, res)
     if (parts[3] === 'document' && parts.length === 4) {
@@ -1061,7 +1776,7 @@ async function handleAsyncSession(
       sendJson(
         res,
         200,
-        refreshDocxResourceUrls(preview.units[index], current.fileId, baseUrlOf(req, ctx), ctx.token),
+        signedDocxPayload(ctx, preview.units[index], current.fileId, baseUrlOf(req, ctx)),
       )
       return
     }
@@ -1101,11 +1816,41 @@ async function handleSession(
   }
   if (req.method === 'GET' && rest.length === 0) {
     touchEntry(entry, ctx)
+    // New records store only the artifact identity: read model/fonts from the
+    // published document (no parser worker) instead of a per-session SQL copy.
+    const document = await sessionDocument(entry, req, ctx)
+    const unitCount = document.model.unitCount ?? 0
+    // v2 adds the stable artifact identity and a terminal progress projection;
+    // v1 keeps its existing body for compatibility.
+    const format = document.model.format
+    const artifactIdentity =
+      url.pathname.startsWith('/v2/') && (format === 'pptx' || format === 'docx')
+        ? artifactKey(
+            ArtifactSession.identity({
+              fileId: entry.record.fileId,
+              format,
+              parserVersion: ctx.parserVersion,
+              parserFingerprint: ctx.parserFingerprint,
+            }),
+          )
+        : undefined
     sendJson(res, 200, {
+      dtoVersion: PARSE_DTO_VERSION,
       sessionId,
       state: 'ready',
-      model: entry.record.model,
-      fonts: entry.record.fonts,
+      model: document.model,
+      fonts: document.fonts,
+      ...(layoutKeyOf(ctx, entry.record) ? { layoutKey: layoutKeyOf(ctx, entry.record) } : {}),
+      ...(artifactIdentity
+        ? {
+            artifactKey: artifactIdentity,
+            expiresAt: entry.record.expiresAt,
+            ...(entry.record.layoutPrefs ? { layoutPrefs: entry.record.layoutPrefs } : {}),
+            progress: { unitsProduced: unitCount, unitCount, percent: 100 },
+            pollAfterMs: 0,
+            complete: true,
+          }
+        : {}),
     })
     return
   }
@@ -1116,7 +1861,11 @@ async function handleSession(
     sendJson(
       res,
       200,
-      sessionUnits(entry.record.model, url.searchParams.get('cursor') ?? undefined, limit),
+      sessionUnits(
+        (await sessionDocument(entry, req, ctx)).model,
+        url.searchParams.get('cursor') ?? undefined,
+        limit,
+      ),
     )
     return
   }
@@ -1177,7 +1926,11 @@ async function handleSession(
         sendError(res, 404, 'not_found', 'layout is only available for PPTX', false, requestId)
         return
       }
-      sendJson(res, 200, await session.layoutModel(decodeURIComponent(rest[2])))
+      sendJson(
+        res,
+        200,
+        await measuredUnitRead(ctx, () => session.layoutModel(decodeURIComponent(rest[2]))),
+      )
     } catch (error) {
       if (error instanceof HttpError) throw error
       const code = (error as { code?: string })?.code
@@ -1203,11 +1956,11 @@ async function handleSession(
   if (req.method === 'GET' && rest.length === 2 && rest[0] === 'units') {
     try {
       const session = await ensureSession(entry, req, ctx)
-      const unit = await session.unit(decodeURIComponent(rest[1]))
+      const unit = await measuredUnitRead(ctx, () => session.unit(decodeURIComponent(rest[1])))
       // Sign at response time: persisted DOCX chunks never contain expiring credentials.
       const payload =
         session.model.format === 'docx'
-          ? refreshDocxResourceUrls(unit, entry.record.fileId, baseUrlOf(req, ctx), ctx.token)
+          ? signedDocxPayload(ctx, unit, entry.record.fileId, baseUrlOf(req, ctx))
           : unit
       res.setHeader('Cache-Control', 'private, no-store')
       sendJson(res, 200, payload)
@@ -1250,7 +2003,8 @@ async function fileInUse(ctx: Context, fileId: string): Promise<boolean> {
     [...ctx.sessions.values()].some((entry) => entry.record.fileId === fileId) ||
     ctx.pendingViews.values().some((entry) => entry.fileId === fileId) ||
     (await ctx.library.hasFile(fileId)) ||
-    (!!ctx.artifactCatalog && await ctx.artifactCatalog.hasFileReference(fileId))
+    (!!ctx.artifactCatalog && (await ctx.artifactCatalog.hasFileReference(fileId) ||
+      await ctx.artifactCatalog.hasDependencyOnFile(fileId)))
   )
 }
 
@@ -1323,6 +2077,7 @@ async function performGc(ctx: Context, keepFileId?: string, committedReservation
       if (now - Date.parse(file.createdAt) <= ctx.contentTtlMs) return
       await ctx.artifacts.removeForFile(file.fileId)
       await ctx.store.remove(file.fileId)
+      recordGcBytes(ctx.metrics, file.size)
     })
   }
   if (ctx.closing) return
@@ -1349,6 +2104,7 @@ async function performGc(ctx: Context, keepFileId?: string, committedReservation
         if (ctx.closing) return
         await ctx.artifacts.removeForFile(file.fileId)
         await ctx.store.remove(file.fileId)
+        recordGcBytes(ctx.metrics, file.size)
       })
     }
   }
@@ -1413,6 +2169,17 @@ async function handleUpload(
     } catch (error) {
       await ctx.store.abort(upload)
       throw error
+    }
+    if (detected === 'encrypted') {
+      await ctx.store.abort(upload)
+      reply = () =>
+        sendError(
+          res,
+          415,
+          'encrypted_document',
+          'document is password-protected (encrypted Office container); password input and decryption are not supported',
+        )
+      return
     }
     if (detected !== 'pptx' && detected !== 'pdf' && detected !== 'docx') {
       await ctx.store.abort(upload)
@@ -1617,12 +2384,15 @@ async function route(
     (req.method === 'GET' &&
       (url.pathname === '/v1/capabilities' || url.pathname === '/v2/capabilities')) ||
     (req.method === 'GET' && url.pathname === '/metrics')
+  const bearerMatches = (authorization: string | undefined): boolean =>
+    authorization === `Bearer ${ctx.token}` ||
+    (ctx.previousToken !== undefined && authorization === `Bearer ${ctx.previousToken}`)
   if (!isPublic && ctx.token) {
     // <img>/<video>/PDF.js cannot send Authorization: content and part URLs
     // carry an HMAC signature instead of the bearer token.
     let signed = false
     if (
-      req.headers.authorization !== `Bearer ${ctx.token}` &&
+      !bearerMatches(req.headers.authorization) &&
       (segments[0] === 'v1' || segments[0] === 'v2') &&
       segments[1] === 'files' &&
       segments[2]
@@ -1641,7 +2411,7 @@ async function route(
         signed = verifyResource(ctx.token, fileId, resource, exp, sig)
       }
     }
-    if (req.headers.authorization !== `Bearer ${ctx.token}` && !signed) {
+    if (!bearerMatches(req.headers.authorization) && !signed) {
       sendError(res, 401, 'unauthorized', 'a bearer token is required', false, requestId)
       return
     }
@@ -1660,6 +2430,23 @@ async function route(
       storageBytes: await ctx.store.totalBytes(),
       memory: { rss: memory.rss, heapUsed: memory.heapUsed },
       parserVersion: ctx.parserVersion,
+      cache: ctx.cache.stats(),
+      modelCache: ctx.modelCache?.stats(),
+      http: {
+        inFlight: ctx.httpInFlight,
+        maxConcurrency: ctx.httpMaxConcurrency,
+        rejected: ctx.httpRejected,
+      },
+      pools: ctx.workPools.stats(),
+      buildRetries: {
+        local: ctx.artifacts.stats.buildRetries,
+        shared: ctx.sharedArtifacts?.coordinator.stats.retries ?? 0,
+      },
+      oldestQueuedMs: ctx.parseQueue.oldestWaitMs,
+      artifact: ctx.artifacts.stats,
+      storageSourceBytes: await ctx.store.totalBytes(),
+      storageArtifactBytes: await ctx.artifacts.totalBytes(),
+      storageStagingBytes: await ctx.artifacts.stagingBytes(),
     })
     res.writeHead(200, {
       'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
@@ -1698,8 +2485,24 @@ async function route(
         gcTasks: ctx.gcFlights.size,
         generationCollection: ctx.generationCollection?.snapshot,
         incrementalPreview: ctx.previews.stats(),
+        startupReconcile: ctx.startupReconcile ?? null,
+        leaseRecovery: ctx.startupLeaseRecovery ?? null,
       },
+      cache: ctx.cache.stats(),
+      artifactCoordinator: ctx.sharedArtifacts?.coordinator.stats ?? null,
+      memoryCache: {
+        budgetBytes: ctx.memoryCacheBudgetBytes,
+        model: ctx.modelCache?.stats() ?? null,
+      },
+      http: {
+        inFlight: ctx.httpInFlight,
+        maxConcurrency: ctx.httpMaxConcurrency,
+        rejected: ctx.httpRejected,
+      },
+      pools: ctx.workPools.stats(),
+      idempotency: ctx.idempotency.stats(),
       readyEviction: ctx.readyEviction?.snapshot ?? null,
+      canaryGuard: ctx.canaryGuard.snapshot(),
       sharedPressure: (await ctx.sharedPressure?.state()) ?? null,
       restore: ctx.restoreReport ? {
         checkedAt: ctx.restoreReport.checkedAt,
@@ -1728,6 +2531,8 @@ async function route(
     })
     return
   }
+  if (url.pathname === '/v2' || url.pathname.startsWith('/v2/'))
+    res.setHeader('X-Genoffice-Dto-Version', String(PARSE_DTO_VERSION))
   if (
     req.method === 'GET' &&
     (url.pathname === '/v1/capabilities' || url.pathname === '/v2/capabilities')
@@ -1735,12 +2540,31 @@ async function route(
     sendJson(res, 200, capabilitiesOf(ctx))
     return
   }
+  if (
+    !ctx.asyncSessionsV2 &&
+    (url.pathname === '/v2/sessions' || url.pathname.startsWith('/v2/sessions/'))
+  ) {
+    // Staged rollback: behave like a server that predates the v2 contract.
+    sendError(res, 404, 'not_found', 'v2 async sessions are disabled', false, requestId)
+    return
+  }
   if (url.pathname === '/v2/library' || url.pathname.startsWith('/v2/library/')) {
     await handleLibrary(req, res, ctx, url)
     return
   }
   if (req.method === 'POST' && url.pathname === '/v2/sessions') {
-    await handleCreateAsyncSession(req, res, ctx)
+    if (ctx.canaryGuard.paused())
+      throw new HttpError(404, 'not_found', 'v2 sessions are temporarily paused')
+    try {
+      await handleCreateAsyncSession(req, res, ctx)
+      ctx.canaryGuard.record(true)
+    } catch (error) {
+      const status = error instanceof HttpError ? error.status : 500
+      // Only server-side failures trip the emergency brake; 4xx is client input.
+      ctx.canaryGuard.record(status < 500)
+      throw error
+    }
+    return
     return
   }
   if (segments[0] === 'v2' && segments[1] === 'sessions' && segments[2]) {
@@ -1770,6 +2594,30 @@ async function route(
   const meta = await ctx.store.stat(fileId)
   if (!meta) {
     sendError(res, 404, 'not_found', 'unknown file', false, requestId)
+    return
+  }
+  if (segments.length === 4 && segments[3] === 'part-url' && req.method === 'POST') {
+    // Refresh one signed part URL (image/audio/font) without reopening a session;
+    // used by viewers after a 403/expiry or a deployment-origin change.
+    const body = await readJsonBody(req, 8 * 1024) as { path?: unknown } | null
+    const path = body?.path
+    if (typeof path !== 'string' || path.length < 1 || path.length > 512 || path.startsWith('/') ||
+      path.includes('..') || [...path].some((character) => {
+        const code = character.charCodeAt(0)
+        return code < 0x20 || code === 0x7f
+      }))
+      throw new HttpError(400, 'invalid_request', 'invalid part path')
+    const base = baseUrlOf(req, ctx)
+    const plain = `${base}/v1/files/${encodeURIComponent(fileId)}/parts/${path.split('/').map(encodeURIComponent).join('/')}`
+    if (!ctx.token) {
+      sendJson(res, 200, { url: plain })
+      return
+    }
+    const { exp, sig } = signResource(ctx.token, fileId, path)
+    sendJson(res, 200, {
+      url: `${plain}?exp=${exp}&sig=${sig}`,
+      expiresAt: new Date(exp * 1000).toISOString(),
+    })
     return
   }
   if (segments.length === 4 && segments[3] === 'content-url' && req.method === 'GET') {
@@ -1930,7 +2778,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
   if (sharedPressure) await sharedPressure.init()
   const library = new LibraryStore(options.dataDir, db)
   await library.init()
-  const sessionTtlMs = options.sessionTtlMs ?? 15 * 60_000
+  const sessionTtlMs = options.sessionTtlMs ?? 30 * 60_000
   const sessionStore = new SessionStore(options.dataDir, db)
   await sessionStore.init(sessionTtlMs)
   const pendingViews = new PendingSessionStore(options.dataDir, db)
@@ -1951,14 +2799,64 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     },
     sharedAdmission,
   )
-  const artifacts: ArtifactStore = new ArtifactStore(options.dataDir, undefined, storageBudget)
+  // Plan §6.1: byte-bounded model read cache, carved out of the aggregate
+  // HTTP/index/read-cache budget. 0 disables the cache (and still records stats).
+  const memoryCacheBudgetBytes = options.memoryCacheBudgetBytes ?? MEMORY_CACHE_BUDGET_DEFAULT_BYTES
+  const modelCacheMaxBytes = Math.min(
+    options.modelCacheMaxBytes ?? MODEL_CACHE_DEFAULT_BYTES,
+    memoryCacheBudgetBytes,
+  )
+  const modelCache = modelCacheMaxBytes > 0 ? new ModelCache(modelCacheMaxBytes) : undefined
+  // Plan §6.1: bounded disk-I/O and inflate pools so read fan-out cannot
+  // materialize unbounded kernel I/O or zlib work in the HTTP process.
+  const workPools = new WorkPools({
+    diskIoConcurrency: options.diskIoConcurrency ?? WORK_POOL_DEFAULTS.diskIoConcurrency,
+    inflateConcurrency: options.inflateConcurrency ?? WORK_POOL_DEFAULTS.inflateConcurrency,
+  })
+  const artifacts: ArtifactStore = new ArtifactStore(
+    options.dataDir, undefined, storageBudget, modelCache, workPools,
+    options.buildRetryAttempts ?? 2,
+  )
   const previews = new PreviewRegistry({
     maxUnits: options.previewMaxUnits ?? 8,
     ttlMs: options.previewTtlMs ?? 60_000,
   })
+  // Shared catalog is created before the context so startup reconcile can run
+  // before any listener accepts traffic.
+  const artifactCatalog = db ? new MysqlArtifactCatalog(db) : undefined
+  // Optional cross-node projection (plan §5.1). Memory keeps exactly the
+  // in-process preview; redis mirrors frames/progress and never carries truth.
+  const cacheMode: CacheMode = options.cacheMode ?? 'memory'
+  const cacheStore = options.cacheStore ?? (cacheMode === 'redis'
+    ? createRedisCacheStore(options.redis ?? {}, {
+      timeoutMs: options.cacheCommandTimeoutMs ?? CACHE_DEFAULTS.commandTimeoutMs,
+      breakerMs: options.cacheBreakerMs ?? CACHE_DEFAULTS.breakerMs,
+    })
+    : undefined)
+  const cache = createHotCache({
+    mode: cacheMode,
+    ...(cacheStore ? { store: cacheStore } : {}),
+    previewRegistry: previews,
+    keyPrefix: cacheKeyPrefix(options.mysql?.database ?? 'default'),
+    previewMaxUnits: options.previewMaxUnits ?? 8,
+    previewTtlMs: options.previewTtlMs ?? CACHE_DEFAULTS.previewTtlMs,
+    progressTtlMs: options.cacheProgressTtlMs ?? CACHE_DEFAULTS.progressTtlMs,
+    progressThrottleMs: options.cacheProgressThrottleMs ?? CACHE_DEFAULTS.progressThrottleMs,
+    maxFieldBytes: options.cacheMaxFieldBytes ?? CACHE_DEFAULTS.maxFieldBytes,
+  })
+  // Bounded, in-process replay cache for v2 POST retries (plan §7). It is a
+  // memory aid, not a shared ledger: a restart or another node re-runs the POST.
+  const idempotencyTtlMs = options.idempotencyTtlMs ?? 600_000
+  const idempotency = new IdempotencyStore({
+    ttlMs: idempotencyTtlMs,
+    maxEntries: options.idempotencyMaxEntries ?? 256,
+  })
+  // Durable cross-instance ledger for Idempotency-Key replay (plan §7).
+  const sharedIdempotency = db ? new SharedIdempotencyStore(db, idempotencyTtlMs) : undefined
   // The observer is attached to this parent-process object: session inputs are
   // structured-cloned into the isolated worker and cannot carry a function.
-  artifacts.previewObserver = (key, event) => previews.report(key, event)
+  // `jobId` binds the shared projection to one build attempt.
+  artifacts.previewObserver = (key, event, jobId) => cache.report(jobId, key, event)
   // Only aged, recognizable temporary paths are eligible. Journal ownership
   // protects restart recovery before any resumed job is allowed to run.
   await store.cleanupTemp(60 * 60_000)
@@ -1971,8 +2869,46 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     ]),
     60 * 60_000,
   )
+  // Startup reconcile (plan §5): remove "published but unregistered" generation
+  // directories. A key with any catalog row is protected, and the age grace keeps
+  // a concurrent publish between rename and SQL completion safe.
+  const startupReconcile = artifactCatalog
+    ? await reconcileOrphanGenerations({
+        root: options.dataDir,
+        catalog: artifactCatalog,
+      }).catch((error: unknown) => {
+        logEvent('warn', 'orphan_generation_reconcile_failed', {
+          message: error instanceof Error ? error.message : String(error),
+        })
+        return undefined
+      })
+    : undefined
+  if (startupReconcile?.removedGenerations)
+    logEvent('info', 'orphan_generations_reconciled', {
+      removed: startupReconcile.removedGenerations,
+      retained: startupReconcile.retainedGenerations,
+      emptyKeys: startupReconcile.removedEmptyKeys,
+      truncated: startupReconcile.truncated,
+    })
+  // Plan §6: actively requeue builds whose lease expired while no process was
+  // running. Claims would reclaim them lazily, but an explicit queued state is
+  // what restart recovery, health and operators rely on.
+  const startupLeaseRecovery = artifactCatalog
+    ? await artifactCatalog.recoverExpiredBuilds().catch((error: unknown) => {
+        logEvent('warn', 'lease_recovery_failed', {
+          message: error instanceof Error ? error.message : String(error),
+        })
+        return undefined
+      })
+    : undefined
+  if (startupLeaseRecovery?.requeued)
+    logEvent('info', 'expired_build_leases_requeued', {
+      examined: startupLeaseRecovery.examined,
+      requeued: startupLeaseRecovery.requeued,
+    })
 
   const ctx: Context = {
+    dataDir: options.dataDir,
     store,
     artifacts,
     gcFlights: new Set(),
@@ -1980,6 +2916,22 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     sessionDisposalByHandle: new WeakMap(),
     storageBudget,
     previews,
+    cache,
+    asyncSessionsV2: options.asyncSessionsV2 ?? true,
+    v2RolloutPercent: options.v2RolloutPercent ?? 100,
+    ...(options.v2RolloutHeader ? { v2RolloutHeader: options.v2RolloutHeader } : {}),
+    v2RolloutRampPerHour: options.v2RolloutRampPerHour ?? 0,
+    canaryGuard: new CanaryGuard({ errorRatePercent: options.v2AutoPauseErrorRate ?? 0 }),
+    canonicalArtifactExport: options.canonicalArtifactExport ?? false,
+    shutdownTimeoutMs: options.shutdownTimeoutMs ?? 30_000,
+    parseThresholds: {
+      docxAutoRemoteBytes: options.docxAutoRemoteBytes ?? 32 * 1024 * 1024,
+      pptxAutoRemoteBytes: options.pptxAutoRemoteBytes ?? 64 * 1024 * 1024,
+      docxFullRenderBytes: options.docxFullRenderBytes ?? 64 * 1024 * 1024,
+    },
+    idempotency,
+    idempotencyTtlMs,
+    ...(sharedIdempotency ? { sharedIdempotency } : {}),
     ...(sharedAdmission ? { sharedAdmission } : {}),
     library,
     files,
@@ -1993,12 +2945,21 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
       options.parserFingerprint ?? (await parserFingerprint(options.parserVersion ?? '0.1.0')),
     sessionStore,
     pendingViews,
+    readerId: randomUUID(),
     asyncFlights: new Map(),
+    asyncAborts: new Map(),
     metrics: createMetrics(),
+    ...(modelCache ? { modelCache } : {}),
+    workPools,
+    memoryCacheBudgetBytes,
+    httpInFlight: 0,
+    httpMaxConcurrency: options.httpMaxConcurrency ?? 128,
+    httpRejected: 0,
     limits,
     parserVersion: options.parserVersion ?? '0.1.0',
     fontSetHash: options.fontSetHash ?? 'server-default',
     token: options.token,
+    ...(options.previousToken ? { previousToken: options.previousToken } : {}),
     allowedOrigins: options.allowedOrigins ?? [],
     sessions: new Map(),
     sessionTtlMs,
@@ -2019,12 +2980,14 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     maxStoreBytes: options.maxStoreBytes ?? 20 * 1024 ** 3,
     gcIntervalMs: options.gcIntervalMs ?? 10 * 60_000,
     chunkRoot: join(options.dataDir, 'chunks'),
-    ...(db ? { db, artifactCatalog: new MysqlArtifactCatalog(db) } : {}),
+    ...(db ? { db, ...(artifactCatalog ? { artifactCatalog } : {}) } : {}),
+    ...(startupReconcile ? { startupReconcile } : {}),
+    ...(startupLeaseRecovery ? { startupLeaseRecovery } : {}),
     ...(sharedPressure ? { sharedPressure } : {}),
     ...(restoreReport ? { restoreReport } : {}),
   }
   if (ctx.artifactCatalog) {
-    const disk = new ArtifactGenerations(options.dataDir, undefined, storageBudget)
+    const disk = new ArtifactGenerations(options.dataDir, undefined, storageBudget, modelCache, workPools)
     const readyEviction = new ArtifactReadyEviction(ctx.artifactCatalog, disk, {
       idleMs: options.readyEvictionIdleMs ?? 60_000,
       batchSize: options.readyEvictionBatchSize ?? 16,
@@ -2038,7 +3001,8 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     ctx.readyEviction = readyEviction
     if (options.artifactBackend === 'catalog') {
       ctx.sharedArtifacts = { catalog: ctx.artifactCatalog, disk,
-        coordinator: new ArtifactCoordinator(ctx.artifactCatalog, disk) }
+        coordinator: new ArtifactCoordinator(ctx.artifactCatalog, disk, undefined, undefined,
+          { attempts: options.buildRetryAttempts ?? 2 }) }
     }
     ctx.generationCollection = new ArtifactCollectionService(new ArtifactGenerationSweeper(
       disk, ctx.artifactCatalog, ctx.artifactCatalog,
@@ -2058,7 +3022,15 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
         },
         readyEviction,
       },
-    ), { intervalMs: ctx.gcIntervalMs })
+    ), {
+      intervalMs: ctx.gcIntervalMs,
+      // Plan §11 gc_deleted_bytes: physical bytes removed by background collection.
+      onResult: (result) =>
+        recordSweeperBytes(
+          ctx.metrics,
+          (result.flatBytes ?? 0) + (result.readyBytes ?? 0) + (result.collectedBytes ?? 0),
+        ),
+    })
   }
   for (const record of sessionStore.values()) ctx.sessions.set(record.id, { record })
   const server: Server = createServer((req, res) => {
@@ -2067,6 +3039,20 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
       sendError(res, 503, 'server_stopping', 'server is stopping', true, requestId)
       return
     }
+    // Plan §6.1: cap HTTP fan-out so "no parse worker" is not mistaken for a
+    // free read. Health and metrics stay reachable while saturated.
+    const pathname = (req.url ?? '/').split('?')[0]
+    const probe = pathname === '/v1/health' || pathname === '/metrics'
+    if (!probe && ctx.httpInFlight >= ctx.httpMaxConcurrency) {
+      ctx.httpRejected++
+      res.setHeader('Retry-After', '1')
+      sendError(res, 503, 'server_busy', 'too many concurrent HTTP requests', true, requestId)
+      return
+    }
+    ctx.httpInFlight++
+    res.once('close', () => {
+      ctx.httpInFlight--
+    })
     route(req, res, ctx, requestId).catch((raw: unknown) => {
       // Damage in an already-open view is retryable even on routes without a
       // local parse-failure mapper (styles, fonts, bundle resources).
@@ -2112,6 +3098,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
       if (now - pending.lastUsed > ctx.sessionTtlMs)
         void ctx.pendingViews
           .remove(pending.id)
+          .then(() => cancelPendingBuild(ctx, pending.id, pending.artifactKey))
           .catch((error: unknown) =>
             logEvent('warn', 'pending_session_cleanup_failed', { message: String(error) }),
           )
@@ -2144,18 +3131,25 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     const collectionClosed = ctx.generationCollection?.close()
     const coordinatorClosed = ctx.sharedArtifacts?.coordinator.close()
     for (const entry of ctx.sessions.values()) closeSession(entry.session, ctx)
-    await ctx.parseQueue.close()
-    await coordinatorClosed
-    await ctx.artifacts.drain()
-    await Promise.allSettled([...ctx.asyncFlights.values()])
+    await shutdownDeadline(ctx.parseQueue.close(), 'parse_queue', ctx.shutdownTimeoutMs)
+    await shutdownDeadline(coordinatorClosed ?? Promise.resolve(), 'coordinator', ctx.shutdownTimeoutMs)
+    await shutdownDeadline(ctx.artifacts.drain(), 'artifact_drain', ctx.shutdownTimeoutMs)
+    await shutdownDeadline(
+      Promise.allSettled([...ctx.asyncFlights.values()]), 'async_flights', ctx.shutdownTimeoutMs)
     for (const entry of ctx.sessions.values()) closeSession(entry.session, ctx)
     ctx.sessions.clear()
     server.closeAllConnections?.()
-    await new Promise<void>((resolve, reject) => {
+    await shutdownDeadline(new Promise<void>((resolve, reject) => {
       server.close((error) => (error ? reject(error) : resolve()))
-    })
-    await Promise.allSettled([...ctx.gcFlights, ...(collectionClosed ? [collectionClosed] : [])])
+    }), 'http_close', ctx.shutdownTimeoutMs)
+    await shutdownDeadline(
+      Promise.allSettled([...ctx.gcFlights, ...(collectionClosed ? [collectionClosed] : [])]),
+      'gc_flights', ctx.shutdownTimeoutMs)
     while (ctx.sessionDisposals.size) await Promise.allSettled([...ctx.sessionDisposals])
+    // Flush the trailing progress projection and close the shared client before
+    // the database goes away; cache teardown only loses projections.
+    await ctx.cache.close()
+    ctx.idempotency.close()
     await ctx.sessionStore.flush()
     await ctx.library.flush()
     await ctx.pendingViews.flush()
@@ -2164,7 +3158,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     await sharedAdmission?.close().catch((error: unknown) =>
       logEvent('warn', 'storage_admission_release_failed', { message: String(error) }),
     )
-    await db?.close()
+    if (db) await shutdownDeadline(db.close(), 'database', ctx.shutdownTimeoutMs)
   })()
   return {
     url: `http://127.0.0.1:${address.port}`,

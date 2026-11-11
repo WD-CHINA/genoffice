@@ -359,7 +359,9 @@ it('renews layout sessions throughout a simulated 125-minute presentation', asyn
     if (ms === 60_000) sweepers.push(fn)
     return originalInterval(fn, ms)
   }) as typeof setInterval)
-  const { server } = await start({ token: 'long-show' })
+  // Pin the TTL so the 125-minute renewal / 20-minute idle-expiry arithmetic
+  // below stays independent of the production default (30 minutes, plan §6.1).
+  const { server } = await start({ token: 'long-show', sessionTtlMs: 15 * 60_000 })
   intervalSpy.mockRestore()
   const headers = { Authorization: 'Bearer long-show' }
   const uploaded = await fetch(`${server.url}/v1/files`, {

@@ -156,10 +156,13 @@ export class ContentStore {
     }
     await writeFile(this.metaPath(upload.sha256), JSON.stringify(meta))
     await this.db?.pool.query(
-      `INSERT INTO parse_files (file_id, sha256, size, format, created_at)
-       VALUES (?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE sha256=VALUES(sha256), size=VALUES(size), format=VALUES(format)`,
-      [meta.fileId, meta.sha256, meta.size, meta.format, meta.createdAt],
+      `INSERT INTO parse_files
+         (file_id, sha256, size, format, created_at, storage_state, verified_at)
+       VALUES (?, ?, ?, ?, ?, 'stored', ?)
+       ON DUPLICATE KEY UPDATE sha256=VALUES(sha256), size=VALUES(size), format=VALUES(format),
+         storage_state=VALUES(storage_state),
+         verified_at=GREATEST(COALESCE(verified_at, 0), VALUES(verified_at))`,
+      [meta.fileId, meta.sha256, meta.size, meta.format, meta.createdAt, Date.now()],
     )
     return meta
   }

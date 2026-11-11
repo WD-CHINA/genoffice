@@ -9,6 +9,8 @@ interface Waiting {
   run(): void
   reject(error: unknown): void
   memoryMb: number
+  /** Enqueue time for the oldest-wait gauge (plan §11 queue age). */
+  enqueuedAt: number
 }
 
 /** Bounded FIFO for unique artifact builds. Cache hits and shared waiters never enter it. */
@@ -41,6 +43,13 @@ export class ParseQueue {
 
   get snapshot(): { running: number; queued: number } {
     return { running: this.active, queued: this.waiting.length }
+  }
+
+  /** Age of the oldest queued build (plan §11 queue age); 0 when idle. */
+  get oldestWaitMs(): number {
+    return this.waiting.length
+      ? Math.max(0, Date.now() - this.waiting[0].enqueuedAt)
+      : 0
   }
 
   get memorySnapshot(): { reservedMb: number; totalMb: number } {
@@ -106,7 +115,7 @@ export class ParseQueue {
             },
           )
       }
-      const item: Waiting = { run, reject: rejectWaiting, memoryMb }
+      const item: Waiting = { run, reject: rejectWaiting, memoryMb, enqueuedAt: Date.now() }
       if (this.canStart(memoryMb) && !this.waiting.length) run()
       else {
         this.waiting.push(item)

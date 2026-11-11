@@ -19,6 +19,7 @@ import { readViewerUi } from './ui-options'
 import { createViewerTiming } from './performance'
 import { refreshSignedPartUrl } from './part-url'
 import { loadReadingPosition, saveReadingPosition } from './reading-position'
+import { prepareRemoteMedia } from './media-preparation'
 import {
   ControlButton,
   FitControls,
@@ -694,10 +695,11 @@ export function Slides({
     getShapeKeys: async (i) => deck.playback[i].keys,
     getSlideLinks: async (i) => deck.playback[i].links,
     getRunLinks: async (i) => deck.playback[i].runLinks,
-    getMediaData: async (i, id) => {
+    getMediaData: async (i, id, options) => {
       const media = await pptx.current?.media(i, id)
       if (!media) return null
-      return { kind: media.kind === 'audio' ? 'audio' : 'video', dataUrl: media.dataUrl }
+      const value = { kind: media.kind === 'audio' ? 'audio' as const : 'video' as const, dataUrl: media.dataUrl }
+      return server && fileId ? prepareRemoteMedia({ server, fileId, token, media: value, options }) : value
     },
   }
   const navigate = (index: number) => {

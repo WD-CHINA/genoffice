@@ -7,6 +7,7 @@ import { applyViewerUi, readViewerUi, viewerUiParams } from './ui-options'
 import { fetchCapabilities } from './capabilities'
 import { FORMAT_POLICY, decideRoute, precheckLocalFile } from './format-policy'
 import { readResponseLimited } from './fetch-limited'
+import { pptxHasMedia } from './pptx-media-policy'
 import '@genoffice/ui/tokens.css'
 import './viewer.css'
 
@@ -215,7 +216,9 @@ function Host() {
         size: file.size,
         ...(capabilities ? { capabilities } : {}),
       })
-      const resolvedMode: ParseMode = route.mode
+      const resolvedMode: ParseMode = route.mode === 'local' && mode === 'auto' &&
+        format === 'pptx' && capabilities?.features?.mediaTranscoding === true && await pptxHasMedia(file)
+        ? 'server' : route.mode
       let remote: RemoteTarget | undefined
       if (resolvedMode === 'server') {
         if (!serverUrl) throw new Error('没有配置解析服务地址（?server=http://…）')

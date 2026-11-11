@@ -18,6 +18,9 @@ export function PreviewMediaLayer({
   const [playback, setPlayback] = useState<Playback | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState<string | null>(null)
+  const [status, setStatus] = useState('')
+  const pending = useRef<AbortController | null>(null)
+  const lastNode = useRef<PictureRenderNode | null>(null)
   const generation = useRef(0)
   const player = useRef<HTMLMediaElement | null>(null)
   const k = width / slide.widthPx
@@ -25,6 +28,8 @@ export function PreviewMediaLayer({
     (node): node is PictureRenderNode => node.type === 'picture' && !!node.media,
   )
   function close() {
+    pending.current?.abort()
+    setStatus('')
     generation.current++
     setLoading(null)
     setPlayback(null)
@@ -36,6 +41,7 @@ export function PreviewMediaLayer({
     }
     window.addEventListener('keydown', escape)
     return () => {
+      pending.current?.abort()
       generation.current++
       window.removeEventListener('keydown', escape)
     }
@@ -48,12 +54,21 @@ export function PreviewMediaLayer({
       element?.load()
     }
   }, [playback?.node.sourceId])
-  async function start(node: PictureRenderNode) {
+  async function start(node: PictureRenderNode, retry = false) {
+    pending.current?.abort()
+    const controller = new AbortController()
+    pending.current = controller
+    lastNode.current = node
     const token = ++generation.current
     setError('')
+    setPlayback(null)
+    setStatus('正在准备媒体…')
     setLoading(node.sourceId)
     try {
-      const media = await dataSource.getMediaData(slideIndex, node.sourceId)
+      const media = await dataSource.getMediaData(slideIndex, node.sourceId, {
+        signal: controller.signal, retry,
+        onStatus: (text) => { if (token === generation.current) setStatus(text) },
+      })
       if (token !== generation.current) return
       if (!media) throw new Error('文档中的媒体资源不存在或未嵌入。')
       setPlayback({ node, ...media })
@@ -61,7 +76,7 @@ export function PreviewMediaLayer({
       if (token === generation.current)
         setError(error instanceof Error ? error.message : String(error))
     } finally {
-      if (token === generation.current) setLoading(null)
+      if (token === generation.current) { setLoading(null); setStatus('') }
     }
   }
   const geometry = (node: PictureRenderNode): React.CSSProperties => ({
@@ -170,8 +185,13 @@ export function PreviewMediaLayer({
           }}
         >
           {error}
+          {lastNode.current && <button type="button" onClick={() => void start(lastNode.current!, true)}
+            style={{ marginLeft: 12 }}>重试媒体</button>}
         </p>
       )}
+      {status && <p role="status" aria-live="polite" style={{ position: 'absolute', bottom: 0,
+        left: 0, right: 0, zIndex: 21, margin: 0, padding: '8px 12px',
+        background: 'var(--surface)', color: 'var(--text)' }}>{status}</p>}
     </>
   )
 }

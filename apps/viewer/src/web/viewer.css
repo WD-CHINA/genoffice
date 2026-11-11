@@ -1126,7 +1126,8 @@ html[data-viewer-toolbar='false'] .viewer-preview {
   overflow: hidden;
   padding: 48px 56px;
   box-sizing: border-box;
-  background: var(--surface);
+  background: var(--docs-paper);
+  color: var(--docs-paper-ink);
   border: 1px solid var(--border);
   box-shadow: var(--shadow-modal-strong);
 }

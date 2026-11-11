@@ -116,7 +116,6 @@ export function viewerLayout(
     }
     // note-list deps only reset the cache (keys carry the note text, but
     // formatting-only edits keep it — a fresh map re-measures them)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   })()
   const noteMarkNumbers = (() => {
     const out = new Map<string, number>()
@@ -128,7 +127,6 @@ export function viewerLayout(
     })
     return out
     // the lists change whenever marks are added or removed
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   })()
   const noteNo = (kind: 'footnote' | 'endnote', id: string, index: number): number =>
     noteMarkNumbers.get(`${kind}:${id}`) ?? doc?.parsed.noteNumbers?.[`${kind}:${id}`] ?? index + 1
@@ -299,7 +297,7 @@ import { noteMarkText } from './note-format'
 import { textColorValue } from './editor/text-color'
 import { setDkColor } from './editor/dark-page'
 import { textOutlineCssValue } from './editor/text-outline'
-function appendNoteRuns(
+export function appendNoteRuns(
   row: HTMLElement,
   it: Omit<PageNoteItem, 'height' | 'id'>,
   kind: NoteKind,
@@ -345,7 +343,7 @@ function appendNoteRuns(
  * overprinted each other), so reservation and drawing share the DOM wrap truth.
  */
 let noteMeasureHost: HTMLDivElement | null = null
-function measureNoteHeightDom(
+export function measureNoteHeightDom(
   entry: Pick<PageNoteItem, 'no' | 'text' | 'richParas' | 'noRefMark'>,
   kind: NoteKind,
   widthPx: number,

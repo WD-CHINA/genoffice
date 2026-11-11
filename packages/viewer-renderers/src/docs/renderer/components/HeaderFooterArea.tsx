@@ -147,7 +147,7 @@ export function HeaderFooterArea({
   /** Page number shown for '#' (may be a section-formatted string); the continuous-flow canvas has no real page number, defaults to 1 */
   pageNo?: number | string
   /** Total page count shown for TOTAL_PAGES_MARK (NUMPAGES field), defaults to 1 */
-  pageTotal?: number
+  pageTotal?: number | string
   /** geometry override: on differing-width sections the strip is pinned to its own section's box */
   style?: React.CSSProperties
   /** page geometry: floating textboxes render at their anchor position (absent: stacked) */

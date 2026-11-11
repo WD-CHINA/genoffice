@@ -1,4 +1,6 @@
 import type { DocxReadingContext, SectionInfo, SectionSettings } from '@genoffice/docx-engine'
+import { splitClip } from './docx-fragments'
+import { NOTE_SEPARATOR, noteKey, type RemoteNote, type NoteSlice } from './docx-notes'
 import type { DocxPageBlock } from './docx-page-index'
 import type { PageDescriptor } from './docx-pagination'
 
@@ -18,6 +20,8 @@ export interface SectionPage extends PageDescriptor {
   headerId?: string
   footerId?: string
   regions: SectionRegion[]
+  notes?: NoteSlice[]
+  noteHeight?: number
 }
 
 const px = (twips: number) => twips / 15
@@ -118,7 +122,13 @@ function balanceRegion(blocks: readonly DocxPageBlock[], region: SectionRegion):
 
 /** Pagination holds numeric source references only; body models remain in the bounded unit cache. */
 export function paginateSectionBlocks(blocks: readonly DocxPageBlock[], context: DocxReadingContext, heights: HfHeights = new Map()): SectionPage[] {
-  if (!blocks.length || !context.sections.length) return []
+  return layoutSectionBlocks(blocks, context, heights).pages
+}
+
+export function layoutSectionBlocks(source: readonly DocxPageBlock[], context: DocxReadingContext,
+  heights: HfHeights = new Map(), notes: ReadonlyMap<string, RemoteNote> = new Map()): { blocks: DocxPageBlock[]; pages: SectionPage[] } {
+  const blocks = source.map((block) => ({ ...block }))
+  if (!blocks.length || !context.sections.length) return { blocks, pages: [] }
   const pages: SectionPage[] = []
   const seen = new Set<number>()
   let current: SectionPage | undefined
@@ -126,7 +136,34 @@ export function paginateSectionBlocks(blocks: readonly DocxPageBlock[], context:
   let column = 0
   let previousSection = -1
   let nextNumber = 1
+  const pendingNotes: NoteSlice[] = []
+  const drainNotes = (sectionIndex: number, start: number) => {
+    while (pendingNotes.length) {
+      const first = !seen.has(sectionIndex)
+      const box = geometry(context, sectionIndex, nextNumber, first, heights)
+      const capacity = Math.max(1, box.pageHeight - box.paddingTop - box.paddingBottom - NOTE_SEPARATOR)
+      const slices: NoteSlice[] = []
+      let used = 0
+      while (pendingNotes.length && used < capacity - .5) {
+        const item = pendingNotes[0], note = notes.get(item.key)!
+        const available = capacity - used
+        const end = item.to - item.from <= available ? item.to
+          : note.cuts.filter((cut) => cut > item.from && cut <= item.from + available).at(-1)
+        if (end === undefined) {
+          if (used > 0) break
+          // An indivisible authored object is kept visible, never silently discarded.
+          slices.push(item); pendingNotes.shift(); used += item.to - item.from; break
+        }
+        slices.push({ ...item, to: end }); used += end - item.from
+        if (end < item.to) pendingNotes[0] = { ...item, from: end }
+        else pendingNotes.shift()
+      }
+      pages.push({ index: pages.length, blockStart: start, blockEnd: start, height: 0, sectionIndex,
+        number: nextNumber++, ...box, regions: [], notes: slices, noteHeight: used + NOTE_SEPARATOR })
+    }
+  }
   const beginPage = (sectionIndex: number, start: number, blank = false) => {
+    if (pendingNotes.length && current) drainNotes(current.sectionIndex, start)
     const section = context.sections[sectionIndex]
     const first = !seen.has(sectionIndex)
     if (first && section.pageNumberStart !== undefined) nextNumber = section.pageNumberStart
@@ -146,7 +183,7 @@ export function paginateSectionBlocks(blocks: readonly DocxPageBlock[], context:
     column = 0
   }
   for (let index = 0; index < blocks.length; index++) {
-    const block = blocks[index]
+    let block = blocks[index]
     const sectionIndex = sectionIndexAt(context.sections, block.docxIndex ?? index)
     const section = context.sections[sectionIndex]
     if (!current) { beginPage(sectionIndex, index); beginRegion(sectionIndex, index, 0) }
@@ -165,14 +202,68 @@ export function paginateSectionBlocks(blocks: readonly DocxPageBlock[], context:
       }
     }
     let target = region!.columns[column]
-    const capacity = Math.max(1, current!.pageHeight - current!.paddingTop - current!.paddingBottom - region!.top)
+    const pageCapacity = current!.pageHeight - current!.paddingTop - current!.paddingBottom
+    const clip = block.clip ?? { from: 0, to: block.height }
+    const references = (end: number) => (block.geometry?.notes ?? []).filter((ref) => ref.kind === 'footnote'
+      && ref.bottom > clip.from + .01 && ref.top < end - .01).map((ref) => noteKey(sectionIndex, ref.kind, ref.id))
+    const planNotes = (end: number) => {
+      const keys = [...new Set(references(end))].filter((key) => notes.has(key) && !current!.notes?.some((slice) => slice.key === key))
+      // Leave room for the referencing line; long notes continue on explicit note pages.
+      const twoLines = block.geometry?.cuts.filter((cut) => cut > clip.from + .5)[1] ?? clip.to
+      const minimumBody = Math.max(24, Math.min(block.height, twoLines - clip.from))
+      let budget = Math.max(0, pageCapacity - (current!.noteHeight ?? 0) - target.height - minimumBody - NOTE_SEPARATOR)
+      const slices: NoteSlice[] = [], rest: NoteSlice[] = []
+      for (const key of keys) {
+        const note = notes.get(key)!
+        const end = note.height <= budget ? note.height : note.cuts.filter((cut) => cut <= budget).at(-1) ?? 0
+        if (end > 0) { slices.push({ key, from: 0, to: end }); budget -= end }
+        if (end < note.height) rest.push({ key, from: end, to: note.height })
+      }
+      return { slices, rest, height: slices.reduce((sum, slice) => sum + slice.to - slice.from, 0)
+        + (slices.length && !current!.notes?.length ? NOTE_SEPARATOR : 0) }
+    }
+    let notePlan = planNotes(clip.to)
+    let capacity = Math.max(1, pageCapacity - region!.top - (current!.noteHeight ?? 0) - notePlan.height)
+    const repeated = clip.from > 0 ? block.geometry?.headerHeight ?? 0 : 0
+    const available = capacity - target.height - repeated
+    let keptHeight = block.height
+    if (block.keepWithNext) {
+      let position = index
+      while (blocks[position]?.keepWithNext && blocks[position + 1] &&
+        sectionIndexAt(context.sections, blocks[position + 1].docxIndex ?? position + 1) === sectionIndex) {
+        keptHeight += blocks[++position].height
+      }
+    }
+    const moveKeptGroup = block.keepWithNext && target.height > 0 && keptHeight <= capacity && target.height + keptHeight > capacity
+    const force = block.geometry?.forcedCuts?.find((cut) => cut > clip.from + .5 && cut < clip.to - .5)
+    if (!moveKeptGroup && block.geometry && (block.height > capacity - target.height + .5 || force !== undefined)) {
+      const limit = Math.min(clip.to - .5, clip.from + Math.max(0, available), force ?? Infinity)
+      let cuts = block.geometry.cuts.filter((cut) => cut > clip.from + .5 && cut <= limit + .01)
+      if (block.widowControl !== false && !force) {
+        const all = block.geometry.cuts
+        cuts = cuts.filter((cut) => all.filter((value) => value > clip.from && value <= cut).length >= 2
+          && all.filter((value) => value > cut && value < clip.to).length >= 1)
+      }
+      const cut = force !== undefined && force <= limit + .01 ? force : cuts.at(-1)
+      if (cut !== undefined && (force !== undefined || !block.keepLines || clip.to - clip.from > pageCapacity)) {
+        const [head, tail] = splitClip(clip, cut)
+        blocks.splice(index, 1, { ...block, clip: head, height: head.to - head.from + repeated, keepWithNext: false },
+          { ...block, clip: tail, height: tail.to - tail.from + (block.geometry.headerHeight ?? 0), breakBefore: force === cut,
+            columnBreakBefore: false })
+        block = blocks[index]
+        notePlan = planNotes(cut)
+        capacity = Math.max(1, pageCapacity - region!.top - (current!.noteHeight ?? 0) - notePlan.height)
+      }
+    }
     const next = blocks[index + 1]
-    const keep = block.keepWithNext && next && sectionIndexAt(context.sections, next.docxIndex ?? index + 1) === sectionIndex
-      && target.height > 0 && target.height + block.height + next.height > capacity && block.height + next.height <= capacity
-    if ((block.breakBefore && current!.blockEnd > current!.blockStart) ||
+    const keep = moveKeptGroup || (block.keepWithNext && next && sectionIndexAt(context.sections, next.docxIndex ?? index + 1) === sectionIndex
+      && target.height > 0 && target.height + block.height + next.height > capacity && block.height + next.height <= capacity)
+    const noteCollision = current!.regions.some((item) => item.columns.some((box) =>
+      item.top + box.height > pageCapacity - (current!.noteHeight ?? 0) - notePlan.height + .5))
+    if (noteCollision || (block.breakBefore && current!.blockEnd > current!.blockStart) ||
       block.columnBreakBefore || keep || (region!.top > 0 && block.height > capacity) ||
       (target.height > 0 && target.height + block.height > capacity)) {
-      if (!block.breakBefore && column + 1 < region!.columns.length) {
+      if (!noteCollision && !block.breakBefore && column + 1 < region!.columns.length) {
         column++
         target = region!.columns[column]
         target.blockStart = target.blockEnd = index
@@ -180,7 +271,18 @@ export function paginateSectionBlocks(blocks: readonly DocxPageBlock[], context:
         beginPage(sectionIndex, index); beginRegion(sectionIndex, index, 0)
         target = region!.columns[0]
       }
+      if (block.geometry) {
+        block.columnBreakBefore = false
+        index--
+        continue
+      }
+      notePlan = planNotes(block.clip?.to ?? clip.to)
     }
+    if (notePlan.slices.length) {
+      current!.notes = [...(current!.notes ?? []), ...notePlan.slices]
+      current!.noteHeight = (current!.noteHeight ?? 0) + notePlan.height
+    }
+    pendingNotes.push(...notePlan.rest)
     target.blockEnd = index + 1
     target.height += block.height
     current!.blockEnd = index + 1
@@ -191,5 +293,6 @@ export function paginateSectionBlocks(blocks: readonly DocxPageBlock[], context:
     balanceRegion(blocks, region)
     current.height = Math.max(...current.regions.map((region) => region.top + Math.max(...region.columns.map((column) => column.height))))
   }
-  return pages
+  if (pendingNotes.length && current) drainNotes(current.sectionIndex, blocks.length)
+  return { blocks, pages }
 }

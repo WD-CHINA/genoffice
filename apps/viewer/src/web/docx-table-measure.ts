@@ -1,3 +1,4 @@
+import { measureBlockGeometry, measuredTableCuts, type DocxBlockGeometry } from './docx-fragments'
 import { Editor } from '@tiptap/core'
 import { waitForDocxImages } from './docx-image-ready'
 import { waitForDocxLayout } from './docx-layout-ready'
@@ -10,11 +11,11 @@ import type { TablePage, TablePageRow, TableRowLayout } from './docx-table-pagin
 
 /** Measure top-level table rows (nested tables are excluded by table.rows). */
 export async function measureTableRows(
-  doc: any, block: any, width = 760, signal?: AbortSignal,
+  doc: any, block: any, width = 760, signal?: AbortSignal, geometries?: Map<number, DocxBlockGeometry>,
 ): Promise<TableRowLayout[]> {
   signal?.throwIfAborted()
   const host = document.createElement('div')
-  host.className = 'viewer-doc-remote'
+  host.className = 'viewer-doc-remote viewer-doc-remote-measure'
   host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;height:auto;display:block;visibility:hidden;pointer-events:none`
   document.body.appendChild(host)
   const editor = new Editor({
@@ -35,6 +36,26 @@ export async function measureTableRows(
     await waitForDocxImages(editor.view.dom.querySelectorAll('img'), signal)
     const table = editor.view.dom.querySelector('table')
     const tableModel = block.table
+    if (table && geometries) {
+      const element = editor.view.dom.querySelector<HTMLElement>(`[data-idx="${block.docxIndex}"]`) ?? table
+      const height = element.getBoundingClientRect().height
+      const geometry = measureBlockGeometry(element, height, true)
+      geometry.cuts = measuredTableCuts(table, element.getBoundingClientRect().top).filter((cut) => cut > .5 && cut < height - .5)
+      let headerHeight = 0
+      for (const [index, row] of [...table.rows].entries()) {
+        if (!tableModel?.repeatHeaderRows?.[index]) break
+        headerHeight = row.getBoundingClientRect().bottom - element.getBoundingClientRect().top
+      }
+      geometry.headerHeight = headerHeight
+      if (headerHeight > 0) geometry.cuts = geometry.cuts.filter((cut) => cut > headerHeight + .5)
+      // An authored cantSplit applies to that row, not to the rest of the table.
+      geometry.cuts = geometry.cuts.filter((cut) => ![...table.rows].some((row, index) => {
+        if (!tableModel?.rowCantSplit?.[index]) return false
+        const box = row.getBoundingClientRect(), top = element.getBoundingClientRect().top
+        return cut > box.top - top + .5 && cut < box.bottom - top - .5
+      }))
+      geometries.set(block.docxIndex, geometry)
+    }
     return table ? [...table.rows].map((row, index) => ({
       height: row.getBoundingClientRect().height,
       header: tableModel?.repeatHeaderRows?.[index] === true,

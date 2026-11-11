@@ -17,6 +17,7 @@ export interface DocxScrollAnchor {
   offset: number
   row?: number
   paragraph?: number
+  sourceOffset?: number
 }
 
 /** Capture a stable source reference, never a page number that reflow can change. */
@@ -38,6 +39,8 @@ export function captureDocxAnchor(
       return {
         unitId: block.unitId, blockIndex: block.blockIndex, offset: scrollTop - top,
         ...(row ? { row: row.row, paragraph: row.part?.start ?? 0 } : {}),
+        ...(block.clip ? { sourceOffset: Math.max(block.clip.from, block.clip.from + scrollTop - top
+          - (block.clip.from > 0 ? block.geometry?.headerHeight ?? 0 : 0)) } : {}),
       }
     }
   }
@@ -50,12 +53,16 @@ export function restoreDocxAnchor(
   pages: readonly PageDescriptor[], tops: readonly number[], paddingTop: number,
 ): number | undefined {
   const index = blocks.findIndex((block) => block.unitId === anchor.unitId &&
-    block.blockIndex === anchor.blockIndex && (anchor.row === undefined ||
+    block.blockIndex === anchor.blockIndex && (anchor.sourceOffset === undefined || !block.clip ||
+      (anchor.sourceOffset >= block.clip.from - .5 && anchor.sourceOffset < block.clip.to)) && (anchor.row === undefined ||
       block.tablePage?.rows.some((row) => row.row === anchor.row && (!row.part ||
         ((anchor.paragraph ?? 0) >= row.part.start && (anchor.paragraph ?? 0) < row.part.end)))))
   if (index < 0) return undefined
   const pageIndex = pages.findIndex((page) => page.blockStart <= index && page.blockEnd > index)
   if (pageIndex < 0) return undefined
   const top = tops[pageIndex] + blockTop(pages[pageIndex], index, blocks, paddingTop)
-  return Math.max(0, top + anchor.offset)
+  const clip = blocks[index].clip
+  const offset = anchor.sourceOffset !== undefined && clip
+    ? anchor.sourceOffset - clip.from + (clip.from > 0 ? blocks[index].geometry?.headerHeight ?? 0 : 0) : anchor.offset
+  return Math.max(0, top + offset)
 }

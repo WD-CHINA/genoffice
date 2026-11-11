@@ -1,3 +1,4 @@
+import type { DocxBlockGeometry, DocxClip } from './docx-fragments'
 import { paginateTableRows, type TablePage, type TableRowLayout } from './docx-table-pagination'
 
 /** Durable layout metadata only: never retain text, images or table cell models here. */
@@ -11,6 +12,24 @@ export interface DocxPageBlock {
   keepWithNext?: boolean
   tablePage?: TablePage
   headerRows?: number
+  geometry?: DocxBlockGeometry
+  clip?: DocxClip
+  keepLines?: boolean
+  widowControl?: boolean
+  noteKey?: string
+}
+
+/** Translated WebView layers introduce subpixel float noise; it must not trigger another layout pass. */
+function sameGeometry(a: DocxBlockGeometry | undefined, b: DocxBlockGeometry | undefined): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  const close = (x = 0, y = 0) => Math.abs(x - y) < .1
+  const points = (x: readonly number[] = [], y: readonly number[] = []) => x.length === y.length && x.every((value, i) => close(value, y[i]))
+  return close(a.height, b.height) && close(a.headerHeight, b.headerHeight) && points(a.cuts, b.cuts) && points(a.forcedCuts, b.forcedCuts)
+    && a.notes.length === b.notes.length && a.notes.every((note, index) => {
+      const next = b.notes[index]
+      return note.id === next.id && note.kind === next.kind && close(note.top, next.top) && close(note.bottom, next.bottom)
+    })
 }
 
 /** Preserve identity for unchanged layout, avoiding observer/re-render feedback loops. */
@@ -24,6 +43,7 @@ export function replaceDocxUnitIndex(
     return block.blockIndex === next.blockIndex && block.docxIndex === next.docxIndex && Math.abs(block.height - next.height) < 0.5 &&
       block.columnBreakBefore === next.columnBreakBefore && block.keepWithNext === next.keepWithNext &&
       block.breakBefore === next.breakBefore && block.headerRows === next.headerRows &&
+      sameGeometry(block.geometry, next.geometry) &&
       JSON.stringify(block.tablePage && { ...block.tablePage, height: 0 }) ===
       JSON.stringify(next.tablePage && { ...next.tablePage, height: 0 })
   })) return previous
@@ -42,6 +62,7 @@ export function indexDocxUnit(
   heights: ReadonlyMap<number, number>,
   rows: ReadonlyMap<number, TableRowLayout[]>,
   contentHeight: number | ((block: any) => number),
+  geometries?: ReadonlyMap<number, DocxBlockGeometry>,
 ): DocxPageBlock[] {
   return blocks.flatMap((block, blockIndex): DocxPageBlock[] => {
     const base = { unitId, blockIndex, docxIndex: block.docxIndex,
@@ -49,6 +70,11 @@ export function indexDocxUnit(
       columnBreakBefore: /<w:br\b[^>]*w:type=["']column["']/.test(block.originalXml ?? ''),
       keepWithNext: block.format?.keepNext === true || block.format?.effective?.keepNext === true }
     if (block.hidden) return [{ ...base, height: 0 }]
+    const geometry = geometries?.get(block.docxIndex)
+    if (geometry) return [{ ...base, geometry,
+      height: geometry.height ?? heights.get(block.docxIndex) ?? rows.get(block.docxIndex)?.reduce((sum, row) => sum + row.height, 0) ?? 24,
+      keepLines: block.format?.keepLines ?? block.format?.effective?.keepLines,
+      widowControl: block.format?.widowControl ?? block.format?.effective?.widowControl ?? true }]
     const tableRows = rows.get(block.docxIndex)
     if (block.type === 'table' && tableRows?.length) {
       let headerRows = 0

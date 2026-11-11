@@ -11,6 +11,7 @@ export interface DocxReadingAnchor {
   offset: number
   row?: number
   paragraph?: number
+  sourceOffset?: number
 }
 
 export interface ReadingPosition {
@@ -48,6 +49,7 @@ function isDocxAnchor(value: unknown): value is DocxReadingAnchor {
   if (!Number.isSafeInteger(anchor.blockIndex) || (anchor.blockIndex as number) < 0) return false
   if (typeof anchor.offset !== 'number' || !Number.isFinite(anchor.offset) || anchor.offset < 0)
     return false
+  if (anchor.sourceOffset !== undefined && (typeof anchor.sourceOffset !== 'number' || !Number.isFinite(anchor.sourceOffset) || anchor.sourceOffset < 0)) return false
   for (const key of ['row', 'paragraph'] as const)
     if (anchor[key] !== undefined &&
       (!Number.isSafeInteger(anchor[key]) || (anchor[key] as number) < 0)) return false

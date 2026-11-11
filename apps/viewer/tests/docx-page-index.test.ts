@@ -39,3 +39,15 @@ test('remeasurement preserves unchanged index identity and replaces only its uni
   assert.equal(changed[0].height, 80)
   assert.equal(changed[1], index[1])
 })
+
+test('subpixel WebView geometry noise does not create an observer remeasurement loop', async () => {
+  const { replaceDocxUnitIndex } = await import('../src/web/docx-page-index.ts')
+  const original = [{ unitId: 'u', blockIndex: 0, height: 1000,
+    geometry: { height: 1000, headerHeight: 20, cuts: [100, 200], forcedCuts: [],
+      notes: [{ id: '1', kind: 'footnote' as const, top: -2, bottom: 8 }] } }]
+  const noise = [{ ...original[0], geometry: { ...original[0].geometry, height: 1000.0002,
+    cuts: [100.001, 200.001], notes: [{ id: '1', kind: 'footnote' as const, top: -1.999, bottom: 8.001 }] } }]
+  assert.equal(replaceDocxUnitIndex(original, 'u', noise), original)
+  const changed = [{ ...original[0], geometry: { ...original[0].geometry, cuts: [90, 200] } }]
+  assert.notEqual(replaceDocxUnitIndex(original, 'u', changed), original)
+})

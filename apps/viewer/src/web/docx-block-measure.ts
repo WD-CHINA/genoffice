@@ -1,3 +1,4 @@
+import { measureBlockGeometry, type DocxBlockGeometry } from './docx-fragments'
 import { Editor } from '@tiptap/core'
 import { waitForDocxImages } from './docx-image-ready'
 import { waitForDocxLayout } from './docx-layout-ready'
@@ -17,11 +18,12 @@ export async function measureBlockHeights(
   chunkSize = 100,
   width = 760,
   signal?: AbortSignal,
+  geometries?: Map<number, DocxBlockGeometry>,
 ): Promise<Map<number, number>> {
   const heights = new Map<number, number>()
   if (!blocks.length) return heights
   const host = document.createElement('div')
-  host.className = 'viewer-doc-remote'
+  host.className = 'viewer-doc-remote viewer-doc-remote-measure'
   host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;height:auto;display:block;visibility:hidden;pointer-events:none`
   document.body.appendChild(host)
   const editor = new Editor({
@@ -60,7 +62,10 @@ export async function measureBlockHeights(
           // Include actual paragraph spacing, which is outside its border box.
           // The probe must use the same column width and CSS scope as the page.
           const margin = Number.parseFloat(getComputedStyle(element).marginBottom) || 0
-          heights.set(block.docxIndex, Math.max(bounds.height, next ? next.top - bounds.top : bounds.height + margin))
+          const height = Math.max(bounds.height, next ? next.top - bounds.top : bounds.height + margin)
+          heights.set(block.docxIndex, height)
+          if (geometries && (block.type === 'paragraph' || block.type === 'listItem'))
+            geometries.set(block.docxIndex, measureBlockGeometry(element, height))
         }
       }
     }

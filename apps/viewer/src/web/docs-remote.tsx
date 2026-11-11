@@ -1,3 +1,5 @@
+import type { DocxBlockGeometry } from './docx-fragments'
+import { measureNotes, RemoteNoteView, noteKey, NOTE_SEPARATOR, type RemoteNote } from './docx-notes'
 import { openingStateText } from './server-session'
 import { combineAbortSignals } from './abort-signals'
 import { DocxRemoteSession } from './docx-remote-session'
@@ -18,7 +20,7 @@ import { HeaderFooterArea } from '@genoffice/viewer-renderers/docs/renderer/comp
 import { formatPageNumber } from '@genoffice/viewer-renderers/docs/renderer/pagination-hf'
 import { setNoteNumFmts } from '@genoffice/viewer-renderers/docs/renderer/note-format'
 import { hfReservedHeightPx, hfStripGeom } from '@genoffice/viewer-renderers/docs/renderer/editor/hf-dom'
-import { hfHeightKey, paginateSectionBlocks, sectionColumns, sectionContentHeight, sectionIndexAt, type HfHeights } from './docx-section-layout'
+import { hfHeightKey, layoutSectionBlocks, sectionColumns, sectionContentHeight, sectionIndexAt, type HfHeights } from './docx-section-layout'
 import { captureDocxAnchor, restoreDocxAnchor } from './docx-scroll-anchor'
 import {
   loadReadingPosition, saveDocxReadingAnchor, type DocxReadingAnchor,
@@ -93,6 +95,8 @@ function PageEditor({ blocks, doc, unitKey, onAssetsReady }: {
   })
   useEffect(() => {
     if (!editor) return
+    const storage = editor.storage.listNumbering as any
+    storage.styles = doc.styles; storage.docDefaults = doc.docDefaults; storage.defs = doc.numbering
     editor.commands.setContent(blocksToPmDoc(blocks, undefined, pmDocOptions(doc)), {
       emitUpdate: false,
     })
@@ -120,7 +124,7 @@ function PageEditor({ blocks, doc, unitKey, onAssetsReady }: {
 
 function RemoteHf({ part, kind, settings, number, total, id, left, onHeight }: {
   part: DocxReadingContext['hfParts'][string] | undefined
-  kind: 'header' | 'footer'; settings: SectionSettings; number: string; total: number
+  kind: 'header' | 'footer'; settings: SectionSettings; number: string; total: number | string
   id?: string; left: number; onHeight: (key: string, height: number) => void
 }) {
   const root = useRef<HTMLDivElement>(null)
@@ -158,6 +162,7 @@ interface RemoteLayout {
 async function measureUnit(id: string, blocks: any[], layout: RemoteLayout, signal: AbortSignal): Promise<DocxPageBlock[]> {
   const rows = new Map<number, TableRowLayout[]>()
   const heights = new Map<number, number>()
+  const geometries = new Map<number, DocxBlockGeometry>()
   const groups = new Map<number, any[]>()
   for (const block of blocks) {
     const section = sectionIndexAt(layout.docx.sections, block.docxIndex)
@@ -167,20 +172,26 @@ async function measureUnit(id: string, blocks: any[], layout: RemoteLayout, sign
   for (const [index, group] of groups) {
     const width = Math.min(...sectionColumns(layout.docx.sections[index].settings).map((column) => column.width))
     for (const block of group)
-      if (block.type === 'table') rows.set(block.docxIndex, await measureTableRows(layout.styleContext, block, width, signal))
-    const measured = await measureBlockHeights(layout.styleContext, group.filter((block) => block.type !== 'table'), 100, width, signal)
+      if (block.type === 'table') rows.set(block.docxIndex, await measureTableRows(layout.styleContext, block, width, signal, geometries))
+    for (const block of group) if (block.type === 'table') {
+      const tableRows = rows.get(block.docxIndex)
+      if (tableRows) heights.set(block.docxIndex, tableRows.reduce((sum, row) => sum + row.height, 0))
+    }
+    const measured = await measureBlockHeights(layout.styleContext, group.filter((block) => block.type !== 'table'), 100, width, signal, geometries)
     for (const [key, value] of measured) heights.set(key, value)
   }
   return indexDocxUnit(id, blocks, heights, rows, (block) =>
-    sectionContentHeight(layout.docx, sectionIndexAt(layout.docx.sections, block.docxIndex), layout.hfHeights))
+    sectionContentHeight(layout.docx, sectionIndexAt(layout.docx.sections, block.docxIndex), layout.hfHeights), geometries)
 }
 
 export function DocsRemote({ server, fileId, token, name }: Props) {
-  const [renderBlocks, setRenderBlocks] = useState<DocxPageBlock[]>([])
+  const [sourceBlocks, setRenderBlocks] = useState<DocxPageBlock[]>([])
   const [visibleUnits, setVisibleUnits] = useState<Map<string, { blocks: any[] }>>(new Map())
   const [retryWindow, setRetryWindow] = useState(0)
   const [page, setPage] = useState<PageSettings>(DEFAULT_PAGE)
   const [docx, setDocx] = useState<DocxReadingContext | undefined>()
+  const [noteFontEpoch, setNoteFontEpoch] = useState(0)
+  const [notes, setNotes] = useState<Map<string, RemoteNote>>(new Map())
   const [hfHeights, setHfHeights] = useState<Map<string, number>>(new Map())
   const [styleContext, setStyleContext] = useState<StyleContext>({
     styles: new Map(),
@@ -292,6 +303,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     setVisibleUnits(new Map())
     setPage(DEFAULT_PAGE)
     setDocx(undefined)
+    setNotes(new Map())
     setNoteNumFmts({})
     setHfHeights(new Map())
     setStyleContext({ styles: new Map(), numbering: new Map() })
@@ -359,7 +371,48 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     }
   }, [server, fileId, token, auth, loadChunk])
 
-  const pages = useMemo(() => paginateSectionBlocks(renderBlocks, documentContext, hfHeights), [renderBlocks, documentContext, hfHeights])
+  useEffect(() => {
+    const ready = () => setNoteFontEpoch((epoch) => epoch + 1)
+    document.fonts.addEventListener('loadingdone', ready)
+    return () => document.fonts.removeEventListener('loadingdone', ready)
+  }, [])
+  useLayoutEffect(() => {
+    if (!docx) return
+    const required = new Set<string>()
+    for (const block of sourceBlocks) for (const ref of block.geometry?.notes ?? [])
+      required.add(noteKey(sectionIndexAt(docx.sections, block.docxIndex), ref.kind, ref.id))
+    const measured = measureNotes(docx, styleContext, required)
+    setNotes((old) => !old.size && !measured.size ? old : measured)
+  }, [docx, styleContext, sourceBlocks, noteFontEpoch])
+  const indexed = useMemo(() => {
+    const endnotes = new Map<string, { unitId: string; blockIndex: number; docxIndex?: number }>()
+    const output: DocxPageBlock[] = []
+    const sectionEnd = documentContext.endnoteProps?.pos === 'sectEnd'
+    const addNotes = () => {
+      for (const [key, owner] of endnotes) {
+        const note = notes.get(key)
+        if (note) output.push({ ...owner, noteKey: key, height: note.height,
+          geometry: { cuts: note.cuts, notes: [] }, keepWithNext: false })
+      }
+      endnotes.clear()
+    }
+    for (const [index, block] of sourceBlocks.entries()) {
+      const section = sectionIndexAt(documentContext.sections, block.docxIndex)
+      for (const ref of block.geometry?.notes ?? []) if (ref.kind === 'endnote') {
+        const key = noteKey(section, ref.kind, ref.id)
+        if (!endnotes.has(key)) endnotes.set(key, { unitId: block.unitId, blockIndex: block.blockIndex,
+          docxIndex: sectionEnd ? documentContext.sections[section].lastBlockIndex : documentContext.sections.at(-1)?.lastBlockIndex })
+      }
+      output.push(block)
+      const next = sourceBlocks[index + 1]
+      if (sectionEnd && ((next && sectionIndexAt(documentContext.sections, next.docxIndex) !== section)
+        || (!hasMore && index === sourceBlocks.length - 1))) addNotes()
+    }
+    if (!sectionEnd && !hasMore) addNotes()
+    return output
+  }, [sourceBlocks, documentContext, notes, hasMore])
+  const { blocks: renderBlocks, pages } = useMemo(() => layoutSectionBlocks(indexed, documentContext, hfHeights, notes),
+    [indexed, documentContext, hfHeights, notes])
   useEffect(() => {
     for (const id of visibleModels.current.keys()) onAssetsReady(id)
   }, [hfHeights, onAssetsReady])
@@ -454,7 +507,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
   const requiredKey = useMemo(() => {
     const ids = new Set<string>()
     for (const page of pages.slice(range.start, range.end))
-      for (const item of renderBlocks.slice(page.blockStart, page.blockEnd)) ids.add(item.unitId)
+      for (const item of renderBlocks.slice(page.blockStart, page.blockEnd)) if (!item.noteKey) ids.add(item.unitId)
     return JSON.stringify([...ids])
   }, [pages, range.start, range.end, renderBlocks])
 
@@ -549,7 +602,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
               >
                 <RemoteHf kind="header" id={page.headerId} part={page.headerId ? documentContext.hfParts[page.headerId] : undefined}
                   settings={page.settings} number={formatPageNumber(page.number, documentContext.sections[page.sectionIndex].pageNumberFmt)}
-                  total={pages.length} left={page.paddingLeft} onHeight={onHfHeight} />
+                  total={hasMore ? '…' : pages.length} left={page.paddingLeft} onHeight={onHfHeight} />
                 {page.regions.map((region, regionIndex) => (
                   <div key={regionIndex} className="viewer-doc-remote-region" data-section-index={region.sectionIndex}
                     data-columns={region.columns.length} style={{ position: 'absolute', top: page.paddingTop + region.top,
@@ -558,22 +611,54 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
                         : documentContext.sections[region.sectionIndex].settings.marginLeft) }}>
                     {region.columns.filter((column) => column.blockEnd > column.blockStart).map((column, columnIndex) => {
                       const items = renderBlocks.slice(column.blockStart, column.blockEnd)
+                      const groups = items.reduce<DocxPageBlock[][]>((groups, item) => {
+                        const last = groups.at(-1)
+                        if (!item.clip && !item.noteKey && last && !last[0].clip && !last[0].noteKey) last.push(item)
+                        else groups.push([item])
+                        return groups
+                      }, [])
                       return <div key={columnIndex} className="viewer-doc-remote-column"
                         style={{ position: 'absolute', left: column.left, width: column.width }}>
-                        {items.every((item) => visibleUnits.has(item.unitId)) ? <PageEditor
-                          unitKey={JSON.stringify([...new Set(items.map((item) => item.unitId))])}
-                          onAssetsReady={onAssetsReady}
-                          blocks={items.map((item) => {
-                            const block = visibleUnits.get(item.unitId)!.blocks[item.blockIndex]
-                            return item.tablePage ? sliceTableBlock(block, item.tablePage) : block
-                          })} doc={styleContext} /> : <p role="status">正在加载正文…</p>}
+                        {groups.map((group, itemIndex) => {
+                          const item = group[0]
+                          if (item.noteKey) {
+                            const note = notes.get(item.noteKey)
+                            return note ? <RemoteNoteView key={itemIndex} note={note} from={item.clip?.from} to={item.clip?.to} /> : null
+                          }
+                          const block = visibleUnits.get(item.unitId)?.blocks[item.blockIndex]
+                          if (!group.every((value) => visibleUnits.has(value.unitId)) || !block) return <p key={itemIndex} role="status">正在加载正文…</p>
+                          if (!item.clip) return <PageEditor key={itemIndex} unitKey={JSON.stringify([...new Set(group.map((value) => value.unitId))])}
+                            onAssetsReady={onAssetsReady} blocks={group.map((value) => {
+                              const source = visibleUnits.get(value.unitId)!.blocks[value.blockIndex]
+                              return value.tablePage ? sliceTableBlock(source, value.tablePage) : source
+                            })} doc={styleContext} />
+                          const header = item.clip.from > 0 ? item.geometry?.headerHeight ?? 0 : 0
+                          return <div key={itemIndex} className="viewer-doc-fragment" data-docx-index={item.docxIndex}
+                            data-source-from={item.clip.from} data-source-to={item.clip.to} style={{ height: item.height, position: 'relative' }}>
+                            {header > 0 && <div style={{ height: header, overflow: 'hidden', position: 'relative' }}>
+                              <PageEditor unitKey={JSON.stringify([item.unitId])} onAssetsReady={onAssetsReady} blocks={[block]} doc={styleContext} />
+                            </div>}
+                            <div style={{ height: item.clip.to - item.clip.from, overflow: 'hidden', position: 'relative' }}>
+                              <div style={{ position: 'relative', top: -item.clip.from }}>
+                                <PageEditor unitKey={JSON.stringify([item.unitId])} onAssetsReady={onAssetsReady} blocks={[block]} doc={styleContext} />
+                              </div>
+                            </div>
+                          </div>
+                        })}
                       </div>
                     })}
                   </div>
                 ))}
+                {!!page.notes?.length && <div className="viewer-doc-remote-notes" style={{ position: 'absolute',
+                  left: page.paddingLeft, width: page.width - page.paddingLeft - page.paddingRight,
+                  ...(documentContext.footnoteProps?.pos === 'beneathText'
+                    ? { top: page.paddingTop + page.height }
+                    : { bottom: page.paddingBottom }), borderTop: '1px solid currentColor', paddingTop: NOTE_SEPARATOR - 1 }}>
+                  {page.notes.map((slice, index) => <RemoteNoteView key={index} note={notes.get(slice.key)!} from={slice.from} to={slice.to} />)}
+                </div>}
                 <RemoteHf kind="footer" id={page.footerId} part={page.footerId ? documentContext.hfParts[page.footerId] : undefined}
                   settings={page.settings} number={formatPageNumber(page.number, documentContext.sections[page.sectionIndex].pageNumberFmt)}
-                  total={pages.length} left={page.paddingLeft} onHeight={onHfHeight} />
+                  total={hasMore ? '…' : pages.length} left={page.paddingLeft} onHeight={onHfHeight} />
               </div>
             </div>
           ))}

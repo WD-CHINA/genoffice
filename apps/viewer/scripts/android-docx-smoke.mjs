@@ -124,6 +124,14 @@ async function inspect(c, id, input, disconnected) {
     throw Error('Word paper is not readable in the dark shell')
   if (snapshot.alerts.length || snapshot.images.some((image) => image.error))
     throw Error(JSON.stringify(snapshot))
+  if (input.name === 'business') {
+    snapshot.rightEdge = await c.evaluate(
+      `(()=>{const t=document.querySelector('.viewer-doc-remote-column .doc-table');const cell=t.rows[0].cells[t.rows[0].cells.length-1],r=cell.getBoundingClientRect();return{border:getComputedStyle(cell).borderRight,visible:document.elementsFromPoint(r.right-.25,r.top+r.height/2).some(n=>n===cell||cell.contains(n))}})()`,
+      id,
+    )
+    if (!snapshot.rightEdge.visible)
+      throw Error('Business Word outer right table border is clipped')
+  }
   snapshot.external = snapshot.external.filter((url) => url !== backend + '/v2/capabilities')
   if (disconnected && snapshot.images.some((image) => !image.local))
     throw Error('Offline Word image is not local')

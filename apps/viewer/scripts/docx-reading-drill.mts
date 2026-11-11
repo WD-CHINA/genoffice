@@ -127,6 +127,20 @@ partialZip.file(
 const partialPath = join(output, 'partial-pages.docx')
 await writeFile(partialPath, await partialZip.generateAsync({ type: 'nodebuffer' }))
 sources.push({ name: 'partial-pages', path: partialPath })
+// A fractional text width plus rounded fixed columns used to clip the outer right border.
+const edgeZip = await JSZip.loadAsync(await readFile(sources[0].path))
+const edgeDocument = await edgeZip.file('word/document.xml')!.async('string')
+const edgeTable = `<w:tbl><w:tblPr><w:tblW w:w="9027" w:type="dxa"/><w:tblInd w:w="115" w:type="dxa"/><w:tblLayout w:type="fixed"/><w:tblBorders>${['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map((side) => `<w:${side} w:val="single" w:sz="4" w:color="000000"/>`).join('')}</w:tblBorders></w:tblPr><w:tblGrid>${'<w:gridCol w:w="564"/>'.repeat(16)}</w:tblGrid>${[0, 1].map((row) => `<w:tr>${Array.from({ length: 8 }, (_, col) => `<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/><w:gridSpan w:val="2"/></w:tcPr>${p(row === 1 && col === 0 ? '跨页文字 '.repeat(100) : `CELL_${row}_${col}`)}</w:tc>`).join('')}</w:tr>`).join('')}</w:tbl>`
+edgeZip.file(
+  'word/document.xml',
+  edgeDocument.replace(
+    /<w:body>[\s\S]*<\/w:body>/,
+    `<w:body>${p('TABLE_RIGHT_EDGE')}${edgeTable}${sect}</w:body>`,
+  ),
+)
+const edgePath = join(output, 'table-right-edge.docx')
+await writeFile(edgePath, await edgeZip.generateAsync({ type: 'nodebuffer' }))
+sources.push({ name: 'table-right-edge', path: edgePath })
 const browser = await chromium.launch({
   headless: true,
   executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -191,6 +205,53 @@ try {
         'rgb(255, 255, 255)',
         'Word paper must stay readable in a dark shell',
       )
+      if (source.name === 'business' || source.name === 'table-right-edge') {
+        sample.rightEdge = await content.evaluate(() => {
+          const table = document.querySelector<HTMLTableElement>(
+            '.viewer-doc-remote-column .doc-table',
+          )!
+          const cell = table.rows[0].cells[table.rows[0].cells.length - 1]
+          const rect = cell.getBoundingClientRect()
+          const x = rect.right - 0.25,
+            y = rect.top + rect.height / 2
+          const hit = () =>
+            document.elementsFromPoint(x, y).some((node) => node === cell || cell.contains(node))
+          const slices = [
+            ...table
+              .closest('.viewer-doc-fragment')!
+              .querySelectorAll<HTMLElement>('.viewer-doc-fragment-slice'),
+          ]
+          const original = slices.map((node) => node.style.cssText)
+          const visible = hit()
+          try {
+            for (const slice of slices) {
+              slice.style.clipPath = 'none'
+              slice.style.overflow = 'hidden'
+            }
+            return {
+              visible,
+              oldClipVisible: hit(),
+              border: getComputedStyle(cell).borderRight,
+              tableWidth: table.getBoundingClientRect().width,
+              clipWidth: slices[0].getBoundingClientRect().width,
+            }
+          } finally {
+            slices.forEach((node, i) => {
+              node.style.cssText = original[i]
+            })
+          }
+        })
+        assert.equal(
+          sample.rightEdge.visible,
+          true,
+          'outer right table border must be inside the painted region',
+        )
+        assert.equal(
+          sample.rightEdge.oldClipVisible,
+          false,
+          'the fixture must reproduce the former horizontal clipping',
+        )
+      }
       sample.pendingPageTotal = await content.evaluate(() =>
         [...document.querySelectorAll('.page-hf')].some((node) => node.textContent?.includes('…')),
       )

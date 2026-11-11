@@ -635,10 +635,11 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
                           const header = item.clip.from > 0 ? item.geometry?.headerHeight ?? 0 : 0
                           return <div key={itemIndex} className="viewer-doc-fragment" data-docx-index={item.docxIndex}
                             data-source-from={item.clip.from} data-source-to={item.clip.to} style={{ height: item.height, position: 'relative' }}>
-                            {header > 0 && <div style={{ height: header, overflow: 'hidden', position: 'relative' }}>
+                            {header > 0 && <div className="viewer-doc-fragment-slice" style={{ height: header, clipPath: `inset(0 -${page.width}px)`, position: 'relative' }}>
                               <PageEditor unitKey={JSON.stringify([item.unitId])} onAssetsReady={onAssetsReady} blocks={[block]} doc={styleContext} />
                             </div>}
-                            <div style={{ height: item.clip.to - item.clip.from, overflow: 'hidden', position: 'relative' }}>
+                            {/* Clip continuation rows vertically; table rounding/indent may cross the text column's edge. */}
+                            <div className="viewer-doc-fragment-slice" style={{ height: item.clip.to - item.clip.from, clipPath: `inset(0 -${page.width}px)`, position: 'relative' }}>
                               <div style={{ position: 'relative', top: -item.clip.from }}>
                                 <PageEditor unitKey={JSON.stringify([item.unitId])} onAssetsReady={onAssetsReady} blocks={[block]} doc={styleContext} />
                               </div>

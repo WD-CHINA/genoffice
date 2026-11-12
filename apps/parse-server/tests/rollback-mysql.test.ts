@@ -1,3 +1,4 @@
+import { drainCleanups } from './helpers/cleanup'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm, stat } from 'node:fs/promises'
@@ -9,7 +10,9 @@ import { createParseServer, type ParseServer } from '../src/server'
 
 const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
 const cleanups: Array<() => Promise<void>> = []
-afterEach(async () => { while (cleanups.length) await cleanups.pop()!() })
+afterEach(async () => {
+  await drainCleanups(cleanups)
+})
 
 describe.skipIf(!socketPath)('backend rollback safety over real MySQL', () => {
   it('local backend GC keeps catalog-referenced and saved sources after a catalog->local rollback', async () => {
@@ -24,7 +27,14 @@ describe.skipIf(!socketPath)('backend rollback safety over real MySQL', () => {
       await admin.end()
       await rm(dataDir, { recursive: true, force: true })
     })
-    const config = { host: '127.0.0.1', port: 3306, user: 'root', password: '', database, socketPath }
+    const config = {
+      host: '127.0.0.1',
+      port: 3306,
+      user: 'root',
+      password: '',
+      database,
+      socketPath,
+    }
     const start = async (artifactBackend: 'catalog' | 'local'): Promise<ParseServer> => {
       const server = await createParseServer({
         dataDir,
@@ -42,23 +52,25 @@ describe.skipIf(!socketPath)('backend rollback safety over real MySQL', () => {
       fetch(server.url + path, init)
     const upload = async (server: ParseServer): Promise<string> => {
       const response = await request(server)('/v1/files', {
-        method: 'POST', body: Buffer.from(await createBlankPptx()),
+        method: 'POST',
+        body: Buffer.from(await createBlankPptx()),
       })
       expect(response.status, await response.clone().text()).toBe(201)
       return ((await response.json()) as { fileId: string }).fileId
     }
     const openReady = async (server: ParseServer, fileId: string): Promise<string> => {
       const opened = await request(server)('/v2/sessions', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileId }),
       })
       expect([201, 202]).toContain(opened.status)
-      const { sessionId } = await opened.json() as { sessionId: string }
+      const { sessionId } = (await opened.json()) as { sessionId: string }
       const deadline = Date.now() + 20_000
       for (;;) {
         const status = await request(server)(`/v2/sessions/${sessionId}`)
         expect(status.status).toBe(200)
-        const body = await status.json() as { state: string }
+        const body = (await status.json()) as { state: string }
         if (body.state === 'ready') return sessionId
         if (body.state === 'failed') throw new Error('catalog build failed')
         if (Date.now() > deadline) throw new Error('session did not become ready')
@@ -71,7 +83,8 @@ describe.skipIf(!socketPath)('backend rollback safety over real MySQL', () => {
     const savedFile = await upload(first)
     const sessionOnlyFile = await upload(first)
     const saved = await request(first)('/v2/library', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fileId: savedFile, displayName: 'rollback-saved.pptx' }),
     })
     expect([200, 201]).toContain(saved.status)
@@ -87,7 +100,7 @@ describe.skipIf(!socketPath)('backend rollback safety over real MySQL', () => {
       expect(content.status, `source ${fileId.slice(0, 8)} must survive rollback GC`).toBe(200)
       await content.arrayBuffer()
     }
-    const library = await (await request(second)('/v2/library')).json() as {
+    const library = (await (await request(second)('/v2/library')).json()) as {
       items: Array<{ fileId: string }>
     }
     expect(library.items.some((entry) => entry.fileId === savedFile)).toBe(true)

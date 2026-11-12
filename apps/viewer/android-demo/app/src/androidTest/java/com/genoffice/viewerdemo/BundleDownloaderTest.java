@@ -1,6 +1,5 @@
 package com.genoffice.viewerdemo;
 
-import android.test.InstrumentationTestCase;
 import android.util.Log;
 import java.io.*;
 import java.net.*;
@@ -8,18 +7,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 
 /** Exercises real Android IO in a private test cache, without changing saved bundles. */
-public class BundleDownloaderTest extends InstrumentationTestCase {
+public class BundleDownloaderTest extends AndroidTestSupport {
     private File root;
     @Override protected void setUp() throws Exception {
-        root = new File(getInstrumentation().getTargetContext().getCacheDir(), "bundle-download-test");
-        root.mkdirs();
+        root = temporaryRoot("bundle-download-test");
     }
     @Override protected void tearDown() { delete(root); }
-    private static void delete(File f) {
-        File[] children = f.listFiles();
-        if (children != null) for (File child : children) delete(child);
-        f.delete();
-    }
     public void testOneGiBAndFailedReplacement() throws Exception {
         long bytes = 1024L * 1024 * 1024;
         assertTrue("Need 2 GiB free", root.getUsableSpace() > 2 * bytes);

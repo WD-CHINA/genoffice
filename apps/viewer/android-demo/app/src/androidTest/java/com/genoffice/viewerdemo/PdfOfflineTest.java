@@ -1,6 +1,5 @@
 package com.genoffice.viewerdemo;
 
-import android.test.InstrumentationTestCase;
 import org.json.JSONObject;
 import java.io.*;
 import java.net.*;
@@ -15,10 +14,10 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 /** Real HTTP/IO probes in a private cache; no user documents are modified. */
-public class PdfOfflineTest extends InstrumentationTestCase {
+public class PdfOfflineTest extends AndroidTestSupport {
     private File root;
     @Override protected void setUp() throws Exception {
-        root = Files.createTempDirectory(getInstrumentation().getTargetContext().getCacheDir().toPath(), "pdf-offline-test").toFile();
+        root = temporaryRoot("pdf-offline-test");
     }
     @Override protected void tearDown() { delete(root); }
     private BundleDownloader download(Fixture server, BundleCache cache) {
@@ -170,6 +169,4 @@ public class PdfOfflineTest extends InstrumentationTestCase {
     private static void respond(OutputStream out, int status, int length, String headers) throws IOException {
         out.write(("HTTP/1.1 " + status + " Test\r\nContent-Length: " + length + "\r\n" + headers + "Connection: close\r\n\r\n").getBytes(StandardCharsets.US_ASCII)); out.flush();
     }
-    private static byte[] read(InputStream in) throws IOException { try (InputStream source = in; ByteArrayOutputStream out = new ByteArrayOutputStream()) { byte[] buffer = new byte[65536]; int n; while ((n = source.read(buffer)) != -1) out.write(buffer, 0, n); return out.toByteArray(); } }
-    private static void delete(File file) { File[] files = file.listFiles(); if (files != null) for (File child : files) delete(child); file.delete(); }
 }

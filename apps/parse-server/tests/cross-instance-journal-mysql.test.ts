@@ -1,3 +1,4 @@
+import { drainCleanups } from './helpers/cleanup'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -12,12 +13,14 @@ const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
   vi.restoreAllMocks()
-  while (cleanups.length) await cleanups.pop()!()
+  await drainCleanups(cleanups)
 })
 
 function gate() {
   let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
   return { promise, resolve }
 }
 
@@ -27,16 +30,18 @@ function pauseBeforeDone() {
   const blocked = gate()
   const original = ArtifactWriter.prototype.append
   let paused = false
-  vi.spyOn(ArtifactWriter.prototype, 'append').mockImplementation(
-    async function (this: ArtifactWriter, id: string, value: JsonValue | Uint8Array) {
-      if (id === 'external-media' && !paused) {
-        paused = true
-        entered.resolve()
-        await blocked.promise
-      }
-      return original.call(this, id, value)
-    },
-  )
+  vi.spyOn(ArtifactWriter.prototype, 'append').mockImplementation(async function (
+    this: ArtifactWriter,
+    id: string,
+    value: JsonValue | Uint8Array,
+  ) {
+    if (id === 'external-media' && !paused) {
+      paused = true
+      entered.resolve()
+      await blocked.promise
+    }
+    return original.call(this, id, value)
+  })
   return { entered, blocked }
 }
 
@@ -65,14 +70,16 @@ async function createEnvironment(): Promise<Env> {
     fetch(server.url + path, init)
   const upload = async (server: ParseServer, bytes: Uint8Array): Promise<string> => {
     const response = await requestOf(server)('/v1/files', {
-      method: 'POST', body: Buffer.from(bytes),
+      method: 'POST',
+      body: Buffer.from(bytes),
     })
     expect(response.status, await response.clone().text()).toBe(201)
     return ((await response.json()) as { fileId: string }).fileId
   }
   const open = async (server: ParseServer, fileId: string) => {
     const response = await requestOf(server)('/v2/sessions', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fileId }),
     })
     return {
@@ -112,26 +119,29 @@ describe.skipIf(!socketPath)('cross-instance waiter journal over real MySQL', ()
       await Promise.race([
         pause.entered.promise,
         new Promise((_, reject) =>
-          setTimeout(() => reject(new Error('build never paused')), 15_000)),
+          setTimeout(() => reject(new Error('build never paused')), 15_000),
+        ),
       ])
       // The reader never saw this session until now: it resolves the durable row
       // from MySQL and serves it read-only.
       const remote = await env.requestOf(env.reader)(`/v2/sessions/${session.sessionId}`)
       expect(remote.status).toBe(200)
-      const body = await remote.json() as { state: string; previewable?: boolean }
+      const body = (await remote.json()) as { state: string; previewable?: boolean }
       expect(['queued', 'building']).toContain(body.state)
       expect(body.previewable ?? false).toBe(false)
-      const health = await (await env.requestOf(env.reader)('/v1/health')).json() as {
+      const health = (await (await env.requestOf(env.reader)('/v1/health')).json()) as {
         artifacts: { buildsStarted: number; sourceParsesStarted: number }
       }
       expect(health.artifacts.buildsStarted).toBe(0)
       expect(health.artifacts.sourceParsesStarted).toBe(0)
-      const beat = await env.requestOf(env.reader)(
-        `/v2/sessions/${session.sessionId}/heartbeat`, { method: 'POST' })
+      const beat = await env.requestOf(env.reader)(`/v2/sessions/${session.sessionId}/heartbeat`, {
+        method: 'POST',
+      })
       expect(beat.status).toBe(200)
       // Closing the remote reading view must not delete the builder's row.
-      const closed = await env.requestOf(env.reader)(
-        `/v2/sessions/${session.sessionId}`, { method: 'DELETE' })
+      const closed = await env.requestOf(env.reader)(`/v2/sessions/${session.sessionId}`, {
+        method: 'DELETE',
+      })
       expect(closed.status).toBe(204)
       const owner = await env.requestOf(env.builder)(`/v2/sessions/${session.sessionId}`)
       expect(owner.status).toBe(200)
@@ -142,7 +152,7 @@ describe.skipIf(!socketPath)('cross-instance waiter journal over real MySQL', ()
     for (;;) {
       const response = await env.requestOf(env.builder)(`/v2/sessions/${session.sessionId}`)
       expect(response.status).toBe(200)
-      const body = await response.json() as { state: string }
+      const body = (await response.json()) as { state: string }
       if (body.state === 'ready') break
       if (body.state === 'failed') throw new Error('shared build failed after release')
       if (Date.now() > readyDeadline) throw new Error('shared build never became ready')

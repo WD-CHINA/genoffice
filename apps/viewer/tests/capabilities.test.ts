@@ -1,3 +1,4 @@
+import { json } from './helpers/session-probes.ts'
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
 import {
@@ -6,9 +7,6 @@ import {
   resetCapabilitiesCacheForTests,
   supports,
 } from '../src/web/capabilities.ts'
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
 afterEach(() => resetCapabilitiesCacheForTests())
 
@@ -47,7 +45,9 @@ test('failed, malformed or timed-out probes return undefined and are not cached'
     (async () => json({ message: 'missing' }, 404)) as typeof fetch,
     (async () => json({ message: 'boom' }, 500)) as typeof fetch,
     (async () => new Response('not json', { status: 200 })) as typeof fetch,
-    (async () => { throw new Error('network down') }) as typeof fetch,
+    (async () => {
+      throw new Error('network down')
+    }) as typeof fetch,
     (async () => json([1, 2, 3])) as typeof fetch,
   ]) {
     assert.equal(await fetchCapabilities({ baseUrl: 'http://parse', fetchImpl }), undefined)
@@ -106,9 +106,14 @@ test('accepts an externally abortable signal without throwing', async () => {
 test('keeps only valid advertised thresholds', async () => {
   const capabilities = await fetchCapabilities({
     baseUrl: 'http://parse',
-    fetchImpl: (async () => json({
-      thresholds: { docxAutoRemoteBytes: 1024, pptxAutoRemoteBytes: -1, docxFullRenderBytes: 1.5 },
-    })) as typeof fetch,
+    fetchImpl: (async () =>
+      json({
+        thresholds: {
+          docxAutoRemoteBytes: 1024,
+          pptxAutoRemoteBytes: -1,
+          docxFullRenderBytes: 1.5,
+        },
+      })) as typeof fetch,
   })
   assert.deepEqual(capabilities?.thresholds, { docxAutoRemoteBytes: 1024 })
 })

@@ -1,12 +1,12 @@
+import { json } from './helpers/session-probes.ts'
 import assert from 'node:assert/strict'
 import { afterEach, test } from 'node:test'
 import { resetCapabilitiesCacheForTests } from '../src/web/capabilities.ts'
 import {
-  openServerSession, updateSessionLayoutPrefs, type PreviewNotice,
+  openServerSession,
+  updateSessionLayoutPrefs,
+  type PreviewNotice,
 } from '../src/web/server-session.ts'
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
 afterEach(() => resetCapabilitiesCacheForTests())
 
@@ -23,7 +23,8 @@ test('an explicit asyncSessions=false capability forces the v1 contract', async 
     return json({ sessionId: 'legacy', state: 'ready' })
   })
   const result = await openServerSession<{ sessionId: string }>({
-    server: 'http://parse', fileId: 'file',
+    server: 'http://parse',
+    fileId: 'file',
   })
   assert.equal(result.sessionId, 'legacy')
   assert.deepEqual(paths, ['http://parse/v2/capabilities', 'http://parse/v1/sessions'])
@@ -37,19 +38,31 @@ test('incrementalPreview=false suppresses preview states and preview notices', a
     if (url.endsWith('/v2/capabilities'))
       return json({ features: { asyncSessions: true, incrementalPreview: false } })
     if (init.method === 'POST')
-      return json({
-        sessionId: 's', state: 'building', pollAfterMs: 1,
-        previewable: true, progress: { unitsProduced: 1, unitCount: 2, percent: 50 },
-      }, 202)
-    return json(++polls === 1
-      ? {
-          sessionId: 's', state: 'building', pollAfterMs: 1,
-          previewable: true, progress: { unitsProduced: 1, unitCount: 2, percent: 50 },
-        }
-      : { sessionId: 's', state: 'ready', model: { unitCount: 2 }, fonts: [] })
+      return json(
+        {
+          sessionId: 's',
+          state: 'building',
+          pollAfterMs: 1,
+          previewable: true,
+          progress: { unitsProduced: 1, unitCount: 2, percent: 50 },
+        },
+        202,
+      )
+    return json(
+      ++polls === 1
+        ? {
+            sessionId: 's',
+            state: 'building',
+            pollAfterMs: 1,
+            previewable: true,
+            progress: { unitsProduced: 1, unitCount: 2, percent: 50 },
+          }
+        : { sessionId: 's', state: 'ready', model: { unitCount: 2 }, fonts: [] },
+    )
   })
   await openServerSession({
-    server: 'http://parse', fileId: 'file',
+    server: 'http://parse',
+    fileId: 'file',
     onState: (state) => states.push(state),
     onPreview: (preview) => previews.push(preview),
   })
@@ -67,7 +80,8 @@ test('a missing capabilities route keeps the current v2 behaviour', async (conte
     return json({ sessionId: 'v2', state: 'ready' })
   })
   const result = await openServerSession<{ sessionId: string }>({
-    server: 'http://parse', fileId: 'file',
+    server: 'http://parse',
+    fileId: 'file',
   })
   assert.equal(result.sessionId, 'v2')
   assert.deepEqual(paths, ['http://parse/v2/capabilities', 'http://parse/v2/sessions'])
@@ -84,7 +98,8 @@ test('a saved reading position is sent as layoutPrefs to the v2 contract', async
     return json({ sessionId: 'v2', state: 'ready' })
   })
   await openServerSession({
-    server: 'http://parse', fileId: 'file',
+    server: 'http://parse',
+    fileId: 'file',
     layoutPrefs: { page: 4 },
   })
   assert.deepEqual(posted, { fileId: 'file', layoutPrefs: { page: 4 } })

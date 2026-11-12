@@ -1,10 +1,9 @@
 /** Original-PDF download, cold offline replay and real WebView page rendering. */
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { join, resolve } from 'node:path'
-import { connectAndroidWebView } from './android-cdp.mjs'
+import { createAndroidTestDevice, wait } from './android-test-device.mjs'
 
 const serial = process.env.ANDROID_SERIAL
 assert.ok(serial && process.env.ANDROID_PDF_INPUTS, 'Set ANDROID_SERIAL and ANDROID_PDF_INPUTS')
@@ -17,27 +16,8 @@ const backend = process.env.PARSE_SERVER_URL || 'http://127.0.0.1:18787'
 const viewer = process.env.ANDROID_VIEWER_URL || 'http://127.0.0.1:11019/'
 const token = process.env.PARSE_SERVER_TOKEN || ''
 const cdpPort = Number(process.env.ANDROID_MEDIA_CDP_PORT || 19224)
-for (const address of [backend, viewer]) {
-  const url = new URL(address)
-  assert.ok(
-    url.protocol === 'http:' && url.hostname === '127.0.0.1' && url.port,
-    'USB drill requires loopback HTTP services with explicit ports',
-  )
-}
-const adb = (...args) =>
-  execFileSync('adb', ['-s', serial, ...args], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-const ports = [...new Set([new URL(backend).port, new URL(viewer).port])]
-const reverses = new Map(
-  adb('reverse', '--list')
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => line.trim().split(/\s+/).slice(-2)),
-)
-const access = () => {
-  for (const port of ports) adb('reverse', `tcp:${port}`, `tcp:${port}`)
-}
+const device = createAndroidTestDevice([backend, viewer], cdpPort)
+const { adb, access } = device
 const results = []
 
 async function open(input, mode) {
@@ -72,16 +52,23 @@ async function open(input, mode) {
     try {
       const pid = adb('shell', 'pidof', 'com.genoffice.viewerdemo').trim()
       if (!pid) continue
-      adb('forward', `tcp:${cdpPort}`, `localabstract:webview_devtools_remote_${pid}`)
-      c = await connectAndroidWebView(cdpPort)
+      c = await device.connect(pid)
       for (const [id, context] of c.contexts)
         if (context.auxData?.isDefault) {
           const state = await c.evaluate(
-            `({local:location.pathname.startsWith('/viewer/'),pages:document.querySelectorAll('.viewer-pdf-page').length,ready:!!document.querySelector('.pdf-page-content canvas'),error:document.querySelector('[role=alert]')?.textContent})`,
+            `({origin:location.origin,fileId:new URL(location.href).searchParams.get('fileId'),local:location.pathname.startsWith('/viewer/'),pages:document.querySelectorAll('.viewer-pdf-page').length,ready:!!document.querySelector('.pdf-page-content canvas'),error:document.querySelector('[role=alert]')?.textContent})`,
             id,
           )
           if (state.error) throw Error(state.error)
-          if (state.pages && state.ready && (mode === 'online') !== state.local) return { c, id }
+          if (
+            state.fileId === input.fileId &&
+            state.pages &&
+            state.ready &&
+            (mode === 'online'
+              ? state.origin === new URL(viewer).origin
+              : state.local && state.origin !== new URL(viewer).origin)
+          )
+            return { c, id }
         }
       c.close()
     } catch (error) {
@@ -123,9 +110,7 @@ async function inspect(c, id, input, offline) {
     if (page === 0)
       await writeFile(
         join(output, `${input.name}-${offline ? 'offline' : 'online'}.png`),
-        execFileSync('adb', ['-s', serial, 'exec-out', 'screencap', '-p'], {
-          maxBuffer: 32 * 1024 * 1024,
-        }),
+        device.readBytes(['exec-out', 'screencap', '-p']),
       )
   }
   if (input.expectedPages) assert.equal(count, input.expectedPages)
@@ -180,23 +165,20 @@ try {
     assert.equal(manifest.format, 'pdf')
     assert.equal(manifest.sourceSha256, input.fileId)
     assert.equal(manifest.sourceVerified, true)
-    const original = execFileSync(
-      'adb',
+    const original = device.readBytes(
       [
-        '-s',
-        serial,
         'exec-out',
         'run-as',
         'com.genoffice.viewerdemo',
         'cat',
         `files/bundle-cache/${input.fileId}/versions/${pointer.artifactKey}/document.pdf`,
       ],
-      { maxBuffer: 256 * 1024 * 1024 },
+      256 * 1024 * 1024,
     )
     assert.equal(createHash('sha256').update(original).digest('hex'), input.fileId)
     assert.equal(original.length, manifest.sourceSize)
     await writeFile(join(output, `${input.name}-manifest.json`), JSON.stringify(manifest, null, 2))
-    for (const port of ports) adb('reverse', '--remove', `tcp:${port}`)
+    device.disconnect()
     const offline = await open(input, 'open')
     try {
       const range = await offline.c.evaluate(
@@ -232,16 +214,5 @@ try {
     }
   }
 } finally {
-  for (const port of ports) {
-    const previous = reverses.get(`tcp:${port}`)
-    if (previous) adb('reverse', `tcp:${port}`, previous)
-    else {
-      try {
-        adb('reverse', '--remove', `tcp:${port}`)
-      } catch {}
-    }
-  }
-  try {
-    adb('forward', '--remove', `tcp:${cdpPort}`)
-  } catch {}
+  device.restore()
 }

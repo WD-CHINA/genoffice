@@ -1,5 +1,7 @@
 # 8 核 / 16 GiB 目标负载样本（本机 10 核 / 16 GiB）
 
+> 本文保留原设计或当时验证条件；当前三端职责、已知边界与测试入口请参阅[架构主文档](runtime-workflows.zh-CN.md)、[运行边界](runtime-boundaries.zh-CN.md)和[测试指南](testing-guide.zh-CN.md)。历史数字不自动代表当前结果。
+
 日期：2026-11-10。脚本：`apps/parse-server/scripts/load-profile.mts`（`npm run load:profile -w @genoffice/parse-server`）。
 
 本文件记录方案 §6.1/§11 的初始负载样本：2 个冷解析并发 + 20 个排队任务 + 50 个并发缓存阅读，随后 500 个轻量阅读会话；记录 p50/p95 首屏、单元读取、排队、解析用时、RSS 峰值、CPU 与存储规模。它是**单机本机样本**，不是生产容量承诺；目标硬件为 8 核/16 GiB，本次在 10 核/16 GiB Apple Silicon（macOS 27.2.1、Node 22.23.4）上运行，未在精确 8 核机型复跑。
@@ -13,27 +15,44 @@
 
 ## 结果
 
-| 指标 | 结果 |
-| --- | --- |
-| 冷任务队列峰值 | running 2 / queued 20 |
-| 冷任务就绪 | p50 **3541 ms**、p95 **6662 ms**（22 个任务、60 页/份） |
-| 冷阶段总耗时 | 8123 ms |
-| 缓存阅读（隔离，热） | p50 17.99 ms、p95 **20.64 ms**，`sourceParsesStarted` 增量 **0** |
-| 缓存阅读（冷解析/排队期间） | p50 6.41 ms、p95 **10.83 ms**（50/50 全部 200） |
-| 健康探针（全程 396 次） | p50 5.37 ms、p95 8.70 ms、最大 **62.3 ms**，无失败 |
-| 500 轻量会话创建 | p50 61.67 ms、p95 **73.28 ms**；活动会话 523 |
-| RSS 峰值（父+子进程采样） | **0.41 GiB**（父 0.195 + 子 0.225），远低于 12 GiB 目标 |
-| CPU（父进程累计） | user 7.97 s + system 8.68 s |
-| 上传源文件总量 | 1,161,142 B |
+| 指标                        | 结果                                                             |
+| --------------------------- | ---------------------------------------------------------------- |
+| 冷任务队列峰值              | running 2 / queued 20                                            |
+| 冷任务就绪                  | p50 **3541 ms**、p95 **6662 ms**（22 个任务、60 页/份）          |
+| 冷阶段总耗时                | 8123 ms                                                          |
+| 缓存阅读（隔离，热）        | p50 17.99 ms、p95 **20.64 ms**，`sourceParsesStarted` 增量 **0** |
+| 缓存阅读（冷解析/排队期间） | p50 6.41 ms、p95 **10.83 ms**（50/50 全部 200）                  |
+| 健康探针（全程 396 次）     | p50 5.37 ms、p95 8.70 ms、最大 **62.3 ms**，无失败               |
+| 500 轻量会话创建            | p50 61.67 ms、p95 **73.28 ms**；活动会话 523                     |
+| RSS 峰值（父+子进程采样）   | **0.41 GiB**（父 0.195 + 子 0.225），远低于 12 GiB 目标          |
+| CPU（父进程累计）           | user 7.97 s + system 8.68 s                                      |
+| 上传源文件总量              | 1,161,142 B                                                      |
 
 原始 JSON（本次运行）：
 
 ```json
 {
-  "host": { "platform": "darwin", "arch": "arm64", "cores": 10, "totalMemoryGb": 16, "node": "v22.23.4" },
-  "scenario": { "slidesPerDeck": 60, "coldTasks": 22, "queuedTasks": 20, "cacheReaders": 50, "lightSessions": 500 },
-  "cold": { "wallMs": 8123, "medianReadyMs": 3541, "p95ReadyMs": 6662,
-    "peak": { "running": 2, "queued": 20 }, "sourceParsesDeltaDuringReads": 2 },
+  "host": {
+    "platform": "darwin",
+    "arch": "arm64",
+    "cores": 10,
+    "totalMemoryGb": 16,
+    "node": "v22.23.4"
+  },
+  "scenario": {
+    "slidesPerDeck": 60,
+    "coldTasks": 22,
+    "queuedTasks": 20,
+    "cacheReaders": 50,
+    "lightSessions": 500
+  },
+  "cold": {
+    "wallMs": 8123,
+    "medianReadyMs": 3541,
+    "p95ReadyMs": 6662,
+    "peak": { "running": 2, "queued": 20 },
+    "sourceParsesDeltaDuringReads": 2
+  },
   "warmCachedReads": { "count": 50, "p50Ms": 17.99, "p95Ms": 20.64, "sourceParsesDelta": 0 },
   "cachedReads": { "count": 50, "wallMs": 738, "p50Ms": 6.41, "p95Ms": 10.83 },
   "health": { "probes": 396, "p50Ms": 5.37, "p95Ms": 8.7, "maxMs": 62.3 },

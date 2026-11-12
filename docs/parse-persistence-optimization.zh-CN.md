@@ -1,5 +1,7 @@
 # Web / Android / 解析服务整体优化方案
 
+> 本文保留原设计或当时验证条件；当前三端职责、已知边界与测试入口请参阅[架构主文档](runtime-workflows.zh-CN.md)、[运行边界](runtime-boundaries.zh-CN.md)和[测试指南](testing-guide.zh-CN.md)。历史数字不自动代表当前结果。
+
 日期：2026-11-06，更新：2026-11-10。状态：分阶段实施中，已完成项与验证边界见 [实施进度](parse-optimization-progress.zh-CN.md)，量化完成度与剩余缺口见 [完成度评估](parse-optimization-completion.zh-CN.md)。基线：单机 8 核 CPU、16 GiB 内存，已有本地磁盘及可选 MySQL；Redis 为可选热缓存，不改变真值路径（见 5.1）。
 
 ## 1. 目标与决策
@@ -18,17 +20,17 @@
 
 ## 2. 优化前的问题与代码依据
 
-| 现状 | 影响 | 主要位置 |
-| --- | --- | --- |
-| 会话在 worker 打开后才登记 | 并发绕过 maxSessions；已复现上限 1 时三个请求均成功 | `apps/parse-server/src/server.ts:handleCreateSession` |
-| 会话持有一个 worker；PPTX 每分钟续期 | 空闲阅读占用计算资源，默认 8 个会话容易成为人数上限 | `pptx.ts`、`pptx-model-session.ts` |
-| PPTX 模型主要在 worker 内，DOCX chunks 按 sessionId 存放 | 新会话不能共享产物，历史打开重走解析 | `pptx-core.ts`、`docx-chunks.ts` |
-| 删除/清扫会话同时删除 DOCX chunks | 历史缓存随临时会话消失 | `server.ts:handleSession / sweeper` |
-| DOCX 先下载完整 blob 才判断远程分块 | 首屏等待与整文件资源开销 | `apps/viewer/src/web/docs-server.tsx` |
-| DOCX 全量 XML、slices、blocks 后才落盘 | 分块传输没有解决服务端解析峰值 | `docx-worker.ts` |
-| DOCX cursor 提前提交、无心跳、媒体无签名 | 失败重试缺段，空闲过期，鉴权部署图片加载失败 | `docs-remote.tsx`、`docx-worker.ts` |
-| 默认原文件保留 7 天，按上传时间清理，20 GiB 容量回收 | 不符合长期历史资源语义 | `server.ts:runGc` |
-| Android 仅下载 PPTX，全部完成才打开 | 尚无 PDF/DOCX 闭环，大媒体影响首次打开 | `android-demo/.../BundleDownloader.java` |
+| 现状                                                     | 影响                                                | 主要位置                                              |
+| -------------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------- |
+| 会话在 worker 打开后才登记                               | 并发绕过 maxSessions；已复现上限 1 时三个请求均成功 | `apps/parse-server/src/server.ts:handleCreateSession` |
+| 会话持有一个 worker；PPTX 每分钟续期                     | 空闲阅读占用计算资源，默认 8 个会话容易成为人数上限 | `pptx.ts`、`pptx-model-session.ts`                    |
+| PPTX 模型主要在 worker 内，DOCX chunks 按 sessionId 存放 | 新会话不能共享产物，历史打开重走解析                | `pptx-core.ts`、`docx-chunks.ts`                      |
+| 删除/清扫会话同时删除 DOCX chunks                        | 历史缓存随临时会话消失                              | `server.ts:handleSession / sweeper`                   |
+| DOCX 先下载完整 blob 才判断远程分块                      | 首屏等待与整文件资源开销                            | `apps/viewer/src/web/docs-server.tsx`                 |
+| DOCX 全量 XML、slices、blocks 后才落盘                   | 分块传输没有解决服务端解析峰值                      | `docx-worker.ts`                                      |
+| DOCX cursor 提前提交、无心跳、媒体无签名                 | 失败重试缺段，空闲过期，鉴权部署图片加载失败        | `docs-remote.tsx`、`docx-worker.ts`                   |
+| 默认原文件保留 7 天，按上传时间清理，20 GiB 容量回收     | 不符合长期历史资源语义                              | `server.ts:runGc`                                     |
+| Android 仅下载 PPTX，全部完成才打开                      | 尚无 PDF/DOCX 闭环，大媒体影响首次打开              | `android-demo/.../BundleDownloader.java`              |
 
 另需修复 `bin.ts` 将未设置的 limit 以 `undefined` 传入，而 `resolveLimits` 直接对象展开覆盖默认值的问题。所有配置必须按字段校验有限正数和上下界；不能依赖 `Number(value) || undefined`。
 
@@ -95,14 +97,14 @@ manifest 至少包含：artifactKey、fileId、schemaVersion、parserFingerprint
 
 ## 5. MySQL 索引与一致性
 
-| 表 | 关键字段和约束 |
-| --- | --- |
-| `parse_files` | 保留原字段，增加存储状态和校验状态 |
-| `library_entries` | id、libraryScope、fileId、displayName、retention、deletedAt；表达用户保存的历史记录 |
-| `parse_artifacts` | artifactKey 主键、fileId、fingerprint、schemaVersion、state、generation、storagePath、bytes、unitCount、lastAccessAt、errorCode |
-| `parse_jobs` | jobId、artifactKey、state、attempt、leaseOwner、leaseUntil、generation、progress、errorCode；索引 state / leaseUntil |
-| `parse_sessions` | 保留 sessionId，增加 artifactKey、expiresAt、布局偏好；逐步移除 baseUrl、完整 model/fonts 副本 |
-| `artifact_dependencies` | artifactKey、依赖类型、依赖 ID；GC 判断原文件与资源的存活依据 |
+| 表                      | 关键字段和约束                                                                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `parse_files`           | 保留原字段，增加存储状态和校验状态                                                                                              |
+| `library_entries`       | id、libraryScope、fileId、displayName、retention、deletedAt；表达用户保存的历史记录                                             |
+| `parse_artifacts`       | artifactKey 主键、fileId、fingerprint、schemaVersion、state、generation、storagePath、bytes、unitCount、lastAccessAt、errorCode |
+| `parse_jobs`            | jobId、artifactKey、state、attempt、leaseOwner、leaseUntil、generation、progress、errorCode；索引 state / leaseUntil            |
+| `parse_sessions`        | 保留 sessionId，增加 artifactKey、expiresAt、布局偏好；逐步移除 baseUrl、完整 model/fonts 副本                                  |
+| `artifact_dependencies` | artifactKey、依赖类型、依赖 ID；GC 判断原文件与资源的存活依据                                                                   |
 
 当前只有服务级 token，libraryScope 首期采用实例级库；多用户归属必须接入可靠身份后再启用，不能信任客户端随意传入的 ownerId。已知 fileId 不构成访问授权，内容去重也不能直接授予历史资源权限。
 
@@ -118,10 +120,10 @@ manifest 至少包含：artifactKey、fileId、schemaVersion、parserFingerprint
 
 **禁止进入 Redis**：ready 指针与 generation 归属、构建/读取/下载租约、配额与压力账本、原文件与产物索引、库保留策略。这些数据丢失会造成超卖、脏读、重复撤下或误删，继续由 SQL 条件更新、不可逆授权和文件校验承担。Redis 锁不得替代 `withdrawReady` 的 compare-and-clear，507 判定与租约续期也不得依赖 Redis。
 
-| 数据 | Key / 结构 | TTL | 丢失影响 | 写入时机 |
-| --- | --- | --- | --- | --- |
-| 预览帧 | `pv:{artifactKey}:{jobId}`，Hash(document、unit:i、count) | 60 s | 无首屏，返回 pending | 帧提交后 |
-| 构建进度 | `job:{jobId}`，Hash(unitsProduced、unitCount) | 5 min | 进度回退到 SQL | 逐帧或全局 200 ms 节流 |
+| 数据     | Key / 结构                                                | TTL   | 丢失影响             | 写入时机               |
+| -------- | --------------------------------------------------------- | ----- | -------------------- | ---------------------- |
+| 预览帧   | `pv:{artifactKey}:{jobId}`，Hash(document、unit:i、count) | 60 s  | 无首屏，返回 pending | 帧提交后               |
+| 构建进度 | `job:{jobId}`，Hash(unitsProduced、unitCount)             | 5 min | 进度回退到 SQL       | 逐帧或全局 200 ms 节流 |
 
 - key 必须绑定 `jobId`：重建、重试和解析器升级都会生成新 jobId，旧 key 由 TTL 清理，不做跨代 invalidate，也不存在“旧预览盖住新构建”。
 - 预览仍受 `previewMaxUnits`（默认 8）约束，不因 Redis 容量放大。单个 field 超过 256 KiB 的单元不写入缓存，该单元回源 generation；`document` 超限则该次构建不提供跨节点首屏，而不是拆分或截断。
@@ -153,17 +155,17 @@ manifest 至少包含：artifactKey、fileId、schemaVersion、parserFingerprint
 
 以下是建议起点，必须由真实文件压测调整，不是在线人数或性能承诺。
 
-| 项目 | 初始值 | 说明 |
-| --- | --- | --- |
-| 重解析并发 | 2 | 同时满足计数与总内存预算才启动 |
-| 解析子进程总 RSS 预算 | 8 GiB | 单任务按类别预留，未知大任务保守预留 4 GiB |
-| HTTP / 索引 / 读缓存目标预算 | 2 GiB | 内存 LRU 必须按字节限制；初始模型热缓存 256 MiB |
-| 操作系统、MySQL、页缓存和余量 | 6 GiB | 与总进程 RSS 一起监控，防止页缓存及数据库挤占 |
-| 其中 Redis 热缓存（可选） | ≤ 1 GiB | 从上一条余量划出，且给 OS/MySQL/页缓存保留 ≥4 GiB；不计入解析与 HTTP RSS |
-| 等待队列 | 20 个唯一任务 | 缓存命中不占队列；后续补调用方公平配额 |
-| 临时阅读会话上限 | 初始 500 | 只存轻量状态，需以 500 会话压测验收；超限独立返回错误 |
-| 会话空闲 TTL | 30 分钟 | 60 秒心跳；不影响持久化产物 |
-| 原文件与产物容量 | 部署时显式配置 | 磁盘容量未知，不沿用 20 GiB 当生产建议 |
+| 项目                          | 初始值         | 说明                                                                     |
+| ----------------------------- | -------------- | ------------------------------------------------------------------------ |
+| 重解析并发                    | 2              | 同时满足计数与总内存预算才启动                                           |
+| 解析子进程总 RSS 预算         | 8 GiB          | 单任务按类别预留，未知大任务保守预留 4 GiB                               |
+| HTTP / 索引 / 读缓存目标预算  | 2 GiB          | 内存 LRU 必须按字节限制；初始模型热缓存 256 MiB                          |
+| 操作系统、MySQL、页缓存和余量 | 6 GiB          | 与总进程 RSS 一起监控，防止页缓存及数据库挤占                            |
+| 其中 Redis 热缓存（可选）     | ≤ 1 GiB        | 从上一条余量划出，且给 OS/MySQL/页缓存保留 ≥4 GiB；不计入解析与 HTTP RSS |
+| 等待队列                      | 20 个唯一任务  | 缓存命中不占队列；后续补调用方公平配额                                   |
+| 临时阅读会话上限              | 初始 500       | 只存轻量状态，需以 500 会话压测验收；超限独立返回错误                    |
+| 会话空闲 TTL                  | 30 分钟        | 60 秒心跳；不影响持久化产物                                              |
+| 原文件与产物容量              | 部署时显式配置 | 磁盘容量未知，不沿用 20 GiB 当生产建议                                   |
 
 V8 heap 上限应小于 RSS 上限并经测量配置，不把现有 512 MiB 当作大文件通用值。补采子进程 RSS、外部内存、解析阶段与模型体积；预算达到阈值停止新任务，越界终止具体任务。并发从 2 提升到 3–4 仅在峰值与延迟指标通过后进行。
 
@@ -227,13 +229,13 @@ DELETE /v2/library/:entryId              删除库引用；后台按依赖和策
 
 必须分开设置：
 
-| 类型 | 策略 |
-| --- | --- |
-| 显式保存的历史原文件 | 默认保留至用户删除；占用库配额，不能被临时 TTL 自动清除 |
-| 历史文件当前解析产物 | 正常容量范围保留；压力下允许回收可重建产物，历史记录继续显示原文件仍在、需重建 |
-| 临时文件和解析产物 | 初始按最后访问 7 天回收，访问时间写入合并，避免每个资源请求更新数据库 |
-| 老解析版本 | 新版本构建成功后再回收；存在阅读或下载租约时延迟 |
-| staging 和失效任务残留 | lease 失效并超过宽限期后清理，运行中的目录不能清除 |
+| 类型                   | 策略                                                                           |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| 显式保存的历史原文件   | 默认保留至用户删除；占用库配额，不能被临时 TTL 自动清除                        |
+| 历史文件当前解析产物   | 正常容量范围保留；压力下允许回收可重建产物，历史记录继续显示原文件仍在、需重建 |
+| 临时文件和解析产物     | 初始按最后访问 7 天回收，访问时间写入合并，避免每个资源请求更新数据库          |
+| 老解析版本             | 新版本构建成功后再回收；存在阅读或下载租约时延迟                               |
+| staging 和失效任务残留 | lease 失效并超过宽限期后清理，运行中的目录不能清除                             |
 
 普通关闭会话不删除产物。GC 使用库引用、产物依赖、构建/下载租约和短期读取租约判断存活，而非只看在线会话。先把产物状态切换 deleting 阻止新引用，再等待读取租约结束，删字节、更新索引；失败可幂等重试。原文件只有在没有历史引用、活跃任务、读取租约和存活产物依赖时才可删除。
 
@@ -243,14 +245,14 @@ DELETE /v2/library/:entryId              删除库引用；后台按依赖和策
 
 ## 10. 实施拆分和迁移
 
-| 阶段 | 改动 | 退出条件 |
-| --- | --- | --- |
-| P0 正确性 | 并发预占、恢复 single-flight、配置默认值校验、DOCX 签名/游标/心跳、自动阈值与下载前分流 | 对应回归通过；保留现有接口行为 |
-| P1 持久化基础 | Artifact DTO/Reader/Writer、MySQL 表和文件索引、依赖关系、原子发布、PPTX/DOCX 完整产物落盘 | 新会话和重启命中产物时解析启动数为 0 |
-| P2 资源解耦 | v2 异步任务、有界队列、租约、子进程 RSS 隔离、会话只引用产物、Web/Android 等待状态适配 | 大任务排队不阻断缓存读取；客户端兼容迁移完成 |
-| P3 大文件与体验 | DOCX 真流式、前端有界 chunk 缓存、增量首屏、Android 清单/续传/容量管理 | 大正文和弱网场景达标，记录峰值内存与首屏数据 |
-| P3.5 可选热缓存 | 预览帧与构建进度的跨实例共享；单机默认 memory，Redis 可关闭 | 双实例 A 构建/B 读首屏；宕机、清空或变慢不影响 ready 与单元读取 |
-| P4 运维上线 | GC、配额、备份恢复、指标告警、灰度与故障演练 | 压测与恢复报告可复查，可回滚 |
+| 阶段            | 改动                                                                                       | 退出条件                                                        |
+| --------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
+| P0 正确性       | 并发预占、恢复 single-flight、配置默认值校验、DOCX 签名/游标/心跳、自动阈值与下载前分流    | 对应回归通过；保留现有接口行为                                  |
+| P1 持久化基础   | Artifact DTO/Reader/Writer、MySQL 表和文件索引、依赖关系、原子发布、PPTX/DOCX 完整产物落盘 | 新会话和重启命中产物时解析启动数为 0                            |
+| P2 资源解耦     | v2 异步任务、有界队列、租约、子进程 RSS 隔离、会话只引用产物、Web/Android 等待状态适配     | 大任务排队不阻断缓存读取；客户端兼容迁移完成                    |
+| P3 大文件与体验 | DOCX 真流式、前端有界 chunk 缓存、增量首屏、Android 清单/续传/容量管理                     | 大正文和弱网场景达标，记录峰值内存与首屏数据                    |
+| P3.5 可选热缓存 | 预览帧与构建进度的跨实例共享；单机默认 memory，Redis 可关闭                                | 双实例 A 构建/B 读首屏；宕机、清空或变慢不影响 ready 与单元读取 |
+| P4 运维上线     | GC、配额、备份恢复、指标告警、灰度与故障演练                                               | 压测与恢复报告可复查，可回滚                                    |
 
 P1 的持久化不是 P3 的低峰值解析，两者分别验收。P1 初期仍可能冷解析耗时较长，不能提前宣称完整 GB 正文能力。
 

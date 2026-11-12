@@ -1,3 +1,4 @@
+import { serverRoot } from './helpers/paths'
 import { readFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { join } from 'node:path'
@@ -10,7 +11,7 @@ const FIXTURES = ['render-parity-blank-odd', 'table-style-ppr-spacing', 'render-
 
 async function documentXml(name: string): Promise<Uint8Array> {
   const path = join(
-    process.cwd(),
+    serverRoot,
     '..',
     '..',
     'packages',
@@ -32,7 +33,7 @@ describe('streamDocxBlocks', () => {
     it(`matches parseDocx block order for ${name}`, async () => {
       const bytes = await readFile(
         join(
-          process.cwd(),
+          serverRoot,
           '..',
           '..',
           'packages',

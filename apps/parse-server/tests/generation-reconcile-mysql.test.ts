@@ -1,3 +1,4 @@
+import { drainCleanups } from './helpers/cleanup'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -11,7 +12,9 @@ import { createParseServer, type ParseServer } from '../src/server'
 
 const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
 const cleanups: Array<() => Promise<void>> = []
-afterEach(async () => { while (cleanups.length) await cleanups.pop()!() })
+afterEach(async () => {
+  await drainCleanups(cleanups)
+})
 
 describe.skipIf(!socketPath)('startup orphan-generation reconcile over real MySQL', () => {
   it('removes aged unregistered generations but keeps keys that still have a catalog row', async () => {
@@ -19,7 +22,14 @@ describe.skipIf(!socketPath)('startup orphan-generation reconcile over real MySQ
     const admin: Connection = await mysql.createConnection({ socketPath, user: 'root' })
     await admin.query(`CREATE DATABASE ${database} CHARACTER SET utf8mb4`)
     const dataDir = await mkdtemp(join(tmpdir(), 'reconcile-mysql-'))
-    const config = { host: '127.0.0.1', port: 3306, user: 'root', password: '', database, socketPath }
+    const config = {
+      host: '127.0.0.1',
+      port: 3306,
+      user: 'root',
+      password: '',
+      database,
+      socketPath,
+    }
     const db = new MysqlDatabase(config)
     cleanups.push(async () => {
       await db.close().catch(() => undefined)
@@ -34,7 +44,10 @@ describe.skipIf(!socketPath)('startup orphan-generation reconcile over real MySQ
       [fileId, fileId, 'pptx', new Date().toISOString()],
     )
     const identity = {
-      fileId, format: 'pptx' as const, parserFingerprint: 'reconcile-test', schemaVersion: 2,
+      fileId,
+      format: 'pptx' as const,
+      parserFingerprint: 'reconcile-test',
+      schemaVersion: 2,
       options: {},
     }
     const modelKey = artifactKey(identity)
@@ -55,14 +68,19 @@ describe.skipIf(!socketPath)('startup orphan-generation reconcile over real MySQ
     await utimes(orphan, old, old)
 
     const server: ParseServer = await createParseServer({
-      dataDir, mysql: config, artifactBackend: 'catalog', parserFingerprint: 'reconcile-test',
+      dataDir,
+      mysql: config,
+      artifactBackend: 'catalog',
+      parserFingerprint: 'reconcile-test',
     })
     cleanups.push(() => server.close())
     try {
       await expect(readdir(known)).resolves.toBeDefined()
       await expect(readdir(orphan)).rejects.toMatchObject({ code: 'ENOENT' })
-      const health = await (await fetch(server.url + '/v1/health')).json() as {
-        maintenance: { startupReconcile: { removedGenerations: number; retainedGenerations: number } | null }
+      const health = (await (await fetch(server.url + '/v1/health')).json()) as {
+        maintenance: {
+          startupReconcile: { removedGenerations: number; retainedGenerations: number } | null
+        }
       }
       expect(health.maintenance.startupReconcile).toMatchObject({
         removedGenerations: 1,

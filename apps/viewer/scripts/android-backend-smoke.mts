@@ -1,26 +1,15 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import JSZip from 'jszip'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import { createParseServer } from '../../parse-server/src/server'
+import { createAndroidTestDevice, androidAdb } from './android-test-device.mjs'
 
 const serial = process.env.ANDROID_SERIAL
 if (!serial) throw new Error('Set ANDROID_SERIAL to the intended isolated test device')
-const adbPath =
-  process.env.ADB ??
-  join(
-    process.env.ANDROID_HOME ?? join(homedir(), 'Library/Android/sdk'),
-    'platform-tools',
-    process.platform === 'win32' ? 'adb.exe' : 'adb',
-  )
-const execute = promisify(execFile)
-const adb = async (...args: string[]) =>
-  (await execute(adbPath, ['-s', serial, ...args], { maxBuffer: 1024 * 1024, timeout: 180_000 }))
-    .stdout
+const adb = (...args: string[]) => androidAdb(serial, ...args)
 assert.equal(
   (await adb('shell', 'getprop', 'sys.boot_completed')).trim(),
   '1',
@@ -29,8 +18,7 @@ assert.equal(
 const directory = await mkdtemp(join(tmpdir(), 'genoffice-android-backend-'))
 const token = 'isolated-android-backend-token'
 const parser = await createParseServer({ dataDir: directory, token })
-const port = new URL(parser.url).port
-let reversed = false
+const device = createAndroidTestDevice([parser.url])
 try {
   const zip = await JSZip.loadAsync(await createBlankPptx())
   const font = await readFile(
@@ -60,8 +48,7 @@ try {
   })
   assert.equal(response.status, 201)
   const { fileId } = (await response.json()) as { fileId: string }
-  await adb('reverse', `tcp:${port}`, `tcp:${port}`)
-  reversed = true
+  device.access()
   const androidRoot = resolve(import.meta.dirname, '../android-demo/app/build/outputs/apk')
   await adb('install', '-r', join(androidRoot, 'debug/app-debug.apk'))
   await adb('install', '-r', join(androidRoot, 'androidTest/debug/app-debug-androidTest.apk'))
@@ -116,7 +103,7 @@ try {
     }),
   )
 } finally {
-  if (reversed) await adb('reverse', '--remove', `tcp:${port}`).catch(() => undefined)
+  device.restore()
   await parser.close()
   await rm(directory, { recursive: true, force: true })
 }

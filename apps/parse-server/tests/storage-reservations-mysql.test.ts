@@ -1,3 +1,4 @@
+import { drainCleanups } from './helpers/cleanup'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -14,7 +15,7 @@ import { SqlStorageReservations } from '../src/storage-reservations'
 const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
-  while (cleanups.length) await cleanups.pop()!()
+  await drainCleanups(cleanups)
 })
 
 describe.skipIf(!socketPath)('cross-process storage admission with real MySQL', () => {
@@ -23,7 +24,12 @@ describe.skipIf(!socketPath)('cross-process storage admission with real MySQL', 
     const admin: Connection = await mysql.createConnection({ socketPath, user: 'root' })
     await admin.query(`CREATE DATABASE ${database} CHARACTER SET utf8mb4`)
     const config = {
-      host: '127.0.0.1', port: 3306, user: 'root', password: '', database, socketPath,
+      host: '127.0.0.1',
+      port: 3306,
+      user: 'root',
+      password: '',
+      database,
+      socketPath,
     }
     const dataDir = await mkdtemp(join(tmpdir(), 'storage-admission-'))
     const databases: MysqlDatabase[] = []
@@ -41,7 +47,9 @@ describe.skipIf(!socketPath)('cross-process storage admission with real MySQL', 
       const db = new MysqlDatabase(config)
       databases.push(db)
       const ledger = new SqlStorageReservations(db, {
-        blockBytes: 8, leaseMs: 10_000, lockTimeoutMs: 3000,
+        blockBytes: 8,
+        leaseMs: 10_000,
+        lockTimeoutMs: 3000,
       })
       ledgers.push(ledger)
       await ledger.init()
@@ -49,9 +57,15 @@ describe.skipIf(!socketPath)('cross-process storage admission with real MySQL', 
     }
     const budget = (ledger: SqlStorageReservations, limit = 100) => {
       const lock = new FileLifecycle()
-      return new StorageBudget(limit, async () => 0,
-        (work) => lock.withFile('storage', work), undefined, undefined,
-        { highPercent: 100, lowPercent: 100 }, ledger)
+      return new StorageBudget(
+        limit,
+        async () => 0,
+        (work) => lock.withFile('storage', work),
+        undefined,
+        undefined,
+        { highPercent: 100, lowPercent: 100 },
+        ledger,
+      )
     }
     return { config, dataDir, instance, budget, servers }
   }
@@ -94,10 +108,10 @@ describe.skipIf(!socketPath)('cross-process storage admission with real MySQL', 
     const b = await h.instance()
     await a.ledger.set('crashed-writer', 500)
     expect(await b.ledger.reservedBytes()).toBe(500)
-    await a.db.pool.query(
-      'UPDATE parse_storage_reservations SET expires_at_ms = ? WHERE id = ?',
-      [Date.now() - 1, 'crashed-writer'],
-    )
+    await a.db.pool.query('UPDATE parse_storage_reservations SET expires_at_ms = ? WHERE id = ?', [
+      Date.now() - 1,
+      'crashed-writer',
+    ])
     expect(await b.ledger.reservedBytes()).toBe(0)
     expect(await b.ledger.reconcile()).toBe(1)
     expect(await b.ledger.renew('crashed-writer')).toBe(false)
@@ -120,21 +134,24 @@ describe.skipIf(!socketPath)('cross-process storage admission with real MySQL', 
     const h = await setup()
     const start = async (storageAdmission?: 'instance' | 'shared') => {
       const server = await createParseServer({
-        dataDir: h.dataDir, mysql: h.config, artifactBackend: 'catalog',
-        maxStoreBytes: 1024 ** 3, token: 'secret',
+        dataDir: h.dataDir,
+        mysql: h.config,
+        artifactBackend: 'catalog',
+        maxStoreBytes: 1024 ** 3,
+        token: 'secret',
         ...(storageAdmission ? { storageAdmission } : {}),
       })
       h.servers.push(server)
       return server
     }
     const shared = await start()
-    const health = await (await fetch(shared.url + '/v1/health')).json() as {
+    const health = (await (await fetch(shared.url + '/v1/health')).json()) as {
       storageBudget: { coordination: string; sharedReservedBytes: number }
     }
     expect(health.storageBudget.coordination).toBe('shared')
     expect(health.storageBudget.sharedReservedBytes).toBe(0)
     const local = await start('instance')
-    const localHealth = await (await fetch(local.url + '/v1/health')).json() as {
+    const localHealth = (await (await fetch(local.url + '/v1/health')).json()) as {
       storageBudget: { coordination: string; sharedReservedBytes: number }
     }
     expect(localHealth.storageBudget.coordination).toBe('instance')

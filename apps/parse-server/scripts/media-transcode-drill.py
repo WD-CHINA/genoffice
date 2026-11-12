@@ -26,7 +26,10 @@ def main():
     parser.add_argument('--container')
     parser.add_argument('--report', default='transcode.json')
     parser.add_argument('--phase', choices=['scan', 'convert', 'variants'], default='scan')
+    parser.add_argument('--only-sha', help='Recheck one scanned asset without repeating other conversions')
     args = parser.parse_args()
+    if args.only_sha and args.phase != 'convert':
+        parser.error('--only-sha requires --phase convert')
     out = pathlib.Path(args.out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     report_path = out / args.report
@@ -111,9 +114,13 @@ def main():
 
     report = json.loads(report_path.read_text())
     if args.phase == 'convert':
+        if args.only_sha and not any(asset['sha256'] == args.only_sha for asset in report['assets']):
+            parser.error('--only-sha must identify an asset in the scan report')
         report['runtime'] = {'container': args.container, 'ffmpeg': run('ffmpeg', ['-version']).stdout.splitlines()[0], 'ffprobe': run('ffprobe', ['-version']).stdout.splitlines()[0]}
         (out / 'outputs').mkdir(exist_ok=True)
         for index, asset in enumerate(report['assets']):
+            if args.only_sha and asset['sha256'] != args.only_sha:
+                continue
             started = time.monotonic()
             record = {'status': 'running'}
             asset['conversion'] = record
@@ -125,9 +132,10 @@ def main():
                 audios = [s for s in metadata['streams'] if s['codec_type'] == 'audio']
                 if not videos and not audios:
                     raise RuntimeError('no usable video or audio stream')
-                # OOXML audio objects remain audio even if their misnamed source
-                # contains a video track. Do not turn a background sound into video.
-                video = bool(videos) and not asset['declaredMime'].startswith('audio/')
+                # Derived PPTX fixtures must retain usable video tracks even when
+                # a misnamed .wav part declares audio. Production caller roles
+                # are tested separately through the media preparation API.
+                video = bool(videos)
                 relative = 'outputs/' + asset['sha256'] + ('.mp4' if video else '.mp3')
                 temporary = relative.replace('.mp4', '.tmp.mp4').replace('.mp3', '.tmp.mp3')
                 options = ['-nostdin', '-v', 'error', '-y', '-filter_threads', '1', '-i', runtime_path(asset['input'])]
@@ -136,7 +144,7 @@ def main():
                     options += ['-map', '0:' + str(videos[0]['index'])]
                     if audios:
                         options += ['-map', '0:' + str(audios[0]['index'])]
-                    options += ['-sn', '-dn', '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-threads', '2', '-pix_fmt', 'yuv420p', '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-movflags', '+faststart']
+                    options += ['-sn', '-dn', '-c:v', 'libx264', '-preset', 'fast', '-crf', '23', '-threads', '2', '-pix_fmt', 'yuv420p', '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2:out_range=tv', '-color_range', 'tv', '-c:a', 'aac', '-b:a', '128k', '-ac', '2', '-movflags', '+faststart']
                 else:
                     options += ['-map', '0:' + str(audios[0]['index']), '-vn', '-c:a', 'libmp3lame', '-b:a', '192k', '-ar', '44100', '-ac', '2']
                 result = run('ffmpeg', [*options, runtime_path(temporary)])
@@ -145,7 +153,7 @@ def main():
                 output_probe = probe(temporary)
                 if video:
                     stream = next(s for s in output_probe['streams'] if s['codec_type'] == 'video')
-                    assert stream['codec_name'] == 'h264' and stream['pix_fmt'] == 'yuv420p'
+                    assert stream['codec_name'] == 'h264' and stream['pix_fmt'] == 'yuv420p', 'unexpected video codec/pixel format: ' + str((stream['codec_name'], stream['pix_fmt']))
                     assert stream['width'] % 2 == 0 and stream['height'] % 2 == 0
                 target_audio = [s for s in output_probe['streams'] if s['codec_type'] == 'audio']
                 assert len(target_audio) == (1 if audios else 0), 'audio stream lost or unexpectedly created'
@@ -179,10 +187,13 @@ def main():
                 (out / temporary).replace(out / relative)
                 record.update({'status': 'passed', 'output': relative, 'bytes': (out / relative).stat().st_size, 'sha256': digest(out / relative), 'probe': output_probe, 'fullDecode': True})
             except Exception as error:
-                record.update({'status': 'failed', 'error': str(error)})
+                record.update({'status': 'failed', 'error': str(error) or type(error).__name__})
             record['elapsedSeconds'] = round(time.monotonic() - started, 3)
             save(report)
             print(json.dumps({'asset': index + 1, 'total': len(report['assets']), **record}, ensure_ascii=False), flush=True)
+        if any(asset.get('conversion', {}).get('status') != 'passed' for asset in report['assets']
+               if not args.only_sha or asset['sha256'] == args.only_sha):
+            raise SystemExit(1)
         return
 
     assets = {a['sha256']: a for a in report['assets']}

@@ -1,3 +1,4 @@
+import { drainCleanups } from './helpers/cleanup'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -12,11 +13,13 @@ const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
   vi.restoreAllMocks()
-  while (cleanups.length) await cleanups.pop()!()
+  await drainCleanups(cleanups)
 })
 function gate() {
   let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
   return { promise, resolve }
 }
 function pauseBeforeDone() {
@@ -24,20 +27,22 @@ function pauseBeforeDone() {
   const blocked = gate()
   const original = ArtifactWriter.prototype.append
   let paused = false
-  vi.spyOn(ArtifactWriter.prototype, 'append').mockImplementation(
-    async function (this: ArtifactWriter, id: string, value: JsonValue | Uint8Array) {
-      if (id === 'external-media' && !paused) {
-        paused = true
-        entered.resolve()
-        await blocked.promise
-      }
-      return original.call(this, id, value)
-    },
-  )
+  vi.spyOn(ArtifactWriter.prototype, 'append').mockImplementation(async function (
+    this: ArtifactWriter,
+    id: string,
+    value: JsonValue | Uint8Array,
+  ) {
+    if (id === 'external-media' && !paused) {
+      paused = true
+      entered.resolve()
+      await blocked.promise
+    }
+    return original.call(this, id, value)
+  })
   return { entered, blocked }
 }
 async function buildsStarted(server: ParseServer): Promise<number> {
-  const health = await (await fetch(server.url + '/v1/health')).json() as {
+  const health = (await (await fetch(server.url + '/v1/health')).json()) as {
     artifacts: { buildsStarted: number }
   }
   return health.artifacts.buildsStarted
@@ -56,11 +61,22 @@ describe.skipIf(!socketPath)('last-waiter cancellation over real MySQL', () => {
       await admin.end()
       await rm(dataDir, { recursive: true, force: true })
     })
-    const config = { host: '127.0.0.1', port: 3306, user: 'root', password: '', database, socketPath }
+    const config = {
+      host: '127.0.0.1',
+      port: 3306,
+      user: 'root',
+      password: '',
+      database,
+      socketPath,
+    }
     const start = async (): Promise<ParseServer> => {
       const server = await createParseServer({
-        dataDir, mysql: config, artifactBackend: 'catalog',
-        parserVersion: '0.1.0', parserFingerprint: 'last-waiter-test', maxParseJobs: 1,
+        dataDir,
+        mysql: config,
+        artifactBackend: 'catalog',
+        parserVersion: '0.1.0',
+        parserFingerprint: 'last-waiter-test',
+        maxParseJobs: 1,
       })
       servers.push(server)
       return server
@@ -69,11 +85,13 @@ describe.skipIf(!socketPath)('last-waiter cancellation over real MySQL', () => {
       fetch(server.url + path, init)
     const open = async (server: ParseServer): Promise<string> => {
       const uploaded = await request(server)('/v1/files', {
-        method: 'POST', body: Buffer.from(await createBlankPptx()),
+        method: 'POST',
+        body: Buffer.from(await createBlankPptx()),
       })
-      const { fileId } = await uploaded.json() as { fileId: string }
+      const { fileId } = (await uploaded.json()) as { fileId: string }
       const opened = await request(server)('/v2/sessions', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileId }),
       })
       expect(opened.status).toBe(202)
@@ -81,7 +99,8 @@ describe.skipIf(!socketPath)('last-waiter cancellation over real MySQL', () => {
     }
     const pendingRows = async (server: ParseServer, id: string): Promise<number> => {
       const [rows] = await server.db!.pool.query<RowDataPacket[]>(
-        'SELECT COUNT(*) AS n FROM parse_pending_sessions WHERE id = ?', [id],
+        'SELECT COUNT(*) AS n FROM parse_pending_sessions WHERE id = ?',
+        [id],
       )
       return Number(rows[0].n)
     }
@@ -102,11 +121,12 @@ describe.skipIf(!socketPath)('last-waiter cancellation over real MySQL', () => {
       pause.blocked.resolve()
       const deadline = Date.now() + 20_000
       while (Date.now() < deadline) {
-        if (await buildsStarted(server) >= 1) break
+        if ((await buildsStarted(server)) >= 1) break
         await new Promise((resolve) => setTimeout(resolve, 25))
       }
       const [ready] = await server.db!.pool.query<RowDataPacket[]>(
-        'SELECT COUNT(*) AS n FROM parse_sessions WHERE id = ?', [sessionId],
+        'SELECT COUNT(*) AS n FROM parse_sessions WHERE id = ?',
+        [sessionId],
       )
       expect(Number(ready[0].n)).toBe(0)
       expect((await h.request(server)(`/v2/sessions/${sessionId}`)).status).toBe(404)
@@ -126,7 +146,9 @@ describe.skipIf(!socketPath)('last-waiter cancellation over real MySQL', () => {
       // B attaches read-only and registers its durable reader.
       expect((await h.request(b)(`/v2/sessions/${sessionId}`)).status).toBe(200)
       // A closes its view: B is still waiting, so the shared row must stay.
-      expect((await h.request(a)(`/v2/sessions/${sessionId}`, { method: 'DELETE' })).status).toBe(204)
+      expect((await h.request(a)(`/v2/sessions/${sessionId}`, { method: 'DELETE' })).status).toBe(
+        204,
+      )
       expect(await h.pendingRows(a, sessionId)).toBe(1)
       expect((await h.request(b)(`/v2/sessions/${sessionId}`)).status).toBe(200)
       pause.blocked.resolve()
@@ -135,7 +157,7 @@ describe.skipIf(!socketPath)('last-waiter cancellation over real MySQL', () => {
       while (Date.now() < deadline) {
         const response = await h.request(b)(`/v2/sessions/${sessionId}`)
         if (response.status === 200) {
-          state = (await response.json() as { state: string }).state
+          state = ((await response.json()) as { state: string }).state
           if (state === 'ready') break
         }
         await new Promise((resolve) => setTimeout(resolve, 50))

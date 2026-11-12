@@ -1,3 +1,4 @@
+import { serverRoot } from './helpers/paths'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -21,21 +22,29 @@ async function openFixture(
   canonicalArtifactExport: boolean,
 ) {
   const server = await createParseServer({
-    dataDir, parserVersion: '0.1.0', parserFingerprint: 'canonical-layout-test',
+    dataDir,
+    parserVersion: '0.1.0',
+    parserFingerprint: 'canonical-layout-test',
     canonicalArtifactExport,
   })
   servers.push(server)
   const request = (path: string, init?: RequestInit) => fetch(server.url + path, init)
   const uploaded = await request('/v1/files', { method: 'POST', body: Buffer.from(fixture) })
-  const { fileId } = await uploaded.json() as { fileId: string }
+  const { fileId } = (await uploaded.json()) as { fileId: string }
   const opened = await request('/v1/sessions', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ fileId }),
   })
   expect(opened.status, await opened.clone().text()).toBe(201)
-  const key = artifactKey(ArtifactSession.identity({
-    fileId, format, parserVersion: '0.1.0', parserFingerprint: 'canonical-layout-test',
-  }))
+  const key = artifactKey(
+    ArtifactSession.identity({
+      fileId,
+      format,
+      parserVersion: '0.1.0',
+      parserFingerprint: 'canonical-layout-test',
+    }),
+  )
   const directory = join(dataDir, 'artifacts', key.slice(0, 2), key)
   return { server, directory }
 }
@@ -54,10 +63,11 @@ it('opt-in canonical sidecars appear next to the packed generation', async () =>
   // Fonts are materialized for a document that embeds them.
   const fontDir = await mkdtemp(join(tmpdir(), 'canonical-layout-font-'))
   dirs.push(fontDir)
-  const fixture = await readFile(join(process.cwd(), 'tests/fixtures/docx/font.docx'))
+  const fixture = await readFile(join(serverRoot, 'tests/fixtures/docx/font.docx'))
   const fontExport = await openFixture(fontDir, new Uint8Array(fixture), 'docx', true)
-  expect((await readdir(join(fontExport.directory, 'fonts'))).some((name) => name.endsWith('.sfnt')))
-    .toBe(true)
+  expect(
+    (await readdir(join(fontExport.directory, 'fonts'))).some((name) => name.endsWith('.sfnt')),
+  ).toBe(true)
 })
 
 it('is off by default', async () => {

@@ -47,23 +47,32 @@ export function ShowMediaLayer({
   const [statuses, setStatuses] = useState<Record<string, string>>({})
   const [reload, setReload] = useState(0)
   const failed = useRef(new Set<string>())
-  const mediaError = (id: string, text: string) => { failed.current.add(id); setError(text) }
+  const mediaError = (id: string, text: string) => {
+    failed.current.add(id)
+    setError(text)
+  }
   const els = useRef(new Map<string, HTMLMediaElement>())
   const refs = useRef(new Map<string, (element: HTMLMediaElement | null) => void>())
   useEffect(() => {
     let cancelled = false
     const controller = new AbortController()
-    if (!reload) { setUrls({}); setPlaying({}); failed.current.clear() }
+    if (!reload) {
+      setUrls({})
+      setPlaying({})
+      failed.current.clear()
+    }
     setError('')
     setStatuses({})
     for (const n of nodes) {
       if (reload && !failed.current.has(n.sourceId)) continue
       void dataSource
-        .getMediaData(slideIndex, n.sourceId, { signal: controller.signal,
+        .getMediaData(slideIndex, n.sourceId, {
+          signal: controller.signal,
           retry: reload > 0 && failed.current.has(n.sourceId),
           onStatus: (text) => {
             if (!cancelled) setStatuses((values) => ({ ...values, [n.sourceId]: text }))
-          } })
+          },
+        })
         .then((d) => {
           if (!cancelled && d) {
             failed.current.delete(n.sourceId)
@@ -71,8 +80,10 @@ export function ShowMediaLayer({
           } else if (!cancelled) mediaError(n.sourceId, '文档中的媒体资源不存在或未嵌入。')
         })
         .catch((error) => {
-          if (!cancelled) mediaError(n.sourceId, error instanceof Error ? error.message : '无法加载媒体资源。')
-        }).finally(() => {
+          if (!cancelled)
+            mediaError(n.sourceId, error instanceof Error ? error.message : '无法加载媒体资源。')
+        })
+        .finally(() => {
           if (!cancelled) setStatuses((values) => ({ ...values, [n.sourceId]: '' }))
         })
     }
@@ -151,14 +162,36 @@ export function ShowMediaLayer({
           }}
         >
           {error}
-          {failed.current.size > 0 && <button type="button" onClick={() => setReload((value) => value + 1)}
-            style={{ marginLeft: 12 }}>重试媒体</button>}
+          {failed.current.size > 0 && (
+            <button
+              type="button"
+              onClick={() => setReload((value) => value + 1)}
+              style={{ marginLeft: 12 }}
+            >
+              重试媒体
+            </button>
+          )}
         </p>
       )}
-      {Object.values(statuses).some(Boolean) && <p role="status" aria-live="polite" style={{
-        position: 'absolute', top: 0, left: 0, right: 0, zIndex: 20, margin: 0,
-        padding: '8px 12px', background: 'var(--surface)', color: 'var(--text)',
-      }}>{Object.values(statuses).find(Boolean)}</p>}
+      {Object.values(statuses).some(Boolean) && (
+        <p
+          role="status"
+          aria-live="polite"
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            zIndex: 20,
+            margin: 0,
+            padding: '8px 12px',
+            background: 'var(--surface)',
+            color: 'var(--text)',
+          }}
+        >
+          {Object.values(statuses).find(Boolean)}
+        </p>
+      )}
       {nodes.map((n) => {
         const media = urls[n.sourceId]
         if (!media) return null
@@ -181,11 +214,15 @@ export function ShowMediaLayer({
               ref={ref(n.sourceId)}
               src={media.dataUrl}
               style={style}
-              onError={() => mediaError(n.sourceId, '无法播放该视频：资源无法读取或当前浏览器不支持其编码。')}
+              onError={() =>
+                mediaError(n.sourceId, '无法播放该视频：资源无法读取或当前浏览器不支持其编码。')
+              }
               playsInline
               controls={true}
               muted={muted}
               onClick={(e) => {
+                // Native controls must not toggle again after our click handler.
+                e.preventDefault()
                 e.stopPropagation()
                 toggle(e.currentTarget)
               }}
@@ -209,7 +246,9 @@ export function ShowMediaLayer({
               ref={ref(n.sourceId)}
               src={media.dataUrl}
               muted={muted}
-              onError={() => mediaError(n.sourceId, '无法播放该音频：资源无法读取或当前浏览器不支持其编码。')}
+              onError={() =>
+                mediaError(n.sourceId, '无法播放该音频：资源无法读取或当前浏览器不支持其编码。')
+              }
               onPlay={onPlay}
               onPause={onPause}
               onEnded={onPause}

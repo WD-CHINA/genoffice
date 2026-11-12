@@ -1,5 +1,7 @@
 # GenOffice 解析后端接入与 1GB 大文件架构设计
 
+> 本文保留原设计或当时验证条件；当前三端职责、已知边界与测试入口请参阅[架构主文档](runtime-workflows.zh-CN.md)、[运行边界](runtime-boundaries.zh-CN.md)和[测试指南](testing-guide.zh-CN.md)。历史数字不自动代表当前结果。
+
 状态：设计草案 v1.3。基线：当前 `main`（2026-11）。修订记录见附录 E。
 
 实现状态（第一批，已落地）：

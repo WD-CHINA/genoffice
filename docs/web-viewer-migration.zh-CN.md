@@ -1,11 +1,13 @@
 # GenOffice 无 Electron 预览 / 放映移植调研
 
+> 本文保留原设计或当时验证条件；当前三端职责、已知边界与测试入口请参阅[架构主文档](runtime-workflows.zh-CN.md)、[运行边界](runtime-boundaries.zh-CN.md)和[测试指南](testing-guide.zh-CN.md)。历史数字不自动代表当前结果。
+
 调研日期：2026-10-13。基于本地 `4863835963c99793c47b72473900c483e9fa0c2a`。
 目标：Node.js 后端 + 浏览器前端；保留文件预览、PPT 放映和媒体播放；去掉编辑界面、写入接口、AI 和桌面宿主。
 
 用户补充约束：**完全沿用项目现有渲染方式还原。** 解析、排版、绘制、节点结构、样式和播放算法以此 commit 为基线；移植验收对象是 GenOffice 本身的显示与播放结果。
 
-首期范围已进一步确定为 **PPTX / PDF / DOCX**，单一独立应用放在 `apps/viewer`。具体交付计划见 [独立 Viewer 开发计划](/Applications/work/genoffice/repo/apps/viewer/DEVELOPMENT_PLAN.zh-CN.md)。本文保留六格式研究作为后续参考；首期的目录、阶段与依赖以开发计划为准，暂不交付 Rust/XLSX 或独立 HTML/Markdown Viewer。
+首期范围已进一步确定为 **PPTX / PDF / DOCX**，单一独立应用放在 `apps/viewer`。具体交付计划见 [独立 Viewer 开发计划](../apps/viewer/DEVELOPMENT_PLAN.zh-CN.md)。本文保留六格式研究作为后续参考；首期的目录、阶段与依赖以开发计划为准，暂不交付 Rust/XLSX 或独立 HTML/Markdown Viewer。
 
 ## 结论
 
@@ -49,8 +51,8 @@ Node 负责后端入口、HTTP API、任务和存储，Excel 保留原 Rust 子�
 
 - `packages/pptx-engine/src/index.ts`：`openPptx`、`materializeSlide`、母版/布局继承、主题等。
 - `packages/pptx-render/src/build-slide.ts`：`buildRenderSlide`、坐标、文本排版、图表和形状树。
-- [session-state.ts:406](/Applications/work/genoffice/repo/apps/slides/src/main/session-state.ts:406)：`buildAllRenderSlides`；其文件顶层仍导入 Electron，需把渲染、媒体函数拆到独立模块。
-- [session-state.ts:474](/Applications/work/genoffice/repo/apps/slides/src/main/session-state.ts:474)：`makeMediaResolver`，包含 TIFF 转 PNG、JPEG EXIF 方向处理、Office SVG 主题重着色；不能丢掉这些兼容逻辑。
+- [session-state.ts:406](../apps/slides/src/main/session-state.ts)：`buildAllRenderSlides`；其文件顶层仍导入 Electron，需把渲染、媒体函数拆到独立模块。
+- [session-state.ts:474](../apps/slides/src/main/session-state.ts)：`makeMediaResolver`，包含 TIFF 转 PNG、JPEG EXIF 方向处理、Office SVG 主题重着色；不能丢掉这些兼容逻辑。
 - `apps/slides/src/renderer/NodeBody.tsx`：`StaticNode` 静态渲染；`SlideThumb.tsx` 可复用作缩略图/静态页面。编辑态 `SlideCanvas.tsx` 不作为只读页面的主入口。
 - `apps/slides/src/renderer/components/SlideShowView.tsx`：键盘翻页、跳页、隐藏页、黑白屏、动画步骤、切换效果。
 - `apps/slides/src/renderer/components/AnimatedSlide.tsx` 和 `animation-play.ts`：动画分组、时间线、逐段文字、运动路径、媒体命令。
@@ -62,7 +64,7 @@ Node 负责后端入口、HTTP API、任务和存储，Excel 保留原 Rust 子�
 
 #### 必须保留的字宽测量与二次排版
 
-[slides-main.ts:867](/Applications/work/genoffice/repo/apps/slides/src/main/slides-main.ts:867) 先调用 `buildAllRenderSlides`，再调用 `refineComplexWidths(wc)`；获得新测量值后重新构建渲染树。[shaped-metrics.ts:281](/Applications/work/genoffice/repo/apps/slides/src/main/shaped-metrics.ts:281) 通过 `webContents.executeJavaScript` 在 renderer 加载实际字体、以 100px 字号执行 Canvas `measureText`，把结果回填字体度量缓存。这是原排版算法的一部分，不能仅把 IPC 返回值改成 GET RenderSlide 就省略。
+[slides-main.ts:867](../apps/slides/src/main/slides-main.ts) 先调用 `buildAllRenderSlides`，再调用 `refineComplexWidths(wc)`；获得新测量值后重新构建渲染树。[shaped-metrics.ts:281](../apps/slides/src/main/shaped-metrics.ts) 通过 `webContents.executeJavaScript` 在 renderer 加载实际字体、以 100px 字号执行 Canvas `measureText`，把结果回填字体度量缓存。这是原排版算法的一部分，不能仅把 IPC 返回值改成 GET RenderSlide 就省略。
 
 Web 端按下面的闭环移植：
 
@@ -88,11 +90,11 @@ Web 端按下面的闭环移植：
 
 #### HTML/MHT altChunk：使用原转换器和已有 Playwright 驱动
 
-`parse-worker.ts` 对 HTML/MHT altChunk 有回退分支。[docs-main.ts:4334](/Applications/work/genoffice/repo/apps/docs/src/main/docs-main.ts:4334) 会把 HTML 写入带 UTF-8 BOM 的临时文件，调用 `convertHtmlToDocx` 和 ElectronBrowserDriver，并传入 `naturalTableWidth: true`。转换得到的 DOCX 仅用来生成展示 blocks，不改写上传的原文档。
+`parse-worker.ts` 对 HTML/MHT altChunk 有回退分支。[docs-main.ts:4334](../apps/docs/src/main/docs-main.ts) 会把 HTML 写入带 UTF-8 BOM 的临时文件，调用 `convertHtmlToDocx` 和 ElectronBrowserDriver，并传入 `naturalTableWidth: true`。转换得到的 DOCX 仅用来生成展示 blocks，不改写上传的原文档。
 
-该转换器不只读取 DOM。[BrowserDriver](/Applications/work/genoffice/repo/packages/html2docx/src/driver.ts:27) 还要求页面截图和元素截图，`convert.ts` 用它们处理无法直接转成原生节点的内容。因此普通浏览器 DOM 不是本方案中已证明可用的替代实现。
+该转换器不只读取 DOM。[BrowserDriver](../packages/html2docx/src/driver.ts) 还要求页面截图和元素截图，`convert.ts` 用它们处理无法直接转成原生节点的内容。因此普通浏览器 DOM 不是本方案中已证明可用的替代实现。
 
-采用仓库已有的 [PlaywrightDriver](/Applications/work/genoffice/repo/packages/html2docx/src/drivers/playwright.ts:34)，由 Node 管理固定版本 Chrome/Chromium；每次转换创建独立 BrowserContext，沿用原 converter、输入 BOM、viewport/缩放、字体、等待规则、选项、输出解析和失败行为。两种 driver 的导航与截图细节仍须对照测试，不能因为接口相同就声明渲染一致。
+采用仓库已有的 [PlaywrightDriver](../packages/html2docx/src/drivers/playwright.ts)，由 Node 管理固定版本 Chrome/Chromium；每次转换创建独立 BrowserContext，沿用原 converter、输入 BOM、viewport/缩放、字体、等待规则、选项、输出解析和失败行为。两种 driver 的导航与截图细节仍须对照测试，不能因为接口相同就声明渲染一致。
 
 浏览器解析遇到该分支时，通过文件/view session 绑定的转换请求发送原转换链路解码后的 HTML；Node 返回转换 DOCX 的二进制字节或任务结果。前端安装原 `setAltChunkHtmlConverter` 回调并沿用原回退解析。服务端沿用原输入大小限制和 watchdog，超时或取消时关闭 context，清理临时目录；浏览器异常时由 worker 管理器终止并恢复。结果缓存包含 HTML hash、converter 版本、Chromium/字体环境及转换参数。
 
@@ -120,9 +122,9 @@ Web 端按下面的闭环移植：
 
 #### PDF 的只读表单展示边界
 
-[PdfPage.tsx:100](/Applications/work/genoffice/repo/apps/pdf/src/renderer/PdfPage.tsx:100) 使用 `AnnotationMode.ENABLE_FORMS`，有意不在页面位图中绘制 widget appearance，以避免和 HTML 表单层重复绘制。只移植 Canvas/TextLayer 会导致已填写文本、勾选框或其他表单内容缺失。
+[PdfPage.tsx:100](../apps/pdf/src/renderer/PdfPage.tsx) 使用 `AnnotationMode.ENABLE_FORMS`，有意不在页面位图中绘制 widget appearance，以避免和 HTML 表单层重复绘制。只移植 Canvas/TextLayer 会导致已填写文本、勾选框或其他表单内容缺失。
 
-必须连同 `form-catalog.ts` 的 `buildFormCatalog`、[FormLayer](/Applications/work/genoffice/repo/apps/pdf/src/renderer/FormLayer.tsx:22)、原 widget CSS、字段值/选项解析和页面坐标转换一起复用。以 `readOnly` 禁止输入，移除表单写回与 `onEdit`/签署操作；保留字段值、选中状态、签名字段原有展示及 `LinkLayer` 的导航。只读控件的 disabled 样式也须和选定的原项目只读基线对照，不自行调整颜色或几何。
+必须连同 `form-catalog.ts` 的 `buildFormCatalog`、[FormLayer](../apps/pdf/src/renderer/FormLayer.tsx)、原 widget CSS、字段值/选项解析和页面坐标转换一起复用。以 `readOnly` 禁止输入，移除表单写回与 `onEdit`/签署操作；保留字段值、选中状态、签名字段原有展示及 `LinkLayer` 的导航。只读控件的 disabled 样式也须和选定的原项目只读基线对照，不自行调整颜色或几何。
 
 `App.tsx` 加载文件时还调用 `listStaticFormFills`。对仍参与展示的已保存内容，保留相应只读 metadata 读取；不能根据“form”或“signature”名称把展示依赖和写入功能一起删除。表单 catalog 可继续由浏览器 PDF.js 建立，服务端无需重复实现。保留 `view-config.ts` 的 `DOC_OPTS`，同版本部署 worker、cmaps、standard_fonts 和 wasm。
 
@@ -130,7 +132,7 @@ Web 端按下面的闭环移植：
 
 #### HTML/Markdown 的文档与外部资源导入
 
-原项目的 [Markdown 资源处理](/Applications/work/genoffice/repo/apps/markdown/src/main/markdown-main.ts:692) 和 [HTML 资源处理](/Applications/work/genoffice/repo/apps/html/src/main/html-main.ts:1220) 从打开文档的目录读取图片、CSS、JS、字体及无扩展名资源。浏览器单独上传 `.html/.md` 不会自动带上这些文件，只有 URL 替换无法还原显示。
+原项目的 [Markdown 资源处理](../apps/markdown/src/main/markdown-main.ts) 和 [HTML 资源处理](../apps/html/src/main/html-main.ts) 从打开文档的目录读取图片、CSS、JS、字体及无扩展名资源。浏览器单独上传 `.html/.md` 不会自动带上这些文件，只有 URL 替换无法还原显示。
 
 首版采用**文档资源包导入**：用户上传 ZIP 或选取目录，服务端建立 package manifest，保留相对路径、文件内容 hash、MIME 及入口文档；支持同一个包内选择多个入口。独立上传仍适用于 OOXML/PDF，以及确实没有本地依赖的 HTML/Markdown。资源包 ZIP 是导入容器，不改变内部文件的解析与渲染算法。
 
@@ -255,7 +257,7 @@ GET /packages/:packageId/files/*         保留目录结构和 base 语义的预
 - `simple.docx`：4 个 block，`kitchen-sink.docx`：12 个 block，Node 解析成功。
 - 现有 `build-slide`、`animation-play`、`show-keys`、`custom-show-rehearse` 四个测试文件：**87/87 通过**。
 
-可复跑探针：[engine-probe.mts](/Applications/work/genoffice/research/engine-probe.mts)。在仓库执行 `./node_modules/.bin/tsx ../research/engine-probe.mts`。相关测试命令：
+历史探针 `../research/engine-probe.mts` 不随当前仓库交付，不能作为当前可复跑入口；本轮执行入口见[测试指南](testing-guide.zh-CN.md)。以下保留当时相关测试命令：
 
 ```sh
 ./node_modules/.bin/vitest run packages/pptx-render/tests/build-slide.test.ts apps/slides/tests/animation-play.test.ts apps/slides/tests/show-keys.test.ts apps/slides/tests/custom-show-rehearse.test.ts --reporter=dot

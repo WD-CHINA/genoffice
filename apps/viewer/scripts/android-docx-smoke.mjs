@@ -1,9 +1,8 @@
 /** Real-device DOCX online + verified offline replay. Keeps app data and restores USB reverse mappings. */
-import { execFileSync } from 'node:child_process'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { inspectDocxTableFlow, summarizeDocxTableFlow } from './docx-flow-probe.mjs'
-import { connectAndroidWebView } from './android-cdp.mjs'
+import { createAndroidTestDevice, wait } from './android-test-device.mjs'
 const serial = process.env.ANDROID_SERIAL
 if (!serial || !process.env.ANDROID_WORD_INPUTS)
   throw Error('Set ANDROID_SERIAL and ANDROID_WORD_INPUTS')
@@ -12,26 +11,11 @@ await mkdir(output, { recursive: true })
 const inputs = JSON.parse(await readFile(process.env.ANDROID_WORD_INPUTS, 'utf8'))
 const backend = process.env.PARSE_SERVER_URL || 'http://127.0.0.1:18787'
 const viewer = process.env.ANDROID_VIEWER_URL || 'http://127.0.0.1:11019/'
-for (const url of [backend, viewer])
-  if (new URL(url).hostname !== '127.0.0.1' || !new URL(url).port)
-    throw Error('USB drill requires loopback services with explicit ports')
 const token = process.env.PARSE_SERVER_TOKEN || '',
   port = Number(process.env.ANDROID_MEDIA_CDP_PORT || 19224)
-const adb = (...args) =>
-  execFileSync('adb', ['-s', serial, ...args], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
-const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-const ports = [...new Set([new URL(backend).port, new URL(viewer).port])]
-const reverses = new Map(
-  adb('reverse', '--list')
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => line.trim().split(/\s+/).slice(-2)),
-)
+const device = createAndroidTestDevice([backend, viewer], port)
+const { adb, access } = device
 const results = []
-const access = () => {
-  for (const port of ports) adb('reverse', `tcp:${port}`, `tcp:${port}`)
-}
 async function open(input, mode) {
   adb(
     'shell',
@@ -64,15 +48,22 @@ async function open(input, mode) {
     try {
       const pid = adb('shell', 'pidof', 'com.genoffice.viewerdemo').trim()
       if (!pid) continue
-      adb('forward', `tcp:${port}`, `localabstract:webview_devtools_remote_${pid}`)
-      c = await connectAndroidWebView(port)
+      c = await device.connect(pid)
       for (const [id, context] of c.contexts)
         if (context.auxData?.isDefault) {
           const ready = await c.evaluate(
-            `({preview:location.pathname.endsWith('/preview.html'),local:location.pathname.startsWith('/viewer/'),pages:document.querySelectorAll('.viewer-doc-remote-page').length})`,
+            `({origin:location.origin,fileId:new URL(location.href).searchParams.get('fileId'),preview:location.pathname.endsWith('/preview.html'),local:location.pathname.startsWith('/viewer/'),pages:document.querySelectorAll('.viewer-doc-remote-page').length})`,
             id,
           )
-          if (ready.preview && ready.pages && (mode === 'online') !== ready.local) return { c, id }
+          if (
+            ready.fileId === input.fileId &&
+            ready.preview &&
+            ready.pages &&
+            (mode === 'online'
+              ? ready.origin === new URL(viewer).origin
+              : ready.local && ready.origin !== new URL(viewer).origin)
+          )
+            return { c, id }
         }
       c.close()
     } catch {
@@ -250,9 +241,7 @@ async function inspect(c, id, input, disconnected) {
     id,
   )
   await wait(200)
-  const png = execFileSync('adb', ['-s', serial, 'exec-out', 'screencap', '-p'], {
-    maxBuffer: 32 * 1024 * 1024,
-  })
+  const png = device.readBytes(['exec-out', 'screencap', '-p'])
   await writeFile(join(output, `${input.name}-${disconnected ? 'offline' : 'online'}.png`), png)
   return { ...snapshot, visited: visited.size, reachedTail: true }
 }
@@ -293,7 +282,7 @@ try {
         join(output, `${input.name}-manifest.json`),
         JSON.stringify(manifest, null, 2),
       )
-      for (const port of ports) adb('reverse', '--remove', `tcp:${port}`)
+      device.disconnect()
       const unavailable = await offline.c.evaluate(
         `(async()=>{try{await fetch(${JSON.stringify(backend + '/v2/capabilities')},{signal:AbortSignal.timeout(2000)});return false}catch{return true}})()`,
         offline.id,
@@ -320,13 +309,5 @@ try {
     }
   }
 } finally {
-  for (const port of ports) {
-    const previous = reverses.get(`tcp:${port}`)
-    if (previous) adb('reverse', `tcp:${port}`, previous)
-    else {
-      try {
-        adb('reverse', '--remove', `tcp:${port}`)
-      } catch {}
-    }
-  }
+  device.restore()
 }

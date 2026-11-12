@@ -1,9 +1,11 @@
+import { json } from './helpers/session-probes.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { openServerSession, openingStateText, type PreviewNotice } from '../src/web/server-session.ts'
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+import {
+  openServerSession,
+  openingStateText,
+  type PreviewNotice,
+} from '../src/web/server-session.ts'
 
 test('async opening follows queued/building/ready with one creation and preserves credentials', async (context) => {
   const calls: Array<{ url: string; init: RequestInit }> = []
@@ -162,17 +164,34 @@ test('previewable is a building capability, notified once, and never ends the wa
   let polls = 0
   context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
     if (init.method === 'POST')
-      return json({ sessionId: 'preview', state: 'building', previewable: true, pollAfterMs: 1,
-        progress: { unitsProduced: 1, unitCount: 3, percent: 33 },
-        availableUnits: { from: 0, to: 1 } }, 202)
-    return json(++polls === 1
-      ? { sessionId: 'preview', state: 'building', previewable: true, pollAfterMs: 1,
-          progress: { unitsProduced: 2, unitCount: 3, percent: 66 },
-          availableUnits: { from: 0, to: 2 } }
-      : { sessionId: 'preview', state: 'ready', model: { unitCount: 3 }, fonts: [] })
+      return json(
+        {
+          sessionId: 'preview',
+          state: 'building',
+          previewable: true,
+          pollAfterMs: 1,
+          progress: { unitsProduced: 1, unitCount: 3, percent: 33 },
+          availableUnits: { from: 0, to: 1 },
+        },
+        202,
+      )
+    return json(
+      ++polls === 1
+        ? {
+            sessionId: 'preview',
+            state: 'building',
+            previewable: true,
+            pollAfterMs: 1,
+            progress: { unitsProduced: 2, unitCount: 3, percent: 66 },
+            availableUnits: { from: 0, to: 2 },
+          }
+        : { sessionId: 'preview', state: 'ready', model: { unitCount: 3 }, fonts: [] },
+    )
   })
   const result = await openServerSession<{
-    sessionId: string; state?: string; model: { unitCount: number }
+    sessionId: string
+    state?: string
+    model: { unitCount: number }
   }>({
     server: 'http://parse',
     fileId: 'file',
@@ -210,23 +229,46 @@ test('remote sessions fetch and expose the committed first frame while still bui
     urls.push(`${init.method ?? 'GET'} ${url}`)
     if (init.method === 'DELETE') return new Response(null, { status: 204 })
     if (init.method === 'POST')
-      return json({ sessionId: 'frame', state: 'building', previewable: true, pollAfterMs: 1,
-        progress: { unitsProduced: 1, unitCount: 3, percent: 33 },
-        availableUnits: { from: 0, to: 1 } }, 202)
+      return json(
+        {
+          sessionId: 'frame',
+          state: 'building',
+          previewable: true,
+          pollAfterMs: 1,
+          progress: { unitsProduced: 1, unitCount: 3, percent: 33 },
+          availableUnits: { from: 0, to: 1 },
+        },
+        202,
+      )
     if (url.endsWith('/document'))
-      return json({ state: 'building', model: { unitCount: 3 }, fonts: [], layout: {},
-        complete: false, unitsProduced: 1, unitCount: 3 })
+      return json({
+        state: 'building',
+        model: { unitCount: 3 },
+        fonts: [],
+        layout: {},
+        complete: false,
+        unitsProduced: 1,
+        unitCount: 3,
+      })
     if (url.endsWith('/units/0')) return json(firstUnit)
     if (url.endsWith('/v2/sessions/frame'))
-      return json(++polls === 1
-        ? { sessionId: 'frame', state: 'building', previewable: true, pollAfterMs: 1,
-            progress: { unitsProduced: 1, unitCount: 3, percent: 33 },
-            availableUnits: { from: 0, to: 1 } }
-        : { sessionId: 'frame', state: 'ready', model: { unitCount: 3 }, fonts: [] })
+      return json(
+        ++polls === 1
+          ? {
+              sessionId: 'frame',
+              state: 'building',
+              previewable: true,
+              pollAfterMs: 1,
+              progress: { unitsProduced: 1, unitCount: 3, percent: 33 },
+              availableUnits: { from: 0, to: 1 },
+            }
+          : { sessionId: 'frame', state: 'ready', model: { unitCount: 3 }, fonts: [] },
+      )
     return json(firstUnit)
   })
   const session = createRemotePptxSession({
-    server: 'http://parse', fileId: 'file',
+    server: 'http://parse',
+    fileId: 'file',
     onPreviewFrame: (frame) => frames.push(frame),
   })
   try {
@@ -238,12 +280,17 @@ test('remote sessions fetch and expose the committed first frame while still bui
     assert.equal(frames[0].unitCount, 3)
     assert.equal(frames[0].deck.preview, true)
     assert.equal(frames[0].deck.slides.length, 3)
-    assert.equal(frames[0].deck.slides[1].placeholder, undefined,
-      'uncommitted pages must not trigger lazy unit requests')
+    assert.equal(
+      frames[0].deck.slides[1].placeholder,
+      undefined,
+      'uncommitted pages must not trigger lazy unit requests',
+    )
     assert.ok(urls.includes('GET http://parse/v2/sessions/frame/document'))
     assert.ok(urls.includes('GET http://parse/v2/sessions/frame/units/0'))
-    assert.ok(urls.includes('GET http://parse/v1/sessions/frame/units/0'),
-      'the ready path keeps its original v1 contract')
+    assert.ok(
+      urls.includes('GET http://parse/v1/sessions/frame/units/0'),
+      'the ready path keeps its original v1 contract',
+    )
   } finally {
     session.close()
     context.mock.timers.reset()
@@ -258,20 +305,37 @@ test('a failed first-frame prefetch never fails the authoritative ready path', a
   context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
     if (init.method === 'DELETE') return new Response(null, { status: 204 })
     if (init.method === 'POST')
-      return json({ sessionId: 'fragile', state: 'building', previewable: true, pollAfterMs: 1,
-        progress: { unitsProduced: 1, unitCount: 1, percent: 99 },
-        availableUnits: { from: 0, to: 1 } }, 202)
+      return json(
+        {
+          sessionId: 'fragile',
+          state: 'building',
+          previewable: true,
+          pollAfterMs: 1,
+          progress: { unitsProduced: 1, unitCount: 1, percent: 99 },
+          availableUnits: { from: 0, to: 1 },
+        },
+        202,
+      )
     if (url.endsWith('/document')) return json({ message: 'preview unavailable' }, 503)
     if (url.endsWith('/v2/sessions/fragile'))
-      return json(++polls === 1
-        ? { sessionId: 'fragile', state: 'building', previewable: true, pollAfterMs: 1,
-            progress: { unitsProduced: 1, unitCount: 1, percent: 99 },
-            availableUnits: { from: 0, to: 1 } }
-        : { sessionId: 'fragile', state: 'ready', model: { unitCount: 1 }, fonts: [] })
+      return json(
+        ++polls === 1
+          ? {
+              sessionId: 'fragile',
+              state: 'building',
+              previewable: true,
+              pollAfterMs: 1,
+              progress: { unitsProduced: 1, unitCount: 1, percent: 99 },
+              availableUnits: { from: 0, to: 1 },
+            }
+          : { sessionId: 'fragile', state: 'ready', model: { unitCount: 1 }, fonts: [] },
+      )
     return json(firstUnit)
   })
   const session = createRemotePptxSession({
-    server: 'http://parse', fileId: 'file', onPreviewFrame: (frame) => frames.push(frame),
+    server: 'http://parse',
+    fileId: 'file',
+    onPreviewFrame: (frame) => frames.push(frame),
   })
   try {
     const deck = await session.open(new ArrayBuffer(0))

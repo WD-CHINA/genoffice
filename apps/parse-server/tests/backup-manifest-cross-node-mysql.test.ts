@@ -1,3 +1,4 @@
+import { drainCleanups } from './helpers/cleanup'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -10,7 +11,9 @@ import { createParseServer, type ParseServer } from '../src/server'
 
 const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
 const cleanups: Array<() => Promise<void>> = []
-afterEach(async () => { while (cleanups.length) await cleanups.pop()!() })
+afterEach(async () => {
+  await drainCleanups(cleanups)
+})
 
 describe.skipIf(!socketPath)('cross-instance backup over a shared dataDir + MySQL catalog', () => {
   it('lets a second instance snapshot and verify a deployment built by the first', async () => {
@@ -25,11 +28,21 @@ describe.skipIf(!socketPath)('cross-instance backup over a shared dataDir + MySQ
       await admin.end()
       await rm(dataDir, { recursive: true, force: true })
     })
-    const config = { host: '127.0.0.1', port: 3306, user: 'root', password: '', database, socketPath }
+    const config = {
+      host: '127.0.0.1',
+      port: 3306,
+      user: 'root',
+      password: '',
+      database,
+      socketPath,
+    }
     const start = async (): Promise<ParseServer> => {
       const server = await createParseServer({
-        dataDir, mysql: config, artifactBackend: 'catalog',
-        parserVersion: '0.1.0', parserFingerprint: 'backup-nodes-test',
+        dataDir,
+        mysql: config,
+        artifactBackend: 'catalog',
+        parserVersion: '0.1.0',
+        parserFingerprint: 'backup-nodes-test',
       })
       servers.push(server)
       return server
@@ -39,17 +52,21 @@ describe.skipIf(!socketPath)('cross-instance backup over a shared dataDir + MySQ
     const request = (server: ParseServer) => (path: string, init?: RequestInit) =>
       fetch(server.url + path, init)
     const uploaded = await request(a)('/v1/files', {
-      method: 'POST', body: Buffer.from(await createBlankPptx()),
+      method: 'POST',
+      body: Buffer.from(await createBlankPptx()),
     })
-    const { fileId } = await uploaded.json() as { fileId: string }
+    const { fileId } = (await uploaded.json()) as { fileId: string }
     const opened = await request(a)('/v2/sessions', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fileId }),
     })
-    const { sessionId } = await opened.json() as { sessionId: string }
+    const { sessionId } = (await opened.json()) as { sessionId: string }
     const deadline = Date.now() + 20_000
     for (;;) {
-      const state = await (await request(a)(`/v2/sessions/${sessionId}`)).json() as { state: string }
+      const state = (await (await request(a)(`/v2/sessions/${sessionId}`)).json()) as {
+        state: string
+      }
       if (state.state === 'ready') break
       if (state.state === 'failed') throw new Error('session failed')
       if (Date.now() > deadline) throw new Error('session did not become ready')

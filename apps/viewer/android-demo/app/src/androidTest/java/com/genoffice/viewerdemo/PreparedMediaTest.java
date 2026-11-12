@@ -1,13 +1,12 @@
 package com.genoffice.viewerdemo;
 
-import android.test.InstrumentationTestCase;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 
-public class PreparedMediaTest extends InstrumentationTestCase {
+public class PreparedMediaTest extends AndroidTestSupport {
     private static String repeat(char c) { char[] chars = new char[64]; java.util.Arrays.fill(chars, c); return new String(chars); }
     public void testPartBoundary() {
         String prefix = "/v1/files/test/parts/";
@@ -57,10 +56,5 @@ public class PreparedMediaTest extends InstrumentationTestCase {
             mappings.getJSONObject(0).put("sourceSha256", source).put("profile", repeat('d'));
             try { PreparedMedia.validate(manifest); fail("changed preparation profile must change the version"); } catch (IOException expected) { }
         } finally { delete(root); }
-    }
-    private static void delete(File file) {
-        File[] children = file.listFiles();
-        if (children != null) for (File child : children) delete(child);
-        file.delete();
     }
 }

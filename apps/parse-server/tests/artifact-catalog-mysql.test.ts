@@ -1,3 +1,4 @@
+import { drainCleanups } from './helpers/cleanup'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import { ArtifactSession, type ArtifactSessionInput } from '../src/artifact-session'
 import { ParseQueue } from '../src/parse-queue'
@@ -10,7 +11,11 @@ import mysql, { type Connection } from 'mysql2/promise'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setTimeout as delay } from 'node:timers/promises'
 import { MysqlDatabase } from '../src/mysql'
-import { MysqlArtifactCatalog, artifactGenerationPath, type ArtifactClaim } from '../src/artifact-catalog'
+import {
+  MysqlArtifactCatalog,
+  artifactGenerationPath,
+  type ArtifactClaim,
+} from '../src/artifact-catalog'
 import { artifactKey, type ArtifactIdentity } from '../src/artifact-store'
 import { ArtifactGenerations } from '../src/artifact-generations'
 import { ArtifactCoordinator } from '../src/artifact-coordinator'
@@ -20,9 +25,15 @@ import { ArtifactStore } from '../src/artifact-store'
 
 const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
 const cleanups: Array<() => Promise<void>> = []
-afterEach(async () => { while (cleanups.length) await cleanups.pop()!() })
+afterEach(async () => {
+  await drainCleanups(cleanups)
+})
 const identity: ArtifactIdentity = {
-  fileId: 'a'.repeat(64), format: 'pptx', parserFingerprint: 'catalog-test', schemaVersion: 2, options: {},
+  fileId: 'a'.repeat(64),
+  format: 'pptx',
+  parserFingerprint: 'catalog-test',
+  schemaVersion: 2,
+  options: {},
 }
 const summary = { bytes: 100, unitCount: 2, manifestSha256: 'b'.repeat(64) }
 function acquired(claim: ArtifactClaim) {
@@ -36,7 +47,14 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     const name = `genoffice_catalog_${randomUUID().replaceAll('-', '')}`
     const admin: Connection = await mysql.createConnection({ socketPath, user: 'root' })
     await admin.query(`CREATE DATABASE ${name} CHARACTER SET utf8mb4`)
-    const config = { host: '127.0.0.1', port: 3306, user: 'root', password: '', database: name, socketPath }
+    const config = {
+      host: '127.0.0.1',
+      port: 3306,
+      user: 'root',
+      password: '',
+      database: name,
+      socketPath,
+    }
     const first = new MysqlDatabase(config)
     const second = new MysqlDatabase(config)
     cleanups.push(async () => {
@@ -48,8 +66,14 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     await second.init()
     await first.pool.execute(
       `INSERT INTO parse_files (file_id, sha256, size, format, created_at) VALUES (?, ?, 0, 'pptx', ?)`,
-      [identity.fileId, identity.fileId, new Date().toISOString()])
-    return { db: first, db2: second, a: new MysqlArtifactCatalog(first), b: new MysqlArtifactCatalog(second) }
+      [identity.fileId, identity.fileId, new Date().toISOString()],
+    )
+    return {
+      db: first,
+      db2: second,
+      a: new MysqlArtifactCatalog(first),
+      b: new MysqlArtifactCatalog(second),
+    }
   }
 
   it('retires expired shared staging before deletion and fences delayed completion across pools', async () => {
@@ -66,7 +90,9 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     const sweeper = new ArtifactGenerationSweeper(new ArtifactGenerations(root), b)
     expect(await sweeper.sweep()).toMatchObject({ protected: 1, collected: 0 })
     expect(await readdir(staging)).toEqual([name])
-    await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [lease.key])
+    await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [
+      lease.key,
+    ])
     expect(await sweeper.sweep()).toMatchObject({ collected: 1, failed: 0 })
     expect(await readdir(staging)).toEqual([])
     expect(await a.renew(lease)).toBe(false)
@@ -100,7 +126,9 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     expect(await a.retireGeneration(first.key, first.generation)).toBe(true)
     expect(await a.forkRead(view.lease, 'late')).toBeNull()
     const expired = (await a.pin(first.key, 'expired-view'))!
-    await db.pool.execute('UPDATE parse_artifact_read_leases SET lease_until = 0 WHERE id = ?', [expired.lease.id])
+    await db.pool.execute('UPDATE parse_artifact_read_leases SET lease_until = 0 WHERE id = ?', [
+      expired.lease.id,
+    ])
     expect(await b.forkRead(expired.lease, 'invalid-dependency')).toBeNull()
     expect(await a.renewRead(expired.lease)).toBe(false)
   })
@@ -110,10 +138,20 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     const root = await mkdtemp(join(tmpdir(), 'sql-source-build-'))
     cleanups.push(() => rm(root, { recursive: true, force: true }))
     const input: ArtifactSessionInput = {
-      id: randomUUID(), fileId: identity.fileId, path: join(root, 'source.pptx'), width: 960,
-      parserVersion: 'sql', parserFingerprint: 'source-build', baseUrl: 'http://localhost',
-      format: 'pptx', chunkRoot: join(root, 'chunks'), limits: DEFAULT_LIMITS,
-      parseTimeoutMs: 10_000, unitTimeoutMs: 10_000, workerMemoryMb: 128, workerRssMb: 512,
+      id: randomUUID(),
+      fileId: identity.fileId,
+      path: join(root, 'source.pptx'),
+      width: 960,
+      parserVersion: 'sql',
+      parserFingerprint: 'source-build',
+      baseUrl: 'http://localhost',
+      format: 'pptx',
+      chunkRoot: join(root, 'chunks'),
+      limits: DEFAULT_LIMITS,
+      parseTimeoutMs: 10_000,
+      unitTimeoutMs: 10_000,
+      workerMemoryMb: 128,
+      workerRssMb: 512,
     }
     await writeFile(input.path, Buffer.from(await createBlankPptx()))
     const disk = new ArtifactGenerations(root)
@@ -124,8 +162,10 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     const second = new ArtifactCoordinator(b, disk, 5)
     cleanups.push(() => Promise.all([first.close(), second.close()]).then(() => undefined))
     const modelIdentity = ArtifactSession.identity(input)
-    const build = (coordinator: ArtifactCoordinator) => coordinator.getOrBuild(modelIdentity,
-      (writer, signal) => ArtifactSession.build(store, input, writer, queue, signal))
+    const build = (coordinator: ArtifactCoordinator) =>
+      coordinator.getOrBuild(modelIdentity, (writer, signal) =>
+        ArtifactSession.build(store, input, writer, queue, signal),
+      )
     const results = await Promise.all([build(first), build(second)])
     expect(results[0].contentDigest).toBe(results[1].contentDigest)
     expect(store.stats.sourceParsesStarted).toBe(1)
@@ -135,8 +175,10 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     const session = await ArtifactSession.openPinned(handle, store, input, queue)
     try {
       await rm(input.path)
-      expect((await session.unit('0') as { slide: unknown }).slide).toBeDefined()
-    } finally { await session.dispose() }
+      expect(((await session.unit('0')) as { slide: unknown }).slide).toBeDefined()
+    } finally {
+      await session.dispose()
+    }
     expect(await dependency.read('document')).toMatchObject({ model: { format: 'pptx' } })
     await dependency.close()
     expect(queue.memorySnapshot.reservedMb).toBe(0)
@@ -162,17 +204,26 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
 
   it('deduplicates concurrent independent pools and protects source references', async () => {
     const { db, a, b } = await setup()
-    const claims = await Promise.all(Array.from({ length: 12 }, (_, index) =>
-      (index % 2 ? a : b).claim(identity, `owner-${index}`)))
+    const claims = await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        (index % 2 ? a : b).claim(identity, `owner-${index}`),
+      ),
+    )
     expect(claims.filter((claim) => claim.kind === 'acquired')).toHaveLength(1)
     expect(claims.filter((claim) => claim.kind === 'busy')).toHaveLength(11)
     const lease = acquired(claims.find((claim) => claim.kind === 'acquired')!)
-    await expect(db.pool.execute('DELETE FROM parse_files WHERE file_id = ?', [identity.fileId]))
-      .rejects.toMatchObject({ code: 'ER_ROW_IS_REFERENCED_2' })
+    await expect(
+      db.pool.execute('DELETE FROM parse_files WHERE file_id = ?', [identity.fileId]),
+    ).rejects.toMatchObject({ code: 'ER_ROW_IS_REFERENCED_2' })
     expect(await a.complete(lease, summary)).toBe(true)
-    expect(await b.claim(identity, 'reader')).toMatchObject({ kind: 'ready', artifact: {
-      generation: 1, storagePath: artifactGenerationPath(lease.key, 1), ...summary,
-    } })
+    expect(await b.claim(identity, 'reader')).toMatchObject({
+      kind: 'ready',
+      artifact: {
+        generation: 1,
+        storagePath: artifactGenerationPath(lease.key, 1),
+        ...summary,
+      },
+    })
   })
 
   it('takes over expired leases and fences every stale mutation, even when the owner name repeats', async () => {
@@ -189,7 +240,10 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     expect(await a.fail(old, 'late_failure')).toBe(false)
     expect(await b.renew(next)).toBe(true)
     expect(await b.complete(next, summary)).toBe(true)
-    expect(await a.claim(identity, 'reader')).toMatchObject({ kind: 'ready', artifact: { generation: 2 } })
+    expect(await a.claim(identity, 'reader')).toMatchObject({
+      kind: 'ready',
+      artifact: { generation: 2 },
+    })
   })
 
   it('serves the previous ready generation while rebuilding and after rebuild failure', async () => {
@@ -198,14 +252,23 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     expect(await a.complete(first, summary)).toBe(true)
     const rebuild = acquired(await a.claim(identity, 'rebuild', true))
     expect(rebuild.generation).toBe(2)
-    expect(await b.claim(identity, 'reader')).toMatchObject({ kind: 'ready', artifact: { generation: 1 } })
+    expect(await b.claim(identity, 'reader')).toMatchObject({
+      kind: 'ready',
+      artifact: { generation: 1 },
+    })
     expect(await b.claim(identity, 'other-builder', true)).toMatchObject({ kind: 'busy' })
     expect(await a.fail(rebuild, 'disk_full')).toBe(true)
-    expect(await b.claim(identity, 'reader')).toMatchObject({ kind: 'ready', artifact: { generation: 1 } })
+    expect(await b.claim(identity, 'reader')).toMatchObject({
+      kind: 'ready',
+      artifact: { generation: 1 },
+    })
     const retry = acquired(await b.claim(identity, 'retry', true))
     expect(retry.generation).toBe(3)
     expect(await b.complete(retry, { ...summary, bytes: 200 })).toBe(true)
-    expect(await a.claim(identity, 'reader')).toMatchObject({ kind: 'ready', artifact: { generation: 3, bytes: 200 } })
+    expect(await a.claim(identity, 'reader')).toMatchObject({
+      kind: 'ready',
+      artifact: { generation: 3, bytes: 200 },
+    })
   })
 
   it('rolls readiness back if the job transition fails after artifact update', async () => {
@@ -215,7 +278,9 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
       BEGIN IF NEW.state = 'ready' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'injected'; END IF; END`)
     await expect(a.complete(lease, summary)).rejects.toMatchObject({ sqlState: '45000' })
     const [rows] = await db.pool.query<mysql.RowDataPacket[]>(
-      'SELECT ready_generation, state FROM parse_artifacts WHERE artifact_key = ?', [artifactKey(identity)])
+      'SELECT ready_generation, state FROM parse_artifacts WHERE artifact_key = ?',
+      [artifactKey(identity)],
+    )
     expect(rows[0]).toMatchObject({ ready_generation: null, state: 'building' })
     expect(await a.renew(lease)).toBe(true)
     await db.pool.query('DROP TRIGGER catalog_fail_ready')
@@ -230,8 +295,12 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     const old = acquired(await a.claim(identity, 'old'))
     let release!: () => void
     let arrived!: () => void
-    const gate = new Promise<void>((resolve) => { release = resolve })
-    const observed = new Promise<void>((resolve) => { arrived = resolve })
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const observed = new Promise<void>((resolve) => {
+      arrived = resolve
+    })
     const oldPublication = disk.publish(identity, old.generation, async (writer) => {
       arrived()
       await gate
@@ -239,7 +308,9 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     })
     try {
       await observed
-      await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [old.key])
+      await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [
+        old.key,
+      ])
       const next = acquired(await b.claim(identity, 'new'))
       const published = await disk.publish(identity, next.generation, async (writer) => {
         await writer.append('unit:0', { text: 'current' })
@@ -254,7 +325,10 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
       expect(claim.artifact.generation).toBe(next.generation)
       expect(await (await disk.open(claim.artifact)).read('unit:0')).toEqual({ text: 'current' })
       expect(await (await disk.open(late)).read('unit:0')).toEqual({ text: 'obsolete' })
-    } finally { release(); await oldPublication.catch(() => undefined) }
+    } finally {
+      release()
+      await oldPublication.catch(() => undefined)
+    }
   })
 
   it('coordinates independent pools with heartbeat renewal and detached reader cancellation', async () => {
@@ -270,7 +344,9 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
       await rm(root, { recursive: true, force: true })
     })
     let arrived!: () => void
-    const started = new Promise<void>((resolve) => { arrived = resolve })
+    const started = new Promise<void>((resolve) => {
+      arrived = resolve
+    })
     const reader = new AbortController()
     const build = vi.fn(async (writer, signal) => {
       arrived()
@@ -280,7 +356,9 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     const cancelled = first.getOrBuild(identity, build, reader.signal)
     const rejected = expect(cancelled).rejects.toMatchObject({ name: 'AbortError' })
     await started
-    const duplicate = vi.fn(async () => { throw new Error('duplicate source build') })
+    const duplicate = vi.fn(async () => {
+      throw new Error('duplicate source build')
+    })
     const waiting = second.getOrBuild(identity, duplicate)
     reader.abort()
     await rejected
@@ -288,7 +366,10 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     expect(build).toHaveBeenCalledTimes(1)
     expect(duplicate).not.toHaveBeenCalled()
     expect(renew.mock.calls.length).toBeGreaterThan(1)
-    expect(await catalog.claim(identity, 'reader')).toMatchObject({ kind: 'ready', artifact: { generation: 1 } })
+    expect(await catalog.claim(identity, 'reader')).toMatchObject({
+      kind: 'ready',
+      artifact: { generation: 1 },
+    })
   }, 15_000)
 
   it('pins an immutable generation and renews old readers across a new publication', async () => {
@@ -315,8 +396,9 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     expect(await (await disk.open(newer!.artifact)).read('unit:0')).toEqual({ text: 'new reader' })
     expect(await a.releaseRead({ ...pinned!.lease, owner: 'wrong-owner' })).toBe(false)
     expect(await a.renewRead({ ...pinned!.lease, generation: 2 })).toBe(false)
-    await expect(db.pool.execute('DELETE FROM parse_artifacts WHERE artifact_key = ?', [first.key]))
-      .rejects.toMatchObject({ code: 'ER_ROW_IS_REFERENCED_2' })
+    await expect(
+      db.pool.execute('DELETE FROM parse_artifacts WHERE artifact_key = ?', [first.key]),
+    ).rejects.toMatchObject({ code: 'ER_ROW_IS_REFERENCED_2' })
     expect(await b.releaseRead(pinned!.lease)).toBe(true)
     expect(await b.releaseRead(pinned!.lease)).toBe(false)
     expect(await a.releaseRead(newer!.lease)).toBe(true)
@@ -328,10 +410,14 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     const build = acquired(await a.claim(identity, 'builder'))
     await a.complete(build, summary)
     const old = (await a.pin(build.key, 'same-reader'))!
-    await db.pool.execute('UPDATE parse_artifact_read_leases SET lease_until = 0 WHERE id = ?', [old.lease.id])
+    await db.pool.execute('UPDATE parse_artifact_read_leases SET lease_until = 0 WHERE id = ?', [
+      old.lease.id,
+    ])
     expect(await b.renewRead(old.lease)).toBe(false)
     const [expired] = await db.pool.query<mysql.RowDataPacket[]>(
-      'SELECT COUNT(*) AS count FROM parse_artifact_read_leases WHERE id = ?', [old.lease.id])
+      'SELECT COUNT(*) AS count FROM parse_artifact_read_leases WHERE id = ?',
+      [old.lease.id],
+    )
     expect(expired[0].count).toBe(0)
     const next = (await b.pin(build.key, 'same-reader'))!
     expect(next.lease.id).not.toBe(old.lease.id)
@@ -355,8 +441,11 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     expect(pinned!.lease.generation).toBe(pinned!.artifact.generation)
     expect(pinned!.artifact.bytes).toBe(pinned!.lease.generation === 1 ? 100 : 200)
     expect(await a.renewRead(pinned!.lease)).toBe(true)
-    const readers = await Promise.all(Array.from({ length: 12 }, (_, index) =>
-      (index % 2 ? a : b).pin(first.key, 'parallel-reader')))
+    const readers = await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        (index % 2 ? a : b).pin(first.key, 'parallel-reader'),
+      ),
+    )
     expect(new Set(readers.map((reader) => reader!.lease.id)).size).toBe(12)
     expect(readers.every((reader) => reader!.lease.generation === 2)).toBe(true)
     await Promise.all(readers.map((reader) => b.releaseRead(reader!.lease)))
@@ -413,7 +502,9 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     expect(await newer.read('unit:0')).toEqual({ text: 'new' })
     await newer.close()
     const [rows] = await db.pool.query<mysql.RowDataPacket[]>(
-      'SELECT COUNT(*) AS count FROM parse_artifact_read_leases WHERE artifact_key = ?', [first.key])
+      'SELECT COUNT(*) AS count FROM parse_artifact_read_leases WHERE artifact_key = ?',
+      [first.key],
+    )
     expect(rows[0].count).toBe(0)
   }, 15_000)
 
@@ -423,13 +514,17 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     cleanups.push(() => rm(root, { recursive: true, force: true }))
     const disk = new ArtifactGenerations(root)
     const first = acquired(await a.claim(identity, 'builder'))
-    const old = await disk.publish(identity, 1, async (writer) => { await writer.append('unit:0', { text: 'old' }) })
+    const old = await disk.publish(identity, 1, async (writer) => {
+      await writer.append('unit:0', { text: 'old' })
+    })
     await a.complete(first, old)
     expect(await disk.collect(first.key, 1, b)).toBe(false) // Current ready cannot be retired.
     const reader = (await b.pin(first.key, 'old-reader'))!
     const next = acquired(await a.claim(identity, 'rebuild', true))
     expect(await a.retireGeneration(first.key, next.generation)).toBe(false) // Live builder.
-    const fresh = await disk.publish(identity, next.generation, async (writer) => { await writer.append('unit:0', { text: 'new' }) })
+    const fresh = await disk.publish(identity, next.generation, async (writer) => {
+      await writer.append('unit:0', { text: 'new' })
+    })
     await a.complete(next, fresh)
     expect(await disk.collect(first.key, 1, a)).toBe(false) // Live old reader.
     expect(await b.renewRead(reader.lease)).toBe(true)
@@ -442,8 +537,9 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     await expect(disk.open(old)).rejects.toThrow('generation missing')
     expect(await a.retireGeneration(first.key, 3)).toBe(false)
     await b.releaseRead(newer.lease)
-    await expect(db.pool.execute('DELETE FROM parse_artifacts WHERE artifact_key = ?', [first.key]))
-      .rejects.toMatchObject({ code: 'ER_ROW_IS_REFERENCED_2' }) // Retirement history fences counter reuse.
+    await expect(
+      db.pool.execute('DELETE FROM parse_artifacts WHERE artifact_key = ?', [first.key]),
+    ).rejects.toMatchObject({ code: 'ER_ROW_IS_REFERENCED_2' }) // Retirement history fences counter reuse.
   })
 
   it('retirement prunes expired readers and rollback never permits physical deletion', async () => {
@@ -452,17 +548,25 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     cleanups.push(() => rm(root, { recursive: true, force: true }))
     const disk = new ArtifactGenerations(root)
     const first = acquired(await a.claim(identity, 'builder'))
-    const old = await disk.publish(identity, 1, async (writer) => { await writer.append('unit:0', { text: 'keep on rollback' }) })
+    const old = await disk.publish(identity, 1, async (writer) => {
+      await writer.append('unit:0', { text: 'keep on rollback' })
+    })
     await a.complete(first, old)
     const reader = (await b.pin(first.key, 'reader'))!
     const next = acquired(await a.claim(identity, 'next', true))
     await a.complete(next, summary)
-    await db.pool.execute('UPDATE parse_artifact_read_leases SET lease_until = 0 WHERE id = ?', [reader.lease.id])
-    await db.pool.query(`CREATE TRIGGER retirement_failure BEFORE INSERT ON parse_artifact_retirements
+    await db.pool.execute('UPDATE parse_artifact_read_leases SET lease_until = 0 WHERE id = ?', [
+      reader.lease.id,
+    ])
+    await db.pool
+      .query(`CREATE TRIGGER retirement_failure BEFORE INSERT ON parse_artifact_retirements
       FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'retirement failed'`)
     await expect(disk.collect(first.key, 1, a)).rejects.toMatchObject({ sqlState: '45000' })
     expect(await (await disk.open(old)).read('unit:0')).toEqual({ text: 'keep on rollback' })
-    const [rows] = await db.pool.query<mysql.RowDataPacket[]>('SELECT id FROM parse_artifact_read_leases WHERE id = ?', [reader.lease.id])
+    const [rows] = await db.pool.query<mysql.RowDataPacket[]>(
+      'SELECT id FROM parse_artifact_read_leases WHERE id = ?',
+      [reader.lease.id],
+    )
     expect(rows).toHaveLength(1)
     await db.pool.query('DROP TRIGGER retirement_failure')
     expect(await disk.collect(first.key, 1, b)).toBe(true)
@@ -477,32 +581,49 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     const old = acquired(await a.claim(identity, 'old'))
     let release!: () => void
     let arrived!: () => void
-    const gate = new Promise<void>((resolve) => { release = resolve })
-    const started = new Promise<void>((resolve) => { arrived = resolve })
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const started = new Promise<void>((resolve) => {
+      arrived = resolve
+    })
     const late = disk.publish(identity, 1, async (writer) => {
-      arrived(); await gate
+      arrived()
+      await gate
       await writer.append('unit:0', { text: 'late orphan' })
     })
     try {
       await started
-      await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [old.key])
+      await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [
+        old.key,
+      ])
       expect(await disk.collect(old.key, 1, b)).toBe(true)
       // Even restoring the old lease fields cannot bypass the irreversible retirement fence.
-      await db.pool.execute(`UPDATE parse_jobs SET state = 'building', lease_owner = ?, lease_until = ?
-        WHERE artifact_key = ?`, [old.owner, Date.now() + 60_000, old.key])
+      await db.pool.execute(
+        `UPDATE parse_jobs SET state = 'building', lease_owner = ?, lease_until = ?
+        WHERE artifact_key = ?`,
+        [old.owner, Date.now() + 60_000, old.key],
+      )
       expect(await a.renew(old)).toBe(false)
       expect(await a.complete(old, summary)).toBe(false)
-      await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [old.key])
+      await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [
+        old.key,
+      ])
       const next = acquired(await b.claim(identity, 'new'))
       expect(next.generation).toBe(2)
-      const current = await disk.publish(identity, 2, async (writer) => { await writer.append('unit:0', { text: 'current' }) })
+      const current = await disk.publish(identity, 2, async (writer) => {
+        await writer.append('unit:0', { text: 'current' })
+      })
       await b.complete(next, current)
       release()
       await late
       expect(await a.complete(old, summary)).toBe(false)
       expect(await disk.collect(old.key, 1, a)).toBe(true)
       expect(await (await disk.open(current)).read('unit:0')).toEqual({ text: 'current' })
-    } finally { release(); await late.catch(() => undefined) }
+    } finally {
+      release()
+      await late.catch(() => undefined)
+    }
   })
 
   it('discovers and collects retired candidates in bounded passes without starving behind readers or ready data', async () => {
@@ -527,7 +648,9 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     await a.complete(next, current)
     const abandoned = acquired(await a.claim(identity, 'abandoned', true))
     await publish(3)
-    await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [first.key])
+    await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [
+      first.key,
+    ])
     const sweeper = new ArtifactGenerationSweeper(disk, a)
     expect(await sweeper.sweep(1)).toMatchObject({ examined: 1, protected: 1, collected: 0 })
     expect(await sweeper.sweep(1)).toMatchObject({ examined: 1, protected: 1, collected: 0 })
@@ -535,7 +658,12 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     expect(await sweeper.sweep(1)).toMatchObject({ examined: 0, hasMore: false })
     expect(await a.complete(abandoned, summary)).toBe(false)
     await b.releaseRead(reader.lease)
-    expect(await sweeper.sweep()).toMatchObject({ examined: 2, protected: 1, collected: 1, failed: 0 })
+    expect(await sweeper.sweep()).toMatchObject({
+      examined: 2,
+      protected: 1,
+      collected: 1,
+      failed: 0,
+    })
     expect(await (await disk.open(current)).read('unit:0')).toEqual({ generation: 2 })
     await expect(disk.open(old)).rejects.toThrow('generation missing')
     expect(await new ArtifactStore(root).totalBytes()).toBe(current.bytes)
@@ -545,22 +673,39 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     const stale = acquired(await a.claim(identity, 'stale-builder'))
     const liveIdentity = { ...identity, options: { variant: 'live' } }
     const live = acquired(await a.claim(liveIdentity, 'live-builder'))
-    await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [stale.key])
+    await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [
+      stale.key,
+    ])
 
     const result = await a.recoverExpiredBuilds()
     expect(result).toEqual({ examined: 1, requeued: 1 })
     const [jobs] = await db.pool.query(
       'SELECT artifact_key, state, lease_owner, lease_until FROM parse_jobs WHERE artifact_key IN (?, ?) ORDER BY artifact_key',
-      [stale.key, live.key])
-    const staleJob = (jobs as Array<{ artifact_key: string; state: string; lease_owner: string | null; lease_until: number | null }>)
-      .find((row) => row.artifact_key === stale.key)!
+      [stale.key, live.key],
+    )
+    const staleJob = (
+      jobs as Array<{
+        artifact_key: string
+        state: string
+        lease_owner: string | null
+        lease_until: number | null
+      }>
+    ).find((row) => row.artifact_key === stale.key)!
     expect(staleJob).toMatchObject({ state: 'queued', lease_owner: null, lease_until: null })
-    expect((jobs as Array<{ artifact_key: string; state: string }>)
-      .find((row) => row.artifact_key === live.key)).toMatchObject({ state: 'building' })
+    expect(
+      (jobs as Array<{ artifact_key: string; state: string }>).find(
+        (row) => row.artifact_key === live.key,
+      ),
+    ).toMatchObject({ state: 'building' })
     const [artifacts] = await db.pool.query(
-      'SELECT artifact_key, state FROM parse_artifacts WHERE artifact_key IN (?, ?)', [stale.key, live.key])
-    expect((artifacts as Array<{ artifact_key: string; state: string }>)
-      .find((row) => row.artifact_key === stale.key)!.state).toBe('queued')
+      'SELECT artifact_key, state FROM parse_artifacts WHERE artifact_key IN (?, ?)',
+      [stale.key, live.key],
+    )
+    expect(
+      (artifacts as Array<{ artifact_key: string; state: string }>).find(
+        (row) => row.artifact_key === stale.key,
+      )!.state,
+    ).toBe('queued')
 
     // The requeued job is claimable again with a fresh generation.
     const retried = acquired(await a.claim(identity, 'after-restart'))
@@ -571,12 +716,18 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     const built = acquired(await a.claim(readyIdentity, 'builder'))
     expect(await a.complete(built, summary)).toBe(true)
     const rebuild = acquired(await a.claim(readyIdentity, 'rebuilder', true))
-    await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [rebuild.key])
+    await db.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [
+      rebuild.key,
+    ])
     expect((await a.recoverExpiredBuilds()).requeued).toBe(1)
     const [ready] = await db.pool.query(
-      'SELECT state, ready_generation FROM parse_artifacts WHERE artifact_key = ?', [rebuild.key])
-    expect((ready as Array<{ state: string; ready_generation: number }>)[0])
-      .toMatchObject({ state: 'ready', ready_generation: 1 })
+      'SELECT state, ready_generation FROM parse_artifacts WHERE artifact_key = ?',
+      [rebuild.key],
+    )
+    expect((ready as Array<{ state: string; ready_generation: number }>)[0]).toMatchObject({
+      state: 'ready',
+      ready_generation: 1,
+    })
   })
 
   it('records a deliberate cancellation as cancelled, not failed and never ready', async () => {
@@ -584,11 +735,17 @@ describe.skipIf(!socketPath)('artifact catalog with isolated real MySQL', () => 
     const lease = acquired(await a.claim(identity, 'cancel-writer'))
     expect(await a.cancel(lease)).toBe(true)
     const [jobs] = await db.pool.query(
-      'SELECT state, error_code FROM parse_jobs WHERE artifact_key = ?', [lease.key])
-    expect((jobs as Array<{ state: string; error_code: string }>)[0])
-      .toMatchObject({ state: 'cancelled', error_code: 'build_cancelled' })
+      'SELECT state, error_code FROM parse_jobs WHERE artifact_key = ?',
+      [lease.key],
+    )
+    expect((jobs as Array<{ state: string; error_code: string }>)[0]).toMatchObject({
+      state: 'cancelled',
+      error_code: 'build_cancelled',
+    })
     const [artifacts] = await db.pool.query(
-      'SELECT state FROM parse_artifacts WHERE artifact_key = ?', [lease.key])
+      'SELECT state FROM parse_artifacts WHERE artifact_key = ?',
+      [lease.key],
+    )
     expect((artifacts as Array<{ state: string }>)[0].state).toBe('cancelled')
     // A cancelled lease cannot publish, and the next claim still gets a fresh generation.
     expect(await a.complete(lease, summary)).toBe(false)

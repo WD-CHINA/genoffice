@@ -1,6 +1,4 @@
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -9,16 +7,16 @@ import { expect } from '@playwright/test'
 import { openPptx, materializeSlide, duplicateSlide, savePptx } from '@genoffice/pptx-engine'
 import { createParseServer } from '../../parse-server/src/server.ts'
 import { root } from './paths.mjs'
+import { createAndroidTestDevice } from './android-test-device.mjs'
 
-const run = promisify(execFile)
-const adb = async (...args: string[]) => (await run('adb', args)).stdout.trim()
 const duration = Number(process.env.SOAK_SECONDS || '0')
 assert.ok(Number.isFinite(duration) && duration >= 0)
 const output = process.env.RESILIENCE_REPORT || '/tmp/genoffice-android-offline-resilience.json'
 const dir = await mkdtemp(join(tmpdir(), 'android-viewer-offline-'))
 const backend = await createParseServer({ dataDir: dir })
-const port = new URL(backend.url).port
 const debugPort = process.env.ANDROID_DEBUG_PORT || '9223'
+const device = createAndroidTestDevice([backend.url], Number(debugPort))
+const adb = async (...args: string[]) => device.adb(...args).trim()
 let backendClosed = false
 let browser: Awaited<ReturnType<typeof chromium.connectOverCDP>> | undefined
 const report: any = {
@@ -47,7 +45,7 @@ try {
   const { fileId } = (await uploaded.json()) as { fileId: string }
   report.fileId = fileId
   await save()
-  await adb('reverse', `tcp:${port}`, `tcp:${port}`)
+  device.access()
   await adb('shell', 'am', 'force-stop', 'com.genoffice.viewerdemo')
   await adb(
     'shell',
@@ -100,15 +98,40 @@ try {
   await expect(page.getByLabel('开始放映')).toBeVisible({ timeout: 90_000 })
   await backend.close()
   backendClosed = true
-  await adb('reverse', '--remove', `tcp:${port}`)
+  device.disconnect()
   const faults: string[] = []
   page.on('pageerror', (e) => faults.push(e.message))
   page.on('request', (request) => {
     if (/^https?:/.test(request.url()) && new URL(request.url()).hostname !== '127.0.0.1')
       faults.push(`external request ${request.url()}`)
   })
+  const localOrigin = new URL(page.url()).origin
+  const compatibilityResponses: Record<string, number> = {}
+  let replaySessions = 0
   page.on('response', (response) => {
-    if (response.status() >= 400) faults.push(`${response.status()} ${response.url()}`)
+    const url = new URL(response.url())
+    const method = response.request().method()
+    const status = response.status()
+    if (
+      url.origin === localOrigin &&
+      method === 'POST' &&
+      url.pathname === '/v1/sessions' &&
+      status < 300
+    )
+      replaySessions++
+    if (status < 400) return
+    const key = `${method} ${url.pathname} ${status}`
+    // The local v1 replay server intentionally rejects v2 discovery and heartbeat.
+    if (
+      url.origin === localOrigin &&
+      [
+        'GET /v2/capabilities 404',
+        'POST /v2/sessions 405',
+        'POST /v2/sessions/local/heartbeat 405',
+      ].includes(key)
+    )
+      compatibilityResponses[key] = (compatibilityResponses[key] ?? 0) + 1
+    else faults.push(`${status} ${response.url()}`)
   })
   // Reopen all model/font/image requests with the parse service shut down.
   await page.reload()
@@ -125,6 +148,8 @@ try {
   for (let index = 0; index < 40; index++) await jump(1 + ((index * 7) % 50))
   await page.waitForTimeout(2000)
   assert.deepEqual(faults, [])
+  assert.ok(replaySessions > 0, 'offline reload must open a real local v1 replay session')
+  report.compatibilityResponses = compatibilityResponses
   report.offlineReload = 'passed'
   report.rapidJumps = 40
   const cdp = await page.context().newCDPSession(page)
@@ -153,7 +178,7 @@ try {
     index++
     if ((Date.now() - start) / 1000 >= duration) break
     await page.waitForTimeout(Math.min(30_000, duration * 1000 - (Date.now() - start)))
-  } while (true)
+  } while ((Date.now() - start) / 1000 < duration)
   report.status = 'passed'
   report.elapsedSoakSeconds = (Date.now() - start) / 1000
   report.completedAt = new Date().toISOString()
@@ -165,9 +190,8 @@ try {
   await save()
   throw error
 } finally {
+  device.restore()
   await browser?.close()
   if (!backendClosed) await backend.close()
-  await adb('reverse', '--remove', `tcp:${port}`).catch(() => undefined)
-  await adb('forward', '--remove', `tcp:${debugPort}`).catch(() => undefined)
   await rm(dir, { recursive: true, force: true })
 }

@@ -1,8 +1,7 @@
+import { json } from './helpers/session-probes.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { DocxRemoteSession } from '../src/web/docx-remote-session.ts'
-
-const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status })
 
 test('expired unit reopens once and resumes the same cursor without duplicating committed chunks', async (context) => {
   let creations = 0
@@ -67,7 +66,15 @@ test('failed chunk batch leaves cursor retryable and concurrent reads share one 
     assert.equal(a, session.load())
     await assert.rejects(a, /HTTP 500/)
     fail = false
-    assert.deepEqual(await session.load(), { blocks: ['a', 'b'], units: [{ id: '0', blocks: ['a'] }, { id: '1', blocks: ['b'] }], next: 'two', hasMore: true })
+    assert.deepEqual(await session.load(), {
+      blocks: ['a', 'b'],
+      units: [
+        { id: '0', blocks: ['a'] },
+        { id: '1', blocks: ['b'] },
+      ],
+      next: 'two',
+      hasMore: true,
+    })
     assert.equal(listings, 2)
   } finally {
     session.close()
@@ -155,8 +162,12 @@ test('random access retries failures, bounds repeated expiry and fences late rea
   let creations = 0
   let release!: () => void
   let arrived!: () => void
-  const observed = new Promise<void>((resolve) => { arrived = resolve })
-  const gate = new Promise<void>((resolve) => { release = resolve })
+  const observed = new Promise<void>((resolve) => {
+    arrived = resolve
+  })
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
   context.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit = {}) => {
     if (init.method === 'DELETE') return new Response(null, { status: 204 })
     if (init.method === 'POST') return json({ sessionId: `s${++creations}`, state: 'ready' }, 201)
@@ -193,7 +204,12 @@ test('failed layout preparation leaves units uncommitted and cursor retryable', 
   })
   const session = new DocxRemoteSession({ server: 'http://parse', fileId: 'file' }, async () => {})
   try {
-    await assert.rejects(session.load(undefined, async () => { throw new Error('layout failed') }), /layout failed/)
+    await assert.rejects(
+      session.load(undefined, async () => {
+        throw new Error('layout failed')
+      }),
+      /layout failed/,
+    )
     let prepared = 0
     const chunk = await session.load(undefined, async (units) => {
       prepared = units[0].blocks.length
@@ -209,8 +225,12 @@ test('failed layout preparation leaves units uncommitted and cursor retryable', 
 test('leaving a window cancels obsolete reads and their late bodies cannot overwrite fresh chunks', async (context) => {
   let release!: () => void
   let arrived!: () => void
-  const gate = new Promise<void>((resolve) => { release = resolve })
-  const observed = new Promise<void>((resolve) => { arrived = resolve })
+  const gate = new Promise<void>((resolve) => {
+    release = resolve
+  })
+  const observed = new Promise<void>((resolve) => {
+    arrived = resolve
+  })
   let reads = 0
   let oldSignal: AbortSignal | undefined
   context.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit = {}) => {

@@ -1,5 +1,7 @@
 # DOCX 服务端流式切 block + 前端虚拟分页 Spike 报告
 
+> 本文保留原设计或当时验证条件；当前三端职责、已知边界与测试入口请参阅[架构主文档](runtime-workflows.zh-CN.md)、[运行边界](runtime-boundaries.zh-CN.md)和[测试指南](testing-guide.zh-CN.md)。历史数字不自动代表当前结果。
+
 > 日期：2026-11-04
 > 范围：只验证可行性，不接入生产 Viewer，不承诺 1GB。
 > 结论：服务端流式切 block 通过；Tiptap 按页挂载的内存信号通过，但行为 parity 和真实 DOM 分页尚未验证，因此暂不启动 1GB DOCX。

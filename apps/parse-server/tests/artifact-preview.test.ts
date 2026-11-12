@@ -1,3 +1,4 @@
+import { serverRoot } from './helpers/paths'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -78,7 +79,7 @@ for (const fixture of ['image.docx', 'font.docx', 'table.docx']) {
     const first = await setup()
     const parse = vi.spyOn(DocxSession, 'open')
     const uploaded = await first.upload(
-      await readFile(join(process.cwd(), 'tests/fixtures/docx', fixture)),
+      await readFile(join(serverRoot, 'tests/fixtures/docx', fixture)),
     )
     const session = await first.open(uploaded.fileId)
     expect(parse).toHaveBeenCalledTimes(1)

@@ -1,6 +1,5 @@
 package com.genoffice.viewerdemo;
 
-import android.test.InstrumentationTestCase;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.File;
@@ -12,10 +11,10 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 
 /** DOCX replay stays wholly local and sealed model bytes remain immutable. */
-public class DocxOfflineTest extends InstrumentationTestCase {
+public class DocxOfflineTest extends AndroidTestSupport {
     private File root;
     @Override protected void setUp() throws Exception {
-        root = Files.createTempDirectory(getInstrumentation().getTargetContext().getCacheDir().toPath(), "word-offline-test").toFile();
+        root = temporaryRoot("word-offline-test");
     }
     @Override protected void tearDown() { delete(root); }
     private BundleStore fixture() throws Exception {
@@ -65,23 +64,4 @@ public class DocxOfflineTest extends InstrumentationTestCase {
         store = fixture(); store.resourceFile("styles.json").delete();
         try { store.verifyIntegrity(); fail("Word styles are required"); } catch (IOException expected) { }
     }
-    private static String request(String url, String method, String body, int expected) throws Exception {
-        HttpURLConnection connection = (HttpURLConnection) new URL(url).openConnection();
-        connection.setRequestMethod(method); connection.setConnectTimeout(5000); connection.setReadTimeout(5000);
-        try {
-            if (body != null) { connection.setDoOutput(true); connection.getOutputStream().write(body.getBytes(StandardCharsets.UTF_8)); }
-            if (connection.getResponseCode() != expected) throw new IOException("unexpected local HTTP status " + connection.getResponseCode());
-            InputStream input = expected >= 400 ? connection.getErrorStream() : connection.getInputStream();
-            try (InputStream stream = input) { return stream == null ? "" : new String(read(stream), StandardCharsets.UTF_8); }
-        } finally { connection.disconnect(); }
-    }
-    private static byte[] read(InputStream input) throws IOException {
-        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream(); byte[] buffer = new byte[8192]; int count;
-        while ((count = input.read(buffer)) != -1) output.write(buffer, 0, count);
-        return output.toByteArray();
-    }
-    private static void write(File file, String value) throws Exception {
-        file.getParentFile().mkdirs(); Files.write(file.toPath(), value.getBytes(StandardCharsets.UTF_8));
-    }
-    private static void delete(File file) { File[] children = file.listFiles(); if (children != null) for (File child : children) delete(child); file.delete(); }
 }

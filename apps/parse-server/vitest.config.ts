@@ -5,5 +5,7 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     environment: 'node',
     testTimeout: 20_000,
+    // Teardown must cover the service's 30-second shutdown deadline.
+    hookTimeout: 35_000,
   },
 })

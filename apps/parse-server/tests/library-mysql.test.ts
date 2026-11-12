@@ -1,5 +1,16 @@
+import { drainCleanups } from './helpers/cleanup'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, mkdir, open, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
+import {
+  mkdtemp,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import mysql, { type Connection } from 'mysql2/promise'
@@ -18,7 +29,7 @@ import { createBlankPptx } from '@genoffice/pptx-engine'
 const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
-  while (cleanups.length) await cleanups.pop()!()
+  await drainCleanups(cleanups)
   vi.restoreAllMocks()
 })
 
@@ -68,85 +79,120 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
     return { start, request, post, dataDir }
   }
 
-  it.each(['pptx', 'docx'] as const)('serves catalog-backed %s HTTP sessions and restores without reparsing', async (format) => {
-    const harness = await setup()
-    const options = { artifactBackend: 'catalog' as const, contentTtlMs: 24 * 60 * 60_000 }
-    const first = await harness.start(options)
-    const body = format === 'pptx' ? Buffer.from(await createBlankPptx())
-      : await readFile(new URL('./fixtures/docx/behavior.docx', import.meta.url))
-    const uploaded = await harness.request(first, '/v1/files', { method: 'POST', body })
-    expect(uploaded.status).toBe(201)
-    const { fileId } = await uploaded.json() as { fileId: string }
-    const parse = vi.spyOn(ArtifactSession, 'build')
-    const response = await harness.post(first, '/v2/sessions', { fileId })
-    expect(response.status).toBe(202)
-    const { sessionId } = await response.json() as { sessionId: string }
-    await expect.poll(async () => (await (await harness.request(first, `/v2/sessions/${sessionId}`)).json() as { state: string }).state,
-      { timeout: 10_000 }).toBe('ready')
-    const rendered = await harness.request(first, `/v1/sessions/${sessionId}/units/0`)
-    expect(rendered.status).toBe(200)
-    const originalUnit = await rendered.json()
-    let originalStyles: unknown
-    if (format === 'docx') {
-      const styles = await harness.request(first, `/v1/sessions/${sessionId}/styles`)
-      expect(styles.status).toBe(200)
-      originalStyles = await styles.json()
-    }
-    expect(parse).toHaveBeenCalledTimes(1)
-    const cached = await harness.post(first, '/v2/sessions', { fileId })
-    expect(cached.status).toBe(201)
-    await cached.json()
-    await first.close()
-    const second = await harness.start(options)
-    const restored = await harness.request(second, `/v1/sessions/${sessionId}/units/0`)
-    expect(restored.status).toBe(200)
-    const restoredUnit = await restored.json()
-    if (format === 'docx') {
-      expect(restoredUnit).toEqual(originalUnit)
-      const styles = await harness.request(second, `/v1/sessions/${sessionId}/styles`)
-      expect(styles.status).toBe(200)
-      expect(await styles.json()).toEqual(originalStyles)
-    }
-    expect(parse).toHaveBeenCalledTimes(1)
-    const [rows] = await second.db!.pool.query<mysql.RowDataPacket[]>('SELECT ready_generation FROM parse_artifacts WHERE file_id = ?', [fileId])
-    expect(rows).toHaveLength(1)
-    expect(Number(rows[0].ready_generation)).toBe(1)
-    await second.close()
-  }, 15_000)
-
-  it.each(['manifest', 'document'] as const)('repairs a corrupt catalog %s on historical HTTP view restoration', async (record) => {
-    const harness = await setup()
-    const options = { artifactBackend: 'catalog' as const, contentTtlMs: 24 * 60 * 60_000 }
-    const first = await harness.start(options)
-    const uploaded = await harness.request(first, '/v1/files', { method: 'POST', body: Buffer.from(await createBlankPptx()) })
-    const { fileId } = await uploaded.json() as { fileId: string }
-    const parse = vi.spyOn(ArtifactSession, 'build')
-    const opened = await harness.post(first, '/v1/sessions', { fileId })
-    expect(opened.status).toBe(201)
-    const { sessionId } = await opened.json() as { sessionId: string }
-    const [rows] = await first.db!.pool.query<mysql.RowDataPacket[]>('SELECT storage_path FROM parse_artifacts WHERE file_id = ?', [fileId])
-    const oldPath = join(harness.dataDir, rows[0].storage_path)
-    await first.close()
-    if (record === 'manifest') await writeFile(join(oldPath, 'manifest.json'), '{}')
-    else {
-      const manifest = JSON.parse(await readFile(join(oldPath, 'manifest.json'), 'utf8')) as {
-        records: Array<{ id: string; offset: number }>
+  it.each(['pptx', 'docx'] as const)(
+    'serves catalog-backed %s HTTP sessions and restores without reparsing',
+    async (format) => {
+      const harness = await setup()
+      const options = { artifactBackend: 'catalog' as const, contentTtlMs: 24 * 60 * 60_000 }
+      const first = await harness.start(options)
+      const body =
+        format === 'pptx'
+          ? Buffer.from(await createBlankPptx())
+          : await readFile(new URL('./fixtures/docx/behavior.docx', import.meta.url))
+      const uploaded = await harness.request(first, '/v1/files', { method: 'POST', body })
+      expect(uploaded.status).toBe(201)
+      const { fileId } = (await uploaded.json()) as { fileId: string }
+      const parse = vi.spyOn(ArtifactSession, 'build')
+      const response = await harness.post(first, '/v2/sessions', { fileId })
+      expect(response.status).toBe(202)
+      const { sessionId } = (await response.json()) as { sessionId: string }
+      await expect
+        .poll(
+          async () =>
+            (
+              (await (await harness.request(first, `/v2/sessions/${sessionId}`)).json()) as {
+                state: string
+              }
+            ).state,
+          { timeout: 10_000 },
+        )
+        .toBe('ready')
+      const rendered = await harness.request(first, `/v1/sessions/${sessionId}/units/0`)
+      expect(rendered.status).toBe(200)
+      const originalUnit = await rendered.json()
+      let originalStyles: unknown
+      if (format === 'docx') {
+        const styles = await harness.request(first, `/v1/sessions/${sessionId}/styles`)
+        expect(styles.status).toBe(200)
+        originalStyles = await styles.json()
       }
-      const document = manifest.records.find((item) => item.id === 'document')!
-      const file = await open(join(oldPath, 'units.bin'), 'r+')
-      try { await file.write(Buffer.from([0]), 0, 1, document.offset); await file.sync() }
-      finally { await file.close() }
-    }
-    const second = await harness.start(options)
-    const rendered = await harness.request(second, `/v1/sessions/${sessionId}/units/0`)
-    expect(rendered.status).toBe(200)
-    await rendered.arrayBuffer()
-    expect(parse).toHaveBeenCalledTimes(2)
-    const [current] = await second.db!.pool.query<mysql.RowDataPacket[]>('SELECT ready_generation FROM parse_artifacts WHERE file_id = ?', [fileId])
-    expect(Number(current[0].ready_generation)).toBe(2)
-    expect((await stat(oldPath)).isDirectory()).toBe(true)
-    await second.close()
-  }, 15_000)
+      expect(parse).toHaveBeenCalledTimes(1)
+      const cached = await harness.post(first, '/v2/sessions', { fileId })
+      expect(cached.status).toBe(201)
+      await cached.json()
+      await first.close()
+      const second = await harness.start(options)
+      const restored = await harness.request(second, `/v1/sessions/${sessionId}/units/0`)
+      expect(restored.status).toBe(200)
+      const restoredUnit = await restored.json()
+      if (format === 'docx') {
+        expect(restoredUnit).toEqual(originalUnit)
+        const styles = await harness.request(second, `/v1/sessions/${sessionId}/styles`)
+        expect(styles.status).toBe(200)
+        expect(await styles.json()).toEqual(originalStyles)
+      }
+      expect(parse).toHaveBeenCalledTimes(1)
+      const [rows] = await second.db!.pool.query<mysql.RowDataPacket[]>(
+        'SELECT ready_generation FROM parse_artifacts WHERE file_id = ?',
+        [fileId],
+      )
+      expect(rows).toHaveLength(1)
+      expect(Number(rows[0].ready_generation)).toBe(1)
+      await second.close()
+    },
+    15_000,
+  )
+
+  it.each(['manifest', 'document'] as const)(
+    'repairs a corrupt catalog %s on historical HTTP view restoration',
+    async (record) => {
+      const harness = await setup()
+      const options = { artifactBackend: 'catalog' as const, contentTtlMs: 24 * 60 * 60_000 }
+      const first = await harness.start(options)
+      const uploaded = await harness.request(first, '/v1/files', {
+        method: 'POST',
+        body: Buffer.from(await createBlankPptx()),
+      })
+      const { fileId } = (await uploaded.json()) as { fileId: string }
+      const parse = vi.spyOn(ArtifactSession, 'build')
+      const opened = await harness.post(first, '/v1/sessions', { fileId })
+      expect(opened.status).toBe(201)
+      const { sessionId } = (await opened.json()) as { sessionId: string }
+      const [rows] = await first.db!.pool.query<mysql.RowDataPacket[]>(
+        'SELECT storage_path FROM parse_artifacts WHERE file_id = ?',
+        [fileId],
+      )
+      const oldPath = join(harness.dataDir, rows[0].storage_path)
+      await first.close()
+      if (record === 'manifest') await writeFile(join(oldPath, 'manifest.json'), '{}')
+      else {
+        const manifest = JSON.parse(await readFile(join(oldPath, 'manifest.json'), 'utf8')) as {
+          records: Array<{ id: string; offset: number }>
+        }
+        const document = manifest.records.find((item) => item.id === 'document')!
+        const file = await open(join(oldPath, 'units.bin'), 'r+')
+        try {
+          await file.write(Buffer.from([0]), 0, 1, document.offset)
+          await file.sync()
+        } finally {
+          await file.close()
+        }
+      }
+      const second = await harness.start(options)
+      const rendered = await harness.request(second, `/v1/sessions/${sessionId}/units/0`)
+      expect(rendered.status).toBe(200)
+      await rendered.arrayBuffer()
+      expect(parse).toHaveBeenCalledTimes(2)
+      const [current] = await second.db!.pool.query<mysql.RowDataPacket[]>(
+        'SELECT ready_generation FROM parse_artifacts WHERE file_id = ?',
+        [fileId],
+      )
+      expect(Number(current[0].ready_generation)).toBe(2)
+      expect((await stat(oldPath)).isDirectory()).toBe(true)
+      await second.close()
+    },
+    15_000,
+  )
 
   it('persists saved history across restart, enforces file references and permits GC after removal', async () => {
     const harness = await setup()
@@ -286,27 +332,41 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
     const options = { contentTtlMs: 24 * 60 * 60_000 }
     const first = await harness.start(options)
     const uploaded = await harness.request(first, '/v1/files', {
-      method: 'POST', body: Buffer.from(await createBlankPptx()),
+      method: 'POST',
+      body: Buffer.from(await createBlankPptx()),
     })
     expect(uploaded.status).toBe(201)
-    const { fileId } = await uploaded.json() as { fileId: string }
+    const { fileId } = (await uploaded.json()) as { fileId: string }
     const opened = await harness.post(first, '/v1/sessions', { fileId })
     expect(opened.status).toBe(201)
-    const { sessionId } = await opened.json() as { sessionId: string }
+    const { sessionId } = (await opened.json()) as { sessionId: string }
     await harness.request(first, `/v1/sessions/${sessionId}`, { method: 'DELETE' })
     const legacy = new ArtifactStore(harness.dataDir)
     const cached = (await legacy.list())[0]
     expect(cached).toBeDefined()
     const model = await cached.read('unit:0')
     const catalog = new MysqlArtifactCatalog(first.db!)
-    const claim = await catalog.claim({ fileId, format: 'pptx', parserFingerprint: 'source-retention', schemaVersion: 2, options: {} }, 'builder')
+    const claim = await catalog.claim(
+      {
+        fileId,
+        format: 'pptx',
+        parserFingerprint: 'source-retention',
+        schemaVersion: 2,
+        options: {},
+      },
+      'builder',
+    )
     if (claim.kind !== 'acquired') throw new Error('expected build lease')
-    await first.db!.pool.execute('UPDATE parse_files SET created_at = ? WHERE file_id = ?',
-      ['2000-01-01T00:00:00.000Z', fileId])
+    await first.db!.pool.execute('UPDATE parse_files SET created_at = ? WHERE file_id = ?', [
+      '2000-01-01T00:00:00.000Z',
+      fileId,
+    ])
     await first.gc()
     expect(await first.store.pathOf(fileId)).not.toBeNull()
     expect(await cached.read('unit:0')).toEqual(model)
-    expect((await harness.request(first, `/v1/files/${fileId}`, { method: 'DELETE' })).status).toBe(409)
+    expect((await harness.request(first, `/v1/files/${fileId}`, { method: 'DELETE' })).status).toBe(
+      409,
+    )
     expect(await catalog.fail(claim.lease, 'parse_failed')).toBe(true)
     await first.close()
     const second = await harness.start(options)
@@ -320,7 +380,9 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
     expect(await new MysqlArtifactCatalog(second.db!).hasFileReference(fileId)).toBe(true)
     expect(await (await legacy.find(cached.manifest.key))!.read('unit:0')).toEqual(model)
     // Removing this unretired test catalog row removes its source reference; normal expiry resumes.
-    await second.db!.pool.execute('DELETE FROM parse_artifacts WHERE artifact_key = ?', [claim.lease.key])
+    await second.db!.pool.execute('DELETE FROM parse_artifacts WHERE artifact_key = ?', [
+      claim.lease.key,
+    ])
     await second.gc()
     expect(await second.store.pathOf(fileId)).toBeNull()
     expect(await legacy.find(cached.manifest.key)).toBeNull()
@@ -331,8 +393,12 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
     const server = await harness.start()
     let release!: () => void
     let arrived!: () => void
-    const gate = new Promise<void>((resolve) => { release = resolve })
-    const started = new Promise<void>((resolve) => { arrived = resolve })
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const started = new Promise<void>((resolve) => {
+      arrived = resolve
+    })
     const list = vi.spyOn(server.store, 'list').mockImplementationOnce(async () => {
       arrived()
       await gate
@@ -348,30 +414,42 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
       expect(end).not.toHaveBeenCalled()
       await server.gc()
       expect(list).toHaveBeenCalledTimes(1)
-    } finally { release(); await Promise.all([gc, closing]) }
+    } finally {
+      release()
+      await Promise.all([gc, closing])
+    }
     expect(end).toHaveBeenCalledTimes(1)
   })
 
   it('keeps MySQL available until a removed view finishes asynchronous disposal', async () => {
     const harness = await setup()
     const server = await harness.start()
-    const uploaded = await harness.request(server, '/v1/files', { method: 'POST', body: Buffer.from(await createBlankPptx()) })
+    const uploaded = await harness.request(server, '/v1/files', {
+      method: 'POST',
+      body: Buffer.from(await createBlankPptx()),
+    })
     expect(uploaded.status).toBe(201)
-    const { fileId } = await uploaded.json() as { fileId: string }
+    const { fileId } = (await uploaded.json()) as { fileId: string }
     const opened = await harness.post(server, '/v1/sessions', { fileId })
     expect(opened.status).toBe(201)
-    const { sessionId } = await opened.json() as { sessionId: string }
+    const { sessionId } = (await opened.json()) as { sessionId: string }
     let release!: () => void
     let arrived!: () => void
-    const gate = new Promise<void>((resolve) => { release = resolve })
-    const started = new Promise<void>((resolve) => { arrived = resolve })
-    const original = ArtifactSession.prototype.dispose
-    const dispose = vi.spyOn(ArtifactSession.prototype, 'dispose').mockImplementationOnce(async function (this: ArtifactSession) {
-      arrived()
-      await gate
-      expect(await server.db!.ping()).toBe(true)
-      await original.call(this)
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
     })
+    const started = new Promise<void>((resolve) => {
+      arrived = resolve
+    })
+    const original = ArtifactSession.prototype.dispose
+    const dispose = vi
+      .spyOn(ArtifactSession.prototype, 'dispose')
+      .mockImplementationOnce(async function (this: ArtifactSession) {
+        arrived()
+        await gate
+        expect(await server.db!.ping()).toBe(true)
+        await original.call(this)
+      })
     const removed = await harness.request(server, `/v1/sessions/${sessionId}`, { method: 'DELETE' })
     expect(removed.status).toBe(204)
     await removed.arrayBuffer()
@@ -382,7 +460,10 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
       await delay(20)
       expect(end).not.toHaveBeenCalled()
       expect(dispose).toHaveBeenCalledTimes(1)
-    } finally { release(); await closing }
+    } finally {
+      release()
+      await closing
+    }
     expect(end).toHaveBeenCalledTimes(1)
   })
 
@@ -390,22 +471,34 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
     const harness = await setup()
     const server = await harness.start({ contentTtlMs: 24 * 60 * 60_000, gcIntervalMs: 30 })
     const uploaded = await harness.request(server, '/v1/files', {
-      method: 'POST', body: Buffer.from('%PDF-1.7\nlive-generation-gc\n%%EOF\n'),
+      method: 'POST',
+      body: Buffer.from('%PDF-1.7\nlive-generation-gc\n%%EOF\n'),
     })
     expect(uploaded.status).toBe(201)
-    const { fileId } = await uploaded.json() as { fileId: string }
+    const { fileId } = (await uploaded.json()) as { fileId: string }
     const catalog = new MysqlArtifactCatalog(server.db!)
-    const identity = { fileId, format: 'pdf' as const, parserFingerprint: 'live-collection', schemaVersion: 2, options: {} }
+    const identity = {
+      fileId,
+      format: 'pdf' as const,
+      parserFingerprint: 'live-collection',
+      schemaVersion: 2,
+      options: {},
+    }
     const disk = new ArtifactGenerations(harness.dataDir)
     const publish = async (generation: number) => {
-      const ready = await disk.publish(identity, generation, async (writer) => { await writer.append('unit:0', { generation }) })
+      const ready = await disk.publish(identity, generation, async (writer) => {
+        await writer.append('unit:0', { generation })
+      })
       const old = new Date(Date.now() - 2 * 60 * 60_000)
       await utimes(join(harness.dataDir, ready.storagePath), old, old)
       return ready
     }
     const first = await catalog.claim(identity, 'first')
     if (first.kind !== 'acquired') throw new Error('expected build lease')
-    await server.db!.pool.execute('UPDATE parse_files SET created_at = ? WHERE file_id = ?', ['2000-01-01T00:00:00.000Z', fileId])
+    await server.db!.pool.execute('UPDATE parse_files SET created_at = ? WHERE file_id = ?', [
+      '2000-01-01T00:00:00.000Z',
+      fileId,
+    ])
     const old = await publish(first.lease.generation)
     await catalog.complete(first.lease, old)
     const reader = (await catalog.pin(old.key, 'old-reader'))!
@@ -413,18 +506,32 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
     if (next.kind !== 'acquired') throw new Error('expected replacement lease')
     const current = await publish(next.lease.generation)
     await catalog.complete(next.lease, current)
-    const health = async () => await (await harness.request(server, '/v1/health')).json() as {
-      maintenance: { generationCollection: { lastResult?: { protected: number } } }
-    }
-    await expect.poll(async () => (await health()).maintenance.generationCollection.lastResult?.protected,
-      { timeout: 10_000 }).toBe(2)
+    const health = async () =>
+      (await (await harness.request(server, '/v1/health')).json()) as {
+        maintenance: { generationCollection: { lastResult?: { protected: number } } }
+      }
+    await expect
+      .poll(async () => (await health()).maintenance.generationCollection.lastResult?.protected, {
+        timeout: 10_000,
+      })
+      .toBe(2)
     expect((await stat(join(harness.dataDir, old.storagePath))).isDirectory()).toBe(true)
     await catalog.releaseRead(reader.lease)
     await server.gc() // Also nudges the already-running collector without overlapping it.
-    await expect.poll(async () => {
-      try { await stat(join(harness.dataDir, old.storagePath)); return true }
-      catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error }
-    }, { timeout: 10_000 }).toBe(false)
+    await expect
+      .poll(
+        async () => {
+          try {
+            await stat(join(harness.dataDir, old.storagePath))
+            return true
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+            throw error
+          }
+        },
+        { timeout: 10_000 },
+      )
+      .toBe(false)
     // Exercise the actual service timer, not just the standalone sweeper.
     const building = await catalog.claim(identity, 'staging-builder', true)
     if (building.kind !== 'acquired') throw new Error('expected staging lease')
@@ -435,16 +542,24 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
     await writeFile(join(stagePath, 'units.bin'), 'unfinished')
     const ancient = new Date(Date.now() - 2 * 60 * 60_000)
     await utimes(stagePath, ancient, ancient)
-    await expect.poll(async () => (await health()).maintenance.generationCollection.lastResult?.protected,
-      { timeout: 10_000 }).toBe(2)
+    await expect
+      .poll(async () => (await health()).maintenance.generationCollection.lastResult?.protected, {
+        timeout: 10_000,
+      })
+      .toBe(2)
     expect(await readdir(stageRoot)).toContain(stageName)
-    await server.db!.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [current.key])
-    await expect.poll(async () => (await readdir(stageRoot)).includes(stageName), { timeout: 10_000 }).toBe(false)
+    await server.db!.pool.execute('UPDATE parse_jobs SET lease_until = 0 WHERE artifact_key = ?', [
+      current.key,
+    ])
+    await expect
+      .poll(async () => (await readdir(stageRoot)).includes(stageName), { timeout: 10_000 })
+      .toBe(false)
     expect(await catalog.renew(building.lease)).toBe(false)
     expect(await catalog.complete(building.lease, current)).toBe(false)
     expect(await (await disk.open(current)).read('unit:0')).toEqual({ generation: 2 })
     expect(await server.store.pathOf(fileId)).not.toBeNull()
-    expect((await harness.request(server, `/v1/files/${fileId}`, { method: 'DELETE' })).status).toBe(409)
+    expect(
+      (await harness.request(server, `/v1/files/${fileId}`, { method: 'DELETE' })).status,
+    ).toBe(409)
   }, 15_000)
-
 })

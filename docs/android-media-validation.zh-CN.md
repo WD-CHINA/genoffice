@@ -1,5 +1,7 @@
 # Android 在线与下载后断网媒体验收
 
+> 本文保留原设计或当时验证条件；当前三端职责、已知边界与测试入口请参阅[架构主文档](runtime-workflows.zh-CN.md)、[运行边界](runtime-boundaries.zh-CN.md)和[测试指南](testing-guide.zh-CN.md)。历史数字不自动代表当前结果。
+
 日期：2026-11-11。环境为本机 Docker 解析服务、USB 连接的 Android 12 平板，
 实际 WebView 内核为 Chromium 114.0.5735.196。APK 为 debug 构建，覆盖安装时保留应用数据。
 本文不代表外部线上部署或其他型号设备验收。
@@ -39,17 +41,17 @@ Android WebView 的 CDP 截图会遗漏部分硬件 canvas / video 图层，不�
 
 ## 实测结果
 
-| 业务 PPTX | 兼容媒体数 | 在线 / 离线 |
-|---|---:|---|
-| 47e66b31f89d4b33b14c5010b92296c5.pptx | 6 | 通过 |
-| 4a2c58f80c544adc9f6113ed5932610d.pptx | 1 | 通过 |
-| 4b00a85c247c47bdaeb01aeec562c90f.pptx | 0 | 通过 |
-| 69de6af04fad40b09cacd47e8d64c421.pptx | 15 | 通过 |
-| 83f822650ce0499c835780f673faed2b.pptx | 0 | 通过 |
-| dcbc94bc3f7a4084b7f4edb9d558d04e.pptx | 0 | 通过 |
-| 【跑圈】限时跑&摄像头升级.pptx | 0 | 通过 |
-| 展会课件1.pptx | 2 | 通过 |
-| 武术正踢腿课件.pptx | 2 | 通过 |
+| 业务 PPTX                             | 兼容媒体数 | 在线 / 离线 |
+| ------------------------------------- | ---------: | ----------- |
+| 47e66b31f89d4b33b14c5010b92296c5.pptx |          6 | 通过        |
+| 4a2c58f80c544adc9f6113ed5932610d.pptx |          1 | 通过        |
+| 4b00a85c247c47bdaeb01aeec562c90f.pptx |          0 | 通过        |
+| 69de6af04fad40b09cacd47e8d64c421.pptx |         15 | 通过        |
+| 83f822650ce0499c835780f673faed2b.pptx |          0 | 通过        |
+| dcbc94bc3f7a4084b7f4edb9d558d04e.pptx |          0 | 通过        |
+| 【跑圈】限时跑&摄像头升级.pptx        |          0 | 通过        |
+| 展会课件1.pptx                        |          2 | 通过        |
+| 武术正踢腿课件.pptx                   |          2 | 通过        |
 
 共 9 份业务 PPTX、26 个媒体，原文件 SHA-256 全部保持不变。另有 WMV/WMA、MPEG-4/MP3 AVI、
 HEVC 10-bit、奇数尺寸无音轨视频、独立 WMA 和 FLAC 六类样本，各 1 个媒体，在线及离线检查均通过。

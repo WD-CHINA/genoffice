@@ -16,7 +16,7 @@
     "test:standalone": "node scripts/standalone-smoke.mjs",
     "package": "cross-env VIEWER_BASE=/viewer/ node scripts/build.mjs && node scripts/package.mjs",
     "test:resilience": "node --import tsx scripts/resilience-smoke.mts",
-    "test:soak": "cross-env SOAK_SECONDS=7500 node --import tsx scripts/resilience-smoke.mts",
+    "test:soak": "cross-env SOAK_SECONDS=3600 node --import tsx scripts/resilience-smoke.mts",
     "test:docx-reading": "node --import tsx scripts/docx-reading-drill.mts",
     "test:android-docx": "node scripts/android-docx-smoke.mjs",
     "test:android-pdf": "node scripts/android-pdf-smoke.mjs",

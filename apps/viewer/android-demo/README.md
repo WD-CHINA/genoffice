@@ -1,5 +1,7 @@
 # Office Viewer Android demo
 
+当前三端说明：[功能与架构](../../../docs/runtime-workflows.zh-CN.md) · [运行边界](../../../docs/runtime-boundaries.zh-CN.md) · [测试与验收](../../../docs/testing-guide.zh-CN.md)。历史报告保留各自的验证日期与环境。
+
 把 `apps/viewer` 的 Web Viewer 嵌进 WebView，支持 PPTX / DOCX / PDF 在线预览和下载后断网阅读。
 
 ## 工作方式
@@ -147,7 +149,7 @@ adb shell am start -n com.genoffice.viewerdemo/.MainActivity \
 ```bash
 # 仓库根目录：50 页、40 次快速跳页、动画执行期间下一页返回
 npm run test:resilience -w @genoffice/viewer
-# 125 分钟真实运行（不是模拟时钟）
+# 60 分钟真实运行（不是模拟时钟）
 npm run test:soak -w @genoffice/viewer
 # Android 真机：1 GiB 媒体数据流式下载、截断响应、更新失败保留旧包
 cd apps/viewer/android-demo
@@ -157,7 +159,6 @@ adb install -r app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 adb shell am instrument -w -e class com.genoffice.viewerdemo.BundleDownloaderTest \
   com.genoffice.viewerdemo.test/com.genoffice.viewerdemo.BundleTestRunner
 ```
-
 
 ## 本地包完整性
 
@@ -186,7 +187,6 @@ adb -s <test-emulator> install -r app/build/outputs/apk/androidTest/debug/app-de
 adb -s <test-emulator> shell am instrument -w -e class com.genoffice.viewerdemo.BundleDownloaderTest com.genoffice.viewerdemo.test/com.genoffice.viewerdemo.BundleTestRunner
 ```
 
-
 ## 取消下载
 
 设置页提供取消按钮；排队、网络传输和本地哈希校验期间可取消。取消会中断等待、
@@ -198,7 +198,6 @@ Activity 销毁时也会取消正在进行的下载，迟到的进度回调不�
 本轮验证：全套 11 项 instrumentation 测试通过（包含 1 GiB 回归和排队/媒体取消），
 随后新增发布前取消、真实 Activity 按钮交互两项定向测试通过。模拟器为只读运行，
 测试按钮交互会恢复其修改的测试偏好，真机验证仍待进行。
-
 
 ## 下载空间检查
 

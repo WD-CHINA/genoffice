@@ -1,3 +1,4 @@
+import { serverRoot } from './helpers/paths'
 import JSZip from 'jszip'
 import { request as httpRequest } from 'node:http'
 import { StorageBudget, StorageFullError } from '../src/storage-budget'
@@ -286,7 +287,7 @@ it('encrypted Office containers are rejected explicitly instead of being treated
 })
 
 it('DOCX scratch quota failure crosses the child-process protocol and frees chunks, worker and reservation', async () => {
-  const bytes = await readFile(join(process.cwd(), 'tests/fixtures/docx/table.docx'))
+  const bytes = await readFile(join(serverRoot, 'tests/fixtures/docx/table.docx'))
   const app = await setup({ maxStoreBytes: bytes.length + 1 })
   const file = await app.upload(bytes)
   expect((await app.post('/v2/library', { fileId: file.fileId })).status).toBe(201)

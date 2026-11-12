@@ -30,7 +30,8 @@ async function start(options: Partial<ParseServerOptions> = {}): Promise<Harness
 }
 
 afterEach(async () => {
-  while (harnesses.length) await harnesses.pop()!.cleanup()
+  const owned = harnesses.splice(0)
+  await Promise.all(owned.map((harness) => harness.cleanup()))
 })
 
 async function upload(url: string, body: Buffer): Promise<{ fileId: string }> {

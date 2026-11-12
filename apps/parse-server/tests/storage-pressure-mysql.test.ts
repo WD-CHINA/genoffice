@@ -1,3 +1,4 @@
+import { drainCleanups } from './helpers/cleanup'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -15,7 +16,9 @@ import { createParseServer, type ParseServer } from '../src/server'
 // Explicit opt-in socket must refer to an isolated test instance, never a production server.
 const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
 const cleanups: Array<() => Promise<void>> = []
-afterEach(async () => { while (cleanups.length) await cleanups.pop()!() })
+afterEach(async () => {
+  await drainCleanups(cleanups)
+})
 
 /**
  * Distinct ready artifacts need distinct source bytes.
@@ -44,8 +47,14 @@ describe.skipIf(!socketPath)('shared pressure budget over real MySQL', () => {
     const database = `genoffice_pressure_${randomUUID().replaceAll('-', '')}`
     const admin: Connection = await mysql.createConnection({ socketPath, user: 'root' })
     await admin.query(`CREATE DATABASE ${database} CHARACTER SET utf8mb4`)
-    const config = { host: '127.0.0.1', port: 3306, user: 'root', password: '',
-      database, socketPath }
+    const config = {
+      host: '127.0.0.1',
+      port: 3306,
+      user: 'root',
+      password: '',
+      database,
+      socketPath,
+    }
     const dataDir = await mkdtemp(join(tmpdir(), 'pressure-mysql-'))
     const databases: MysqlDatabase[] = []
     const servers: ParseServer[] = []
@@ -88,11 +97,13 @@ describe.skipIf(!socketPath)('shared pressure budget over real MySQL', () => {
     expect((await b.ledger.state())!.reclaimedBytes).toBe(200)
     expect(await a.ledger.reserve(first.round, 51)).toBe(false)
     expect(await b.ledger.reserve(second.round, 50)).toBe(true)
-    expect(await b.ledger.state()).toMatchObject({ targetBytes: 250,
-      reclaimedBytes: 250, remainingBytes: 0 })
+    expect(await b.ledger.state()).toMatchObject({
+      targetBytes: 250,
+      reclaimedBytes: 250,
+      remainingBytes: 0,
+    })
     await a.ledger.refund(first.round, 50)
-    expect(await b.ledger.state()).toMatchObject({ reclaimedBytes: 200,
-      remainingBytes: 50 })
+    expect(await b.ledger.state()).toMatchObject({ reclaimedBytes: 200, remainingBytes: 50 })
     expect(await a.ledger.reserve(first.round + 5, 10)).toBe(false)
     expect(await a.ledger.reserve(first.round, 10)).toBe(true)
     await expect(a.ledger.register(0)).rejects.toThrow(/invalid/)
@@ -110,8 +121,12 @@ describe.skipIf(!socketPath)('shared pressure budget over real MySQL', () => {
     expect((await a.ledger.state())!.expired).toBe(true)
     expect(await a.ledger.reserve(round, 1)).toBe(false)
     const next = await a.ledger.register(50)
-    expect(next).toMatchObject({ round: round + 1, targetBytes: 50,
-      reclaimedBytes: 0, remainingBytes: 50 })
+    expect(next).toMatchObject({
+      round: round + 1,
+      targetBytes: 50,
+      reclaimedBytes: 0,
+      remainingBytes: 50,
+    })
     expect(await a.ledger.reserve(round, 10)).toBe(false)
     expect(await a.ledger.reserve(next.round, 10)).toBe(true)
   })
@@ -119,37 +134,44 @@ describe.skipIf(!socketPath)('shared pressure budget over real MySQL', () => {
   it('validates the ledger durations before any SQL runs', async () => {
     const h = await setup()
     const db = h.newDb()
-    expect(() => new SqlPressureLedger(db, { roundMs: 10_000,
-      cooldownMs: 60_000 })).toThrow(/cooldown/)
+    expect(() => new SqlPressureLedger(db, { roundMs: 10_000, cooldownMs: 60_000 })).toThrow(
+      /cooldown/,
+    )
     expect(() => new SqlPressureLedger(db, { roundMs: 0 })).toThrow(/round/)
-    expect(() => new SqlPressureLedger(db, { roundMs: 10_000,
-      cooldownMs: 1000 })).not.toThrow()
+    expect(() => new SqlPressureLedger(db, { roundMs: 10_000, cooldownMs: 1000 })).not.toThrow()
   })
 
   it('two catalog instances reclaim only one shared target through real SQL rows', async () => {
     const h = await setup()
     const server = await createParseServer({
-      dataDir: h.dataDir, mysql: h.config, artifactBackend: 'catalog', token: 'secret',
-      parserFingerprint: 'shared-pressure-mysql-test', readyEvictionIdleMs: 0,
+      dataDir: h.dataDir,
+      mysql: h.config,
+      artifactBackend: 'catalog',
+      token: 'secret',
+      parserFingerprint: 'shared-pressure-mysql-test',
+      readyEvictionIdleMs: 0,
     })
     h.servers.push(server)
-    const request = (path: string, init?: RequestInit) => fetch(server.url + path, {
-      ...init,
-      headers: { Authorization: 'Bearer secret', ...init?.headers },
-    })
+    const request = (path: string, init?: RequestInit) =>
+      fetch(server.url + path, {
+        ...init,
+        headers: { Authorization: 'Bearer secret', ...init?.headers },
+      })
     const sessionIds: string[] = []
     for (const deck of await distinctBlankDecks(3)) {
       const uploaded = await request('/v1/files', {
-        method: 'POST', body: deck,
+        method: 'POST',
+        body: deck,
       })
       expect(uploaded.status, await uploaded.clone().text()).toBe(201)
-      const { fileId } = await uploaded.json() as { fileId: string }
+      const { fileId } = (await uploaded.json()) as { fileId: string }
       const opened = await request('/v1/sessions', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileId }),
       })
       expect(opened.status, await opened.clone().text()).toBe(201)
-      sessionIds.push((await opened.json() as { sessionId: string }).sessionId)
+      sessionIds.push(((await opened.json()) as { sessionId: string }).sessionId)
     }
     for (const sessionId of sessionIds)
       await request(`/v1/sessions/${sessionId}`, { method: 'DELETE' })
@@ -157,7 +179,8 @@ describe.skipIf(!socketPath)('shared pressure budget over real MySQL', () => {
     const deadline = Date.now() + 5000
     for (;;) {
       const [leases] = await pool.query<RowDataPacket[]>(
-        'SELECT id FROM parse_artifact_read_leases')
+        'SELECT id FROM parse_artifact_read_leases',
+      )
       if (!leases.length) break
       if (Date.now() > deadline) throw new Error('read leases were not released')
       await new Promise((resolve) => setTimeout(resolve, 25))
@@ -192,13 +215,13 @@ describe.skipIf(!socketPath)('shared pressure budget over real MySQL', () => {
     expect(shared).toMatchObject({ targetBytes: target, reclaimedBytes: oneBytes })
     expect(shared.reclaimedBytes).toBeLessThanOrEqual(shared.targetBytes)
     const [after] = await pool.query<RowDataPacket[]>(
-      'SELECT COUNT(*) AS ready FROM parse_artifacts WHERE ready_generation IS NOT NULL')
+      'SELECT COUNT(*) AS ready FROM parse_artifacts WHERE ready_generation IS NOT NULL',
+    )
     expect(Number(after[0].ready)).toBe(2)
     // The server's own ledger reads the same row through /v1/health.
-    const health = await (await request('/v1/health')).json() as {
+    const health = (await (await request('/v1/health')).json()) as {
       sharedPressure: { round: number; targetBytes: number; reclaimedBytes: number } | null
     }
-    expect(health.sharedPressure).toMatchObject({ targetBytes: target,
-      reclaimedBytes: oneBytes })
+    expect(health.sharedPressure).toMatchObject({ targetBytes: target, reclaimedBytes: oneBytes })
   })
 })

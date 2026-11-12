@@ -6,6 +6,7 @@
  *
  * Run: node --import tsx scripts/stress-smoke.mts --url http://127.0.0.1:8787 --size 1G
  */
+import assert from 'node:assert/strict'
 import { createWriteStream } from 'node:fs'
 import { mkdtemp, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -16,6 +17,10 @@ import { crc32 } from 'node:zlib'
 import JSZip from 'jszip'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import { createParseServer } from '../src/server'
+
+const authHeaders: Record<string, string> = process.env.PARSE_SERVER_TOKEN
+  ? { Authorization: `Bearer ${process.env.PARSE_SERVER_TOKEN}` }
+  : {}
 
 function arg(name: string, fallback: string): string {
   const index = process.argv.indexOf(`--${name}`)
@@ -167,6 +172,7 @@ async function upload(url: string, path: string): Promise<{ fileId: string; size
         port: new URL(url).port,
         path: '/v1/files',
         headers: {
+          ...authHeaders,
           'Content-Type': 'application/octet-stream',
           'Content-Length': String(info.size),
         },
@@ -187,7 +193,8 @@ async function upload(url: string, path: string): Promise<{ fileId: string; size
 }
 
 async function health(url: string): Promise<Record<string, unknown>> {
-  const response = await fetch(`${url}/v1/health`)
+  const response = await fetch(`${url}/v1/health`, { headers: authHeaders })
+  assert.equal(response.status, 200, 'health endpoint must remain available')
   return (await response.json()) as Record<string, unknown>
 }
 
@@ -197,7 +204,7 @@ async function openSession(
 ): Promise<{ status: number; sessionId?: string }> {
   const response = await fetch(`${url}/v1/sessions`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...authHeaders, 'Content-Type': 'application/json' },
     body: JSON.stringify({ fileId }),
   })
   const body = (await response.json()) as { sessionId?: string }
@@ -205,12 +212,29 @@ async function openSession(
 }
 
 const target = arg('url', 'http://127.0.0.1:8787')
+const strict = process.argv.includes('--strict')
+const expectedSessionStatus = Number(arg('expect-session-status', '0'))
+if (strict)
+  assert.ok(
+    [201, 413, 429].includes(expectedSessionStatus),
+    '--strict requires --expect-session-status 201|413|429',
+  )
 const mediaBytes = parseSize(arg('size', '1G'))
 const sessions = Number(arg('sessions', '4'))
 const temp = await mkdtemp(join(tmpdir(), 'parse-server-stress-'))
 const deck = join(temp, 'large.pptx')
 const started = Date.now()
 let timeoutServer: Awaited<ReturnType<typeof createParseServer>> | undefined
+const ownedSessions: string[] = []
+const closeSessions = () =>
+  Promise.all(
+    ownedSessions.splice(0).map((id) =>
+      fetch(`${target}/v1/sessions/${id}`, {
+        method: 'DELETE',
+        headers: authHeaders,
+      }).catch(() => undefined),
+    ),
+  )
 try {
   console.log(`[stress] writing ${mediaBytes} bytes of media -> ${deck}`)
   await writeLargeDeck(deck, mediaBytes)
@@ -219,7 +243,11 @@ try {
   const uploaded = await upload(target, deck)
   console.log(`[stress] uploaded ${uploaded.size} bytes, fileId=${uploaded.fileId}`)
   const opened = await Promise.all(
-    Array.from({ length: sessions }, () => openSession(target, uploaded.fileId)),
+    Array.from({ length: sessions }, async () => {
+      const opened = await openSession(target, uploaded.fileId)
+      if (opened.sessionId) ownedSessions.push(opened.sessionId)
+      return opened
+    }),
   )
   const statuses = opened.map((item) => item.status)
   console.log('[stress] concurrent session statuses', statuses)
@@ -229,7 +257,9 @@ try {
   let rangeStatus = 0
   let mediaUrl = ''
   if (firstSession) {
-    const unit = (await (await fetch(`${target}/v1/sessions/${firstSession}/units/0`)).json()) as {
+    const unit = (await (
+      await fetch(`${target}/v1/sessions/${firstSession}/units/0`, { headers: authHeaders })
+    ).json()) as {
       slide?: unknown
     }
     const urls: string[] = []
@@ -240,23 +270,46 @@ try {
     }
     walk(unit.slide)
     mediaUrl = urls.find((url) => url.includes('/parts/')) ?? ''
-    if (mediaUrl) {
-      partStatus = (await fetch(mediaUrl, { method: 'HEAD' })).status
-      rangeStatus = (await fetch(mediaUrl, { headers: { Range: 'bytes=0-1048575' } })).status
+  }
+  // Raw-part transport remains verifiable even when the parser correctly rejects a 1 GiB source.
+  mediaUrl ||= `${target}/v1/files/${uploaded.fileId}/parts/ppt/media/huge.bin`
+  const head = await fetch(mediaUrl, { method: 'HEAD', headers: authHeaders })
+  partStatus = head.status
+  const partial = await fetch(mediaUrl, { headers: { ...authHeaders, Range: 'bytes=0-1048575' } })
+  rangeStatus = partial.status
+  const rangeBytes = new Uint8Array(await partial.arrayBuffer())
+  let downloadedBytes = 0
+  if (strict) {
+    assert.equal(uploaded.size, (await stat(deck)).size)
+    assert.deepEqual(statuses, Array(sessions).fill(expectedSessionStatus))
+    assert.equal(partStatus, 200)
+    assert.equal(Number(head.headers.get('content-length')), mediaBytes)
+    assert.equal(rangeStatus, 206)
+    assert.equal(rangeBytes.length, Math.min(mediaBytes, 1048576))
+    assert.ok(
+      rangeBytes.every((byte) => byte === 0),
+      'Range bytes must match the generated media',
+    )
+    const full = await fetch(mediaUrl, {
+      headers: authHeaders,
+      signal: AbortSignal.timeout(180_000),
+    })
+    assert.equal(full.status, 200)
+    assert.equal(Number(full.headers.get('content-length')), mediaBytes)
+    assert.ok(full.body, 'full media response must have a body')
+    for await (const chunk of full.body) {
+      assert.ok(
+        Buffer.from(chunk).equals(Buffer.alloc(chunk.byteLength)),
+        'full download bytes must match the generated media',
+      )
+      downloadedBytes += chunk.byteLength
     }
+    assert.equal(downloadedBytes, mediaBytes, 'full media download must not truncate')
   }
   const after = await health(target)
   console.log('[stress] health after', JSON.stringify(after))
   console.log('[stress] media part HEAD', partStatus, 'Range', rangeStatus, mediaUrl)
-  await Promise.all(
-    opened
-      .filter((item) => item.sessionId)
-      .map((item) =>
-        fetch(`${target}/v1/sessions/${item.sessionId}`, { method: 'DELETE' }).catch(
-          () => undefined,
-        ),
-      ),
-  )
+  await closeSessions()
 
   const timeoutDir = await mkdtemp(join(tmpdir(), 'parse-server-timeout-'))
   timeoutServer = await createParseServer({ dataDir: timeoutDir, parseTimeoutMs: 1 })
@@ -264,6 +317,10 @@ try {
   const timeoutResult = await openSession(timeoutServer.url, small.fileId)
   const timeoutStatus = timeoutResult.status
   const timeoutHealth = await health(timeoutServer.url)
+  if (strict) {
+    assert.equal(timeoutStatus, 504)
+    assert.equal(timeoutHealth.ok, true)
+  }
   console.log('[stress] timeout status', timeoutStatus, 'health', JSON.stringify(timeoutHealth))
   await timeoutServer.close()
   timeoutServer = undefined
@@ -273,6 +330,10 @@ try {
     JSON.stringify(
       {
         mediaBytes,
+        strict,
+        expectedSessionStatus,
+        rangeBytes: rangeBytes.length,
+        downloadedBytes,
         uploadBytes: uploaded.size,
         sessionStatuses: statuses,
         healthBefore: before,
@@ -290,6 +351,7 @@ try {
     ),
   )
 } finally {
+  await closeSessions()
   await timeoutServer?.close().catch(() => undefined)
   await rm(temp, { recursive: true, force: true })
 }

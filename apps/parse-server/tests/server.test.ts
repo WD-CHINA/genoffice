@@ -1,3 +1,4 @@
+import { serverRoot } from './helpers/paths'
 import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -56,7 +57,7 @@ describe('parse-server', () => {
 
   it('opens a DOCX block-chunk session', async () => {
     const { server } = await start()
-    const bytes = await readFile(join(process.cwd(), 'tests', 'fixtures', 'docx', 'table.docx'))
+    const bytes = await readFile(join(serverRoot, 'tests', 'fixtures', 'docx', 'table.docx'))
     const uploaded = await upload(server.url, bytes)
     expect(uploaded.status).toBe(201)
     const file = (await uploaded.json()) as { fileId: string; format: string }
@@ -89,7 +90,7 @@ describe('parse-server', () => {
 
   it('serves DOCX embedded fonts', async () => {
     const { server } = await start()
-    const bytes = await readFile(join(process.cwd(), 'tests', 'fixtures', 'docx', 'font.docx'))
+    const bytes = await readFile(join(serverRoot, 'tests', 'fixtures', 'docx', 'font.docx'))
     const uploaded = await upload(server.url, bytes)
     const file = (await uploaded.json()) as { fileId: string }
     const opened = await fetch(`${server.url}/v1/sessions`, {
@@ -118,7 +119,7 @@ describe('parse-server', () => {
     const dir = await mkdtemp(join(tmpdir(), 'parse-server-docx-restart-'))
     const first = await createParseServer({ dataDir: dir })
     try {
-      const bytes = await readFile(join(process.cwd(), 'tests', 'fixtures', 'docx', 'table.docx'))
+      const bytes = await readFile(join(serverRoot, 'tests', 'fixtures', 'docx', 'table.docx'))
       const uploaded = await upload(first.url, bytes)
       const file = (await uploaded.json()) as { fileId: string }
       const opened = await fetch(`${first.url}/v1/sessions`, {

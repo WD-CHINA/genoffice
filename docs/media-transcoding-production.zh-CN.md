@@ -1,5 +1,7 @@
 # 在线音视频自动准备
 
+> 本文保留原设计或当时验证条件；当前三端职责、已知边界与测试入口请参阅[架构主文档](runtime-workflows.zh-CN.md)、[运行边界](runtime-boundaries.zh-CN.md)和[测试指南](testing-guide.zh-CN.md)。历史数字不自动代表当前结果。
+
 ## 接入范围
 
 Web Viewer 的在线 PPT 预览和放映已接入独立媒体准备流程。正文和页面先展示，点击预览媒体或进入含媒体的放映页时自动准备当前媒体。小于自动远端阈值、但包含音视频的 PPT，在服务器声明支持此能力时也走服务端；显式本地模式和离线包继续使用本地资源。
@@ -49,18 +51,18 @@ PARSE_SERVER_DATA_DIR=/data
 
 启用时若缺少 MySQL、FFmpeg 或必要编码器，启动直接失败。数据库需要原项目已有的建表/迁移权限。生产应固定发布镜像 digest，避免各副本使用不同的 FFmpeg 构建。备份若需要保留媒体缓存，应同时保存 MySQL 和 `/data/media-cache`；只恢复原文件时可按需重建媒体。
 
-| 环境变量 | 默认值 | 用途 |
-| --- | --- | --- |
-| `PARSE_SERVER_MEDIA_CONCURRENCY` | `1` | 共享数据库范围内的媒体任务并发 |
-| `PARSE_SERVER_MEDIA_MAX_QUEUED` | `64` | 排队任务上限，满时返回 429 和 Retry-After |
-| `PARSE_SERVER_MEDIA_TIMEOUT_MS` | `1200000` | 单任务总时限，含提取、转换和检查 |
-| `PARSE_SERVER_MEDIA_WORKER_RSS_MB` | `1024` | Linux 子进程 RSS 限制 |
-| `PARSE_SERVER_MEDIA_MAX_INPUT_BYTES` | `536870912` | 单个输入媒体上限 |
-| `PARSE_SERVER_MEDIA_MAX_OUTPUT_BYTES` | `1073741824` | 单个输出上限 |
-| `PARSE_SERVER_MEDIA_MAX_CACHE_BYTES` | `10737418240` | 独立媒体缓存空间预算 |
-| `PARSE_SERVER_MEDIA_MAX_CACHE_ENTRIES` | `10000` | 缓存条目数上限 |
-| `PARSE_SERVER_MEDIA_CACHE_TTL_MS` | `604800000` | 缓存闲置保留时间 |
-| `PARSE_SERVER_FFMPEG` / `PARSE_SERVER_FFPROBE` | PATH 中的命令 | 二进制路径 |
+| 环境变量                                       | 默认值        | 用途                                      |
+| ---------------------------------------------- | ------------- | ----------------------------------------- |
+| `PARSE_SERVER_MEDIA_CONCURRENCY`               | `1`           | 共享数据库范围内的媒体任务并发            |
+| `PARSE_SERVER_MEDIA_MAX_QUEUED`                | `64`          | 排队任务上限，满时返回 429 和 Retry-After |
+| `PARSE_SERVER_MEDIA_TIMEOUT_MS`                | `1200000`     | 单任务总时限，含提取、转换和检查          |
+| `PARSE_SERVER_MEDIA_WORKER_RSS_MB`             | `1024`        | Linux 子进程 RSS 限制                     |
+| `PARSE_SERVER_MEDIA_MAX_INPUT_BYTES`           | `536870912`   | 单个输入媒体上限                          |
+| `PARSE_SERVER_MEDIA_MAX_OUTPUT_BYTES`          | `1073741824`  | 单个输出上限                              |
+| `PARSE_SERVER_MEDIA_MAX_CACHE_BYTES`           | `10737418240` | 独立媒体缓存空间预算                      |
+| `PARSE_SERVER_MEDIA_MAX_CACHE_ENTRIES`         | `10000`       | 缓存条目数上限                            |
+| `PARSE_SERVER_MEDIA_CACHE_TTL_MS`              | `604800000`   | 缓存闲置保留时间                          |
+| `PARSE_SERVER_FFMPEG` / `PARSE_SERVER_FFPROBE` | PATH 中的命令 | 二进制路径                                |
 
 媒体预算与原文件/解析 artifact 预算分别配置，要为二者及容器临时空间预留实际磁盘。编码器和解码器限制为 2 线程，过滤器为 1 线程；这不是对 8 核/16 GiB 生产吞吐量的承诺，应按实际素材和解析负载共同测量。
 

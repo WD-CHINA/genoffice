@@ -1,3 +1,4 @@
+import { serverRoot } from './helpers/paths'
 import { createHash } from 'node:crypto'
 import { mkdtemp, readdir, rm, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -15,8 +16,11 @@ const servers: ParseServer[] = []
 const directories: string[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
-  await Promise.all(servers.splice(0).map((server) => server.close()))
-  await Promise.all(directories.splice(0).map((dir) => rm(dir, { recursive: true, force: true })))
+  // Capture ownership before awaiting, including a possible teardown timeout.
+  const ownedServers = servers.splice(0),
+    ownedDirectories = directories.splice(0)
+  await Promise.all(ownedServers.map((server) => server.close()))
+  await Promise.all(ownedDirectories.map((dir) => rm(dir, { recursive: true, force: true })))
 })
 const sha = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex')
 async function setup(existing?: string, options: Partial<ParseServerOptions> = {}) {
@@ -59,9 +63,7 @@ async function setup(existing?: string, options: Partial<ParseServerOptions> = {
 it('serves exact hashed bundle bytes, complete stripped-media inventory and authenticated resume semantics', async () => {
   const app = await setup()
   const zip = await JSZip.loadAsync(await createBlankPptx())
-  const font = await readFile(
-    join(process.cwd(), '../../packages/ui/src/fonts/Carlito-Regular.ttf'),
-  )
+  const font = await readFile(join(serverRoot, '../../packages/ui/src/fonts/Carlito-Regular.ttf'))
   zip.file(
     'ppt/presentation.xml',
     (await zip.file('ppt/presentation.xml')!.async('string')).replace(
@@ -304,37 +306,52 @@ it('retains a shared lazy build after its client cancels and closes the viewing 
   expect(health.artifacts.sourceParsesStarted).toBe(2)
 })
 
-it.each(['image', 'font', 'table'])('exports verified DOCX %s context, chunks, styles and inventory for offline replay', async (fixture) => {
-  const h = await setup()
-  const zip = await JSZip.loadAsync(await readFile(new URL(`./fixtures/docx/${fixture}.docx`, import.meta.url)))
-  zip.file('word/embeddings/unused.bin', Buffer.from('offline-inventory'))
-  const fileId = await h.upload(await zip.generateAsync({ type: 'nodebuffer' }))
-  const sessionId = await h.open(fileId)
-  const response = await h.request(`/v2/sessions/${sessionId}/bundle`)
-  expect(response.status, await response.clone().text()).toBe(200)
-  const manifest = await response.json() as OfflineBundleManifest
-  expect(manifest.format).toBe('docx')
-  for (const path of ['layout.json', 'layout/0.json'])
-    expect((await h.request(`/v2/sessions/${sessionId}/bundle/resources/${path}`)).status).toBe(404)
-  expect(manifest.inventory).toBe('docx-media-v1')
-  expect(manifest.resources.map((resource) => resource.path)).toEqual(expect.arrayContaining([
-    'document.json', 'styles.json', 'units/0.json', 'parts/word/embeddings/unused.bin',
-  ]))
-  let total = 0
-  for (const resource of manifest.resources) {
-    const read = await h.request(resource.href!)
-    expect(read.status).toBe(200)
-    const bytes = Buffer.from(await read.arrayBuffer())
-    expect(bytes.length).toBe(resource.size)
-    expect(sha(bytes)).toBe(resource.sha256)
-    total += resource.size
-    if (resource.path === 'document.json') {
-      expect(JSON.parse(bytes.toString()).model.format).toBe('docx')
-      expect(bytes.toString()).not.toContain('?exp=')
+it.each(['image', 'font', 'table'])(
+  'exports verified DOCX %s context, chunks, styles and inventory for offline replay',
+  async (fixture) => {
+    const h = await setup()
+    const zip = await JSZip.loadAsync(
+      await readFile(new URL(`./fixtures/docx/${fixture}.docx`, import.meta.url)),
+    )
+    zip.file('word/embeddings/unused.bin', Buffer.from('offline-inventory'))
+    const fileId = await h.upload(await zip.generateAsync({ type: 'nodebuffer' }))
+    const sessionId = await h.open(fileId)
+    const response = await h.request(`/v2/sessions/${sessionId}/bundle`)
+    expect(response.status, await response.clone().text()).toBe(200)
+    const manifest = (await response.json()) as OfflineBundleManifest
+    expect(manifest.format).toBe('docx')
+    for (const path of ['layout.json', 'layout/0.json'])
+      expect((await h.request(`/v2/sessions/${sessionId}/bundle/resources/${path}`)).status).toBe(
+        404,
+      )
+    expect(manifest.inventory).toBe('docx-media-v1')
+    expect(manifest.resources.map((resource) => resource.path)).toEqual(
+      expect.arrayContaining([
+        'document.json',
+        'styles.json',
+        'units/0.json',
+        'parts/word/embeddings/unused.bin',
+      ]),
+    )
+    let total = 0
+    for (const resource of manifest.resources) {
+      const read = await h.request(resource.href!)
+      expect(read.status).toBe(200)
+      const bytes = Buffer.from(await read.arrayBuffer())
+      expect(bytes.length).toBe(resource.size)
+      expect(sha(bytes)).toBe(resource.sha256)
+      total += resource.size
+      if (resource.path === 'document.json') {
+        expect(JSON.parse(bytes.toString()).model.format).toBe('docx')
+        expect(bytes.toString()).not.toContain('?exp=')
+      }
     }
-  }
-  expect(total).toBe(manifest.totalBytes)
-  const reopened = await h.open(fileId)
-  const warm = await (await h.request(`/v2/sessions/${reopened}/bundle`)).json() as OfflineBundleManifest
-  expect(warm.artifactKey).toBe(manifest.artifactKey)
-}, 30_000)
+    expect(total).toBe(manifest.totalBytes)
+    const reopened = await h.open(fileId)
+    const warm = (await (
+      await h.request(`/v2/sessions/${reopened}/bundle`)
+    ).json()) as OfflineBundleManifest
+    expect(warm.artifactKey).toBe(manifest.artifactKey)
+  },
+  30_000,
+)

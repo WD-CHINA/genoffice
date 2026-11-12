@@ -1,6 +1,7 @@
 package com.genoffice.viewerdemo;
 
 import android.app.Activity;
+import static com.genoffice.viewerdemo.AndroidTestSupport.delete;
 import android.test.InstrumentationTestRunner;
 import android.os.Bundle;
 import java.io.File;
@@ -164,9 +165,4 @@ public final class BundleTestRunner extends InstrumentationTestRunner {
         result.putLong("cleanupBytes", freed);
     }
 
-    private static void delete(File file) {
-        File[] children = file.listFiles();
-        if (children != null) for (File child : children) delete(child);
-        file.delete();
-    }
 }

@@ -1,3 +1,4 @@
+import { serverRoot } from './helpers/paths'
 import { readFile } from 'node:fs/promises'
 import { Readable } from 'node:stream'
 import { join } from 'node:path'
@@ -19,7 +20,7 @@ describe('parseDocxBlockSlices', () => {
     ...FIXTURES.map((name) => ({
       name,
       path: join(
-        process.cwd(),
+        serverRoot,
         '..',
         '..',
         'packages',
@@ -33,7 +34,7 @@ describe('parseDocxBlockSlices', () => {
     })),
     {
       name: 'docx-spike-table (revisions/footnotes/table)',
-      path: join(process.cwd(), ...DOCX_FIXTURE),
+      path: join(serverRoot, ...DOCX_FIXTURE),
     },
   ]
   for (const { name, path } of paths) {

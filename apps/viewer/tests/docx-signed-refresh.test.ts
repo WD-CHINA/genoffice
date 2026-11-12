@@ -1,9 +1,7 @@
+import { json } from './helpers/session-probes.ts'
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { DocxRemoteSession } from '../src/web/docx-remote-session.ts'
-
-const json = (body: unknown, status = 200) =>
-  new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 
 const part = (exp: number) =>
   `http://parse/v1/files/abc/parts/word/media/image1.png?exp=${exp}&sig=signature`
@@ -30,36 +28,28 @@ function stubFetch(context: any, responses: Array<{ image: string }>): Stub {
   return state
 }
 
-test('reloads a cached chunk whose signed resource URL expired', async (context) => {
-  const state = stubFetch(context, [{ image: part(1) }, { image: part(9_999_999_999) }])
-  const session = new DocxRemoteSession(
-    { server: 'http://parse', fileId: 'abc', skipCapabilities: true },
-    async () => {},
-  )
-  try {
-    await session.open()
-    const first = await session.unit('0')
-    assert.match(String(first.blocks[0].image), /exp=1&/)
-    const second = await session.unit('0')
-    assert.match(String(second.blocks[0].image), /exp=9999999999/)
-    assert.equal(state.unitReads, 2, 'expired cached description must be refreshed once')
-  } finally {
-    session.close()
-  }
-})
-
-test('keeps a fresh signed chunk cached without refetching', async (context) => {
-  const state = stubFetch(context, [{ image: part(9_999_999_999) }])
-  const session = new DocxRemoteSession(
-    { server: 'http://parse', fileId: 'abc', skipCapabilities: true },
-    async () => {},
-  )
-  try {
-    await session.open()
-    await session.unit('0')
-    await session.unit('0')
-    assert.equal(state.unitReads, 1, 'fresh signatures stay cached')
-  } finally {
-    session.close()
-  }
-})
+for (const scenario of [
+  { name: 'reloads a cached chunk whose signed resource URL expired', expiry: 1, reads: 2 },
+  { name: 'keeps a fresh signed chunk cached without refetching', expiry: 9_999_999_999, reads: 1 },
+])
+  test(scenario.name, async (context) => {
+    const state = stubFetch(context, [
+      { image: part(scenario.expiry) },
+      { image: part(9_999_999_999) },
+    ])
+    const session = new DocxRemoteSession(
+      { server: 'http://parse', fileId: 'abc', skipCapabilities: true },
+      async () => {},
+    )
+    try {
+      await session.open()
+      assert.match(
+        String((await session.unit('0')).blocks[0].image),
+        new RegExp(`exp=${scenario.expiry}&`),
+      )
+      assert.match(String((await session.unit('0')).blocks[0].image), /exp=9999999999/)
+      assert.equal(state.unitReads, scenario.reads)
+    } finally {
+      session.close()
+    }
+  })

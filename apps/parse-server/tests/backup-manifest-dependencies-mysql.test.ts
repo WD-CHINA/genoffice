@@ -1,3 +1,4 @@
+import { drainCleanups } from './helpers/cleanup'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -12,7 +13,9 @@ import { createParseServer, type ParseServer } from '../src/server'
 
 const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
 const cleanups: Array<() => Promise<void>> = []
-afterEach(async () => { while (cleanups.length) await cleanups.pop()!() })
+afterEach(async () => {
+  await drainCleanups(cleanups)
+})
 
 describe.skipIf(!socketPath)('backup dependency graph over real MySQL', () => {
   it('captures artifact dependency rows in the manifest and verifies them on restore', async () => {
@@ -27,26 +30,38 @@ describe.skipIf(!socketPath)('backup dependency graph over real MySQL', () => {
       await admin.end()
       await rm(dataDir, { recursive: true, force: true })
     })
-    const config = { host: '127.0.0.1', port: 3306, user: 'root', password: '', database, socketPath }
+    const config = {
+      host: '127.0.0.1',
+      port: 3306,
+      user: 'root',
+      password: '',
+      database,
+      socketPath,
+    }
     const server = await createParseServer({
-      dataDir, mysql: config, artifactBackend: 'catalog',
-      parserVersion: '0.1.0', parserFingerprint: 'backup-deps-test',
+      dataDir,
+      mysql: config,
+      artifactBackend: 'catalog',
+      parserVersion: '0.1.0',
+      parserFingerprint: 'backup-deps-test',
     })
     servers.push(server)
     const request = (path: string, init?: RequestInit) => fetch(server.url + path, init)
     const uploaded = await request('/v1/files', {
-      method: 'POST', body: Buffer.from(await createBlankPptx()),
+      method: 'POST',
+      body: Buffer.from(await createBlankPptx()),
     })
-    const { fileId } = await uploaded.json() as { fileId: string }
+    const { fileId } = (await uploaded.json()) as { fileId: string }
     const opened = await request('/v2/sessions', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fileId }),
     })
-    const { sessionId } = await opened.json() as { sessionId: string }
+    const { sessionId } = (await opened.json()) as { sessionId: string }
     const deadline = Date.now() + 20_000
     for (;;) {
       const status = await request(`/v2/sessions/${sessionId}`)
-      const body = await status.json() as { state: string }
+      const body = (await status.json()) as { state: string }
       if (body.state === 'ready') break
       if (body.state === 'failed') throw new Error('session failed')
       if (Date.now() > deadline) throw new Error('session did not become ready')
@@ -54,14 +69,19 @@ describe.skipIf(!socketPath)('backup dependency graph over real MySQL', () => {
     }
     const bundle = await request(`/v2/sessions/${sessionId}/bundle`)
     expect(bundle.status, await bundle.clone().text()).toBe(200)
-    const modelKey = artifactKey(ArtifactSession.identity({
-      fileId, format: 'pptx', parserVersion: '0.1.0', parserFingerprint: 'backup-deps-test',
-    }))
+    const modelKey = artifactKey(
+      ArtifactSession.identity({
+        fileId,
+        format: 'pptx',
+        parserVersion: '0.1.0',
+        parserFingerprint: 'backup-deps-test',
+      }),
+    )
     const manifest = await createBackupManifest({ dataDir, db: server.db! })
     const dependencies = manifest.catalog.dependencies ?? []
-    expect(dependencies).toEqual(expect.arrayContaining([
-      { artifactKey: modelKey, type: 'file', id: fileId },
-    ]))
+    expect(dependencies).toEqual(
+      expect.arrayContaining([{ artifactKey: modelKey, type: 'file', id: fileId }]),
+    )
     expect(dependencies.some((row) => row.type === 'artifact' && row.id === modelKey)).toBe(true)
     const report = await verifyRestore({ dataDir, manifest, db: server.db! })
     expect(report.ok).toBe(true)

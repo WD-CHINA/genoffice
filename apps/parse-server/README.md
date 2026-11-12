@@ -1,5 +1,7 @@
 # 解析优化实施进度
 
+当前三端说明：[功能与架构](../../docs/runtime-workflows.zh-CN.md) · [运行边界](../../docs/runtime-boundaries.zh-CN.md) · [测试与验收](../../docs/testing-guide.zh-CN.md)。历史报告保留各自的验证日期与环境。
+
 > 2026-11-11 新增：[在线音视频自动准备](../../docs/media-transcoding-production.zh-CN.md)，包含兼容媒体复用、MP4/MP3 转换、MySQL 持久队列、共享缓存、前端状态及回滚。验收见 [媒体生产流程验证](../../docs/media-transcoding-production-validation.zh-CN.md)。
 
 > 当前功能修复见 [DOCX / PPT 验收记录](../../docs/parse-viewer-fixes-validation.zh-CN.md)；容量 / 恢复边界见 [Docker 验证记录](../../docs/parse-docker-validation.zh-CN.md)。[隔离复现环境](deploy/validation/README.md)覆盖真实 MySQL/Redis、业务课件、资源限制与冷恢复。脚注编号、分节 / 页眉页脚和远程 EMF 加载已修复；下文早期“当前限制”和计数保留用于追溯，部分已被后续实现替代，不能据旧完成度百分比宣布完成。
@@ -100,7 +102,6 @@
 
 ArtifactStore 已接入业务接口，但目前只支持单服务进程去重，没有跨进程租约、MySQL 产物/任务索引、完整临时空间预留或备份恢复。历史库按实例共享，尚无多用户归属。已支持损坏索引、缺失数据与已检测到的损坏帧在重开时单次重建；打开会话前校验 document 记录。尚未读取的页或字体不全量预校验，首次读取损坏帧仍返回错误，重开后修复。原文件与产物字节已纳入上传准入配额，产物写入已增量预留，上传临时文件已逐块保护，DOCX scratch 已接入预算，压力下闲置派生产物回收已接入，跨进程一致性与故障对账仍待实施；显式保存的原文件不会被自动删除。客户端仍保留小 DOCX 全量本地渲染。DOCX 已移除全量 document.xml、slices、blocks 与 parsedChunks 的持有，使用正文双遍流读取、最多 200 块一批落盘；辅助 parts、元数据索引和单个 XML 块仍在内存，单块上限 64 Mi UTF-16 字符。产物仍构建完后整体发布，尚无解析中的增量首屏。独立进程隔离及采样式 RSS 限制已验证；Linux cgroup 内核硬限制、真实 GB 正文压测、500 阅读会话压测及 Android 真机未完成。nginx 配置已补路由，但本机没有 nginx 可执行文件，尚未执行 nginx -t。
 
-
 ### Aged temporary data after restart
 
 Before listening or resuming waiting sessions, the service reaps recognizable
@@ -113,7 +114,6 @@ builds even if their timestamps are old.
 This is single-instance age/journal reconciliation. It does not establish shared
 filesystem leases, recover a full artifact catalog or prove that another server
 process has stopped; sharing one data directory remains unsupported.
-
 
 ## Authoritative PPTX offline bundles
 
@@ -137,7 +137,6 @@ Concurrent downloads share the build; closing a viewing session does not cancel
 shared work. Queue saturation returns 429. Health `sourceParsesStarted` counts
 source parsing; `buildsStarted` includes auxiliary artifact builds as well.
 
-
 ## MySQL artifact catalog foundation
 
 `MysqlDatabase.init()` creates `parse_artifacts` and `parse_jobs`.
@@ -153,7 +152,6 @@ read leases, reconciliation and publication integration must land together.
 The real database tests are opt-in via `PARSE_TEST_MYSQL_SOCKET` and require an
 isolated disposable instance; each test creates and drops its own database.
 
-
 ## Immutable generation disk layer
 
 `ArtifactGenerations.publish()` reserves a generation exclusively, writes and
@@ -168,7 +166,6 @@ The disk layer has a real MySQL fencing integration test but is not yet connecte
 to live ArtifactStore sessions. Shared-writer deployments remain unsupported
 until read leases, publication coordination, recovery and generation GC land.
 
-
 ## Shared build coordinator foundation
 
 `ArtifactCoordinator` combines catalog claims, periodic renewal, a conservative
@@ -181,7 +178,6 @@ This remains a component, not the live session backend. Before enabling shared
 writers it still needs read leases, generation-aware accounting/GC, worker abort
 wiring, task-state mapping, migration, corruption recovery and reconciliation.
 
-
 ## Generation quota accounting
 
 Artifact quota scans now include regular files recursively beneath each key,
@@ -192,7 +188,6 @@ empty root, so a concurrently created generation cannot be recursively erased.
 Generation-aware GC still requires catalog and reader-lease integration.
 Reservation admission remains single-instance; this change does not establish
 a global multi-process storage quota.
-
 
 ## Generation reader lease foundation
 
@@ -207,7 +202,6 @@ These leases are not yet wired into live HTTP/ArtifactReader lifetimes or the
 collector. They establish the database protocol, not shared-filesystem read
 protection on their own.
 
-
 ## Leased reader handle foundation
 
 `ArtifactReadHandle.open()` pins the current generation before opening it and
@@ -220,7 +214,6 @@ The handle is tested with real MySQL across publication and renewal failure,
 but is not yet the live HTTP/ArtifactSession reader. Generation collection,
 reader index sharing and lifecycle integration remain required. Close may wait
 for OS/SQL work to finish; local cancellation is not a hard IO timeout.
-
 
 ## Generation retirement and collection foundation
 
@@ -238,7 +231,6 @@ purging still need implementation. Candidate discovery and periodic scheduling
 are enabled for MySQL, but generation-backed HTTP sessions and shared writers
 remain unsupported.
 
-
 ## Generation candidate sweeper foundation
 
 `ArtifactGenerationSweeper.sweep(limit, graceMs)` discovers canonical generation
@@ -251,7 +243,6 @@ Defaults are 64 examined generations and a one-hour grace period. `hasMore`
 requires caller-driven continuation; the live MySQL collection service now owns
 periodic scheduling, continuation, retry backoff and shutdown. Lease-aware staging
 reconciliation, pressure-admission integration and live generation sessions remain pending.
-
 
 ## Collection scheduling and shutdown component
 
@@ -267,7 +258,6 @@ pool. Source references are protected; live generation session/build lifetimes
 and staging reconciliation still need integration before enabling shared writers. Legacy file-wide cleanup now avoids
 recursive key deletion and skips generation layouts, including mixed directories.
 
-
 ## Catalog source retention in live server paths
 
 MySQL servers now include artifact catalog references in `fileInUse`. TTL/quota
@@ -279,7 +269,6 @@ normal expiry after the test reference is removed.
 Retention is conservative for all catalog rows, including failed tasks. Final
 catalog purging/high-water archival and generation-backed session activation
 remain pending; this guard does not enable the new backend by itself.
-
 
 ## Live maintenance lifecycle
 
@@ -311,7 +300,6 @@ bundle records its model generation). They are validated on read and were added
 compatibly, so older manifests still open.
 
 `createParseServer({ mysql, dataDir, artifactBackend: 'catalog' })` opts the primary model session paths into SQL build coordination, immutable generations and view read leases. The default remains `local`. Real MySQL HTTP tests cover cold 202, cached 201 and restored PPTX rendering without another source parse. This is a staged integration option: auxiliary offline bundles still use the local artifact layout; legacy migration, corrupt-ready repair, cross-node task state and global resource admission are incomplete. It does not yet authorize shared-root multi-instance production deployment. There is no CLI environment switch at this checkpoint.
-
 
 ## Consistent backup manifest and restore drill
 
@@ -412,7 +400,7 @@ Cross-instance waiter attach: durable v2 waiters live in
 resolve the row lazily and serve its current status, shared preview frames and
 progress. Such a waiter is read-only on the attaching instance: it never starts
 a competing build, heartbeat only renews the row, and DELETE forgets the local
-cache without deleting the builder's row. Attaching to *ready* generations still
+cache without deleting the builder's row. Attaching to _ready_ generations still
 requires the instance to hold the same data directory because multi-instance
 shared local directories are not supported; the remote view is a status/first-
 screen view, not a full session migration.
@@ -443,8 +431,8 @@ Local drills exist but are not target-hardware acceptance:
   deployment claim).
 - Fault tests cover slow-but-alive Redis (reply delay → timeout + breaker
   fail-fast), bulk simultaneous TTL expiry, hot-key read storms, cache-down
-  degradation without 5xx, and `FLUSHALL`/delete-as-miss behaviour. Cross-node *session* state (the durable waiter journal) is still
-instance-local, so a reader instance must know the session to attach.
+  degradation without 5xx, and `FLUSHALL`/delete-as-miss behaviour. Cross-node _session_ state (the durable waiter journal) is still
+  instance-local, so a reader instance must know the session to attach.
 
 ## Bearer token rotation
 

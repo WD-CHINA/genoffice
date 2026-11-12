@@ -1,5 +1,7 @@
 # GenOffice Web Viewer
 
+当前三端说明：[功能与架构](../../docs/runtime-workflows.zh-CN.md) · [运行边界](../../docs/runtime-boundaries.zh-CN.md) · [测试与验收](../../docs/testing-guide.zh-CN.md)。历史报告保留各自的验证日期与环境。
+
 独立的静态预览页面，支持 `.pptx`、`.pdf`、`.docx` 只读展示和 PPT 放映；可使用浏览器本地解析，或连接独立 parse-server 读取远程模型。当前业务文档修复与验证见 [2026-11-11 修复验收](../../docs/parse-viewer-fixes-validation.zh-CN.md)；容量 / 恢复环境边界见 [Docker 验收报告](../../docs/parse-docker-validation.zh-CN.md)。复杂文档的完整视觉还原仍在验收中。
 
 改动范围仅为 `apps/viewer` 和新增的 `packages/viewer-renderers`、`packages/viewer-services`。现有 app、package、根配置及根锁文件不修改。
@@ -32,16 +34,16 @@ PPT 左上角“预览”按钮展开悬浮缩略图面板，选页、点击外�
 
 主页面支持通过 query 参数控制界面显示，并将选项传递到三格式预览 iframe。没有参数时保持现有界面。`1`/`true` 为显示，`0`/`false` 为隐藏；未识别的值使用默认值。
 
-| 参数            | 默认 | 用途                                                           |
-| --------------- | ---- | -------------------------------------------------------------- |
-| `embed`         | `0`  | 设为 `1` 时，下列六项显示开关默认关闭，适合嵌入预览            |
-| `showHeader`    | `1`  | 顶部文件栏，包含品牌、文件名及导入入口                         |
-| `showImport`    | `1`  | 本地“打开文件”入口                                             |
-| `showUrlImport` | `1`  | URL 输入框和“导入 URL”按钮                                     |
-| `showToolbar`   | `1`  | PPT/PDF/Word 操作栏及 Word 分页预览工具栏                      |
+| 参数            | 默认 | 用途                                                            |
+| --------------- | ---- | --------------------------------------------------------------- |
+| `embed`         | `0`  | 设为 `1` 时，下列六项显示开关默认关闭，适合嵌入预览             |
+| `showHeader`    | `1`  | 顶部文件栏，包含品牌、文件名及导入入口                          |
+| `showImport`    | `1`  | 本地“打开文件”入口                                              |
+| `showUrlImport` | `1`  | URL 输入框和“导入 URL”按钮                                      |
+| `showToolbar`   | `1`  | PPT/PDF/Word 操作栏及 Word 分页预览工具栏                       |
 | `showSidebar`   | `1`  | PPT 悬浮缩略图入口；设为 `1` 不恢复产品要求隐藏的 PDF/Word 目录 |
-| `showErrors`    | `1`  | 主页面和预览的错误/告警区域，包括字体、媒体错误及 PDF XFA 提示 |
-| `url`           | 无   | 主页面初始化后自动导入该 HTTP/HTTPS 文件直链，无需点击导入按钮 |
+| `showErrors`    | `1`  | 主页面和预览的错误/告警区域，包括字体、媒体错误及 PDF XFA 提示  |
+| `url`           | 无   | 主页面初始化后自动导入该 HTTP/HTTPS 文件直链，无需点击导入按钮  |
 
 显式显示开关优先于 `embed` 的默认值。例如 `?embed=1&showToolbar=1` 只恢复文档操作栏；若要恢复导入控件，需要同时恢复文件栏及对应导入项。`showToolbar=1` 不会恢复此前按产品要求隐藏的 PDF/Word 搜索控件。
 

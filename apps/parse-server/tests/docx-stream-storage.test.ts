@@ -1,3 +1,4 @@
+import { serverRoot } from './helpers/paths'
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -24,7 +25,7 @@ async function directory() {
 it('parses a real body larger than the auxiliary archive budget into persistent chunks', async () => {
   const dir = await directory()
   const zip = await JSZip.loadAsync(
-    await readFile(join(process.cwd(), 'tests/fixtures/docx/table.docx')),
+    await readFile(join(serverRoot, 'tests/fixtures/docx/table.docx')),
   )
   const count = 1201
   const text = '正文内容 '.repeat(180).trimEnd()

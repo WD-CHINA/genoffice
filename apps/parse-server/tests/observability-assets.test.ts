@@ -1,8 +1,9 @@
+import { serverRoot } from './helpers/paths'
 import { readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { expect, it } from 'vitest'
 
-const root = process.cwd()
+const root = serverRoot
 
 async function read(path: string): Promise<string> {
   return readFile(join(root, path), 'utf8')
@@ -90,8 +91,14 @@ it('ships a reviewable Alertmanager routing template for the parse alerts', asyn
     read('deploy/observability/README.md'),
   ])
   for (const required of [
-    'route:', 'receiver: default-webhook', 'group_by:', 'inhibit_rules:',
-    'severity="critical"', 'oncall-webhook', 'ParseStorageFull', 'webhook_configs:',
+    'route:',
+    'receiver: default-webhook',
+    'group_by:',
+    'inhibit_rules:',
+    'severity="critical"',
+    'oncall-webhook',
+    'ParseStorageFull',
+    'webhook_configs:',
   ]) {
     expect(config, required).toContain(required)
   }

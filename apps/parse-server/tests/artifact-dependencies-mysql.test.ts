@@ -1,3 +1,4 @@
+import { drainCleanups } from './helpers/cleanup'
 import { randomUUID } from 'node:crypto'
 import mysql, { type Connection } from 'mysql2/promise'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -7,14 +8,23 @@ import { MysqlDatabase } from '../src/mysql'
 
 const socketPath = process.env.PARSE_TEST_MYSQL_SOCKET
 const cleanups: Array<() => Promise<void>> = []
-afterEach(async () => { while (cleanups.length) await cleanups.pop()!() })
+afterEach(async () => {
+  await drainCleanups(cleanups)
+})
 
 const fileId = 'a'.repeat(64)
 const modelIdentity: ArtifactIdentity = {
-  fileId, format: 'pptx', parserFingerprint: 'dependency-test', schemaVersion: 2, options: {},
+  fileId,
+  format: 'pptx',
+  parserFingerprint: 'dependency-test',
+  schemaVersion: 2,
+  options: {},
 }
 const bundleIdentity: ArtifactIdentity = {
-  fileId, format: 'pptx', parserFingerprint: 'dependency-test', schemaVersion: 2,
+  fileId,
+  format: 'pptx',
+  parserFingerprint: 'dependency-test',
+  schemaVersion: 2,
   options: { purpose: 'offline-bundle', modelArtifactKey: artifactKey(modelIdentity) },
 }
 const summary = { bytes: 100, unitCount: 2, manifestSha256: 'b'.repeat(64) }
@@ -25,7 +35,12 @@ describe.skipIf(!socketPath)('artifact dependency graph over real MySQL', () => 
     const admin: Connection = await mysql.createConnection({ socketPath, user: 'root' })
     await admin.query(`CREATE DATABASE ${database} CHARACTER SET utf8mb4`)
     const db = new MysqlDatabase({
-      host: '127.0.0.1', port: 3306, user: 'root', password: '', database, socketPath,
+      host: '127.0.0.1',
+      port: 3306,
+      user: 'root',
+      password: '',
+      database,
+      socketPath,
     })
     cleanups.push(async () => {
       await db.close().catch(() => undefined)
@@ -63,7 +78,8 @@ describe.skipIf(!socketPath)('artifact dependency graph over real MySQL', () => 
     await db.pool.execute('DELETE FROM parse_artifacts WHERE artifact_key = ?', [bundleKey])
     expect(await catalog.dependenciesOf(bundleKey)).toEqual([])
 
-    await expect(catalog.recordDependency('not-a-key', 'file', fileId))
-      .rejects.toThrow(/invalid artifact dependency/)
+    await expect(catalog.recordDependency('not-a-key', 'file', fileId)).rejects.toThrow(
+      /invalid artifact dependency/,
+    )
   }, 60_000)
 })

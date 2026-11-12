@@ -3,31 +3,17 @@
  * Uses USB reverse isolation; preserves app data and restores the prior reverse mappings.
  * Media playback is muted; this does not certify audible quality or Office animation fidelity.
  */
-import { execFileSync } from 'node:child_process'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { connectAndroidWebView } from './android-cdp.mjs'
-const connect = () => connectAndroidWebView(cdpPort)
+import { createAndroidTestDevice, wait } from './android-test-device.mjs'
 
 const serial = process.env.ANDROID_SERIAL
 if (!serial) throw Error('ANDROID_SERIAL required')
-const adb = (...args) =>
-  execFileSync('adb', ['-s', serial, ...args], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
-const wait = (ms) => new Promise((r) => setTimeout(r, ms))
 const output = resolve(process.env.ANDROID_MEDIA_EVIDENCE_DIR || '/tmp/genoffice-android-media')
 await mkdir(output, { recursive: true })
 const base = process.env.PARSE_SERVER_URL || 'http://127.0.0.1:18787'
 const viewer = process.env.ANDROID_VIEWER_URL || 'http://127.0.0.1:11019/'
 const token = process.env.PARSE_SERVER_TOKEN || ''
-const backendPort = new URL(base).port,
-  viewerPort = new URL(viewer).port
-if (
-  [base, viewer].some((url) => {
-    const u = new URL(url)
-    return u.hostname !== '127.0.0.1' || u.protocol !== 'http:' || !u.port
-  })
-)
-  throw Error('This USB-disconnection drill requires loopback HTTP services with explicit ports')
 const cdpPort = Number(process.env.ANDROID_MEDIA_CDP_PORT || 19224)
 const inputs = JSON.parse(
   await readFile(process.env.ANDROID_MEDIA_INPUTS || join(output, 'inputs.json'), 'utf8'),
@@ -38,13 +24,8 @@ if (
   inputs.some((x) => !/^[a-f0-9]{64}$/.test(x.fileId))
 )
   throw Error('Invalid input file IDs')
-const savedReverses = new Map(
-  adb('reverse', '--list')
-    .trim()
-    .split('\n')
-    .filter(Boolean)
-    .map((line) => line.trim().split(/\s+/).slice(-2)),
-)
+const device = createAndroidTestDevice([base, viewer], cdpPort)
+const { adb, access: restoreAccess } = device
 const chosen = inputs
 const results = []
 try {
@@ -80,8 +61,8 @@ try {
       try {
         const pid = adb('shell', 'pidof', 'com.genoffice.viewerdemo').trim()
         if (!pid) throw Error('App exited')
-        adb('forward', `tcp:${cdpPort}`, `localabstract:webview_devtools_remote_${pid}`)
-        c = await connect()
+
+        c = await device.connect(pid)
         for (const [id, ctx] of c.contexts)
           if (ctx.auxData?.isDefault) {
             const state = await c.evaluate(
@@ -123,8 +104,7 @@ try {
     if (!manifest.sourceVerified || !['complete', 'not-needed'].includes(manifest.mediaPreparation))
       throw Error('Missing verified prepared media')
     await writeFile(join(output, `${x.fileId}-manifest.json`), JSON.stringify(manifest, null, 2))
-    adb('reverse', '--remove', `tcp:${backendPort}`)
-    adb('reverse', '--remove', `tcp:${viewerPort}`)
+    device.disconnect()
     const unavailable = await c.evaluate(
       `(async()=>{try{await fetch(${JSON.stringify(base + '/v2/capabilities')},{signal:AbortSignal.timeout(2000)});return false}catch{return true}})()`,
       ctxId,
@@ -182,19 +162,7 @@ try {
     console.log('DONE', x.name, 'media', media.length, 'scope', manifest.offlineScope)
   }
 } finally {
-  for (const port of [backendPort, viewerPort]) {
-    const from = `tcp:${port}`,
-      previous = savedReverses.get(from)
-    if (previous) adb('reverse', from, previous)
-    else {
-      try {
-        adb('reverse', '--remove', from)
-      } catch {}
-    }
-  }
-}
-function restoreAccess() {
-  for (const port of [backendPort, viewerPort]) adb('reverse', `tcp:${port}`, `tcp:${port}`)
+  device.restore()
 }
 
 async function exerciseUI(c, id) {
@@ -247,7 +215,58 @@ async function exerciseUI(c, id) {
         if (show?.time > 0) break
       }
       if (!show?.time) throw Error('Slideshow media did not advance')
-      return { slide: page + 1, pointerReachable: target.pointerReachable, preview, show }
+      await c.evaluate(
+        "(()=>{const v=document.querySelector('video,audio');v.pause();v.currentTime=0;v.__touchTrace=[];v.addEventListener('click',event=>{v.__touchTrace.push({phase:'click',paused:v.paused,time:v.currentTime});setTimeout(()=>v.__touchTrace.push({phase:'afterClick',defaultPrevented:event.defaultPrevented,paused:v.paused,time:v.currentTime}),0)},{once:true})})()",
+        id,
+      )
+      // Seeking and fullscreen transitions can move the player after a pause.
+      // Resolve the touch position after these asynchronous changes have settled.
+      await wait(500)
+      let showTarget
+      const seekDeadline = Date.now() + 10_000
+      do {
+        showTarget = await c.evaluate(
+          `(()=>{const v=document.querySelector('video,audio'),node=v.tagName==='VIDEO'?v:v.parentElement,r=node.getBoundingClientRect(),x=r.x+r.width/2,y=r.y+r.height/2,hit=document.elementFromPoint(x,y),fr=window.frameElement?.getBoundingClientRect();return{x:x+(fr?.x||0),y:y+(fr?.y||0),ready:v.readyState,seeking:v.seeking,paused:v.paused,pointerReachable:!!hit&&(node===hit||node.contains(hit))}})()`,
+          id,
+        )
+        if (!showTarget.seeking && showTarget.ready >= 2 && showTarget.paused) break
+        await wait(100)
+      } while (Date.now() < seekDeadline)
+      if (showTarget.seeking || showTarget.ready < 2 || !showTarget.paused)
+        throw Error('Media did not settle before touch: ' + JSON.stringify(showTarget))
+      if (showTarget.pointerReachable) {
+        await c.send('Input.dispatchTouchEvent', {
+          type: 'touchStart',
+          touchPoints: [{ x: showTarget.x, y: showTarget.y }],
+        })
+        await c.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+      } else
+        await c.evaluate(
+          "(()=>{const v=document.querySelector('video,audio');(v.tagName==='VIDEO'?v:v.parentElement).click()})()",
+          id,
+        )
+      let showClick
+      for (let retry = 0; retry < 60; retry++) {
+        await wait(300)
+        showClick = await c.evaluate(
+          "(()=>{const v=document.querySelector('video,audio');return{time:v.currentTime,paused:v.paused,error:v.error?.message,events:v.__touchTrace}})()",
+          id,
+        )
+        if (showClick.error) throw Error(showClick.error)
+        if (showClick.time > 0.1 && !showClick.paused) break
+      }
+      if (!(showClick?.time > 0.1) || showClick.paused)
+        throw Error(
+          'Slideshow media touch did not keep playing: ' +
+            JSON.stringify({ showTarget, showClick }),
+        )
+      return {
+        slide: page + 1,
+        pointerReachable: target.pointerReachable,
+        preview,
+        show,
+        showClick: { ...showClick, pointerReachable: showTarget.pointerReachable },
+      }
     }
     const moved = await c.evaluate(
       "(()=>{const b=document.querySelector('button[aria-label=下一页]');if(!b||b.disabled)return false;b.click();return true})()",
@@ -291,19 +310,23 @@ async function onlineCheck(x) {
       await wait(600)
       if (c) c.close()
       const pid = adb('shell', 'pidof', 'com.genoffice.viewerdemo').trim()
-      adb('forward', `tcp:${cdpPort}`, `localabstract:webview_devtools_remote_${pid}`)
       try {
-        c = await connect()
+        c = await device.connect(pid)
       } catch {
         continue
       }
       for (const [id, ctx] of c.contexts)
         if (ctx.auxData?.isDefault) {
           const ready = await c.evaluate(
-            "({preview:location.pathname.endsWith('/preview.html'),canvas:!!document.querySelector('.viewer-slide-stage canvas'),text:document.body.innerText})",
+            "({origin:location.origin,fileId:new URL(location.href).searchParams.get('fileId'),preview:location.pathname.endsWith('/preview.html'),canvas:!!document.querySelector('.viewer-slide-stage canvas'),text:document.body.innerText})",
             id,
           )
-          if (ready.preview && ready.canvas) {
+          if (
+            ready.origin === new URL(viewer).origin &&
+            ready.fileId === x.fileId &&
+            ready.preview &&
+            ready.canvas
+          ) {
             const ui = await exerciseUI(c, id)
             await screenshot(c, `${x.fileId}-online.png`)
             return ui
@@ -317,8 +340,6 @@ async function onlineCheck(x) {
 }
 async function screenshot(_c, name) {
   // CDP screenshots omit hardware canvas/video layers on this Android WebView.
-  const png = execFileSync('adb', ['-s', serial, 'exec-out', 'screencap', '-p'], {
-    maxBuffer: 32 * 1024 * 1024,
-  })
+  const png = device.readBytes(['exec-out', 'screencap', '-p'])
   await writeFile(join(output, `native-${name}`), png)
 }

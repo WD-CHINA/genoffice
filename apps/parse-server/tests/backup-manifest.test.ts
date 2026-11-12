@@ -1,3 +1,4 @@
+import { drainCleanups } from './helpers/cleanup'
 import { createHash, randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -7,14 +8,22 @@ import { artifactGenerationPath, type ReadyArtifact } from '../src/artifact-cata
 import { ArtifactGenerations } from '../src/artifact-generations'
 import { canonicalJson, type ArtifactIdentity } from '../src/artifact-store'
 import {
-  BackupConcurrencyError, BackupManifestError, createBackupManifest,
-  filesystemBackupCatalogSource, listPersistentPaths, verifyRestore,
-  type BackupArtifactRow, type BackupCatalogSnapshot, type BackupCatalogSource,
+  BackupConcurrencyError,
+  BackupManifestError,
+  createBackupManifest,
+  filesystemBackupCatalogSource,
+  listPersistentPaths,
+  verifyRestore,
+  type BackupArtifactRow,
+  type BackupCatalogSnapshot,
+  type BackupCatalogSource,
   type BackupManifest,
 } from '../src/backup-manifest'
 
 const cleanups: Array<() => Promise<void>> = []
-afterEach(async () => { while (cleanups.length) await cleanups.pop()!() })
+afterEach(async () => {
+  await drainCleanups(cleanups)
+})
 
 interface Fixture {
   dataDir: string
@@ -41,39 +50,89 @@ async function fixture(): Promise<Fixture> {
   await mkdir(join(dataDir, 'files', sha.slice(0, 2)), { recursive: true })
   await mkdir(join(dataDir, 'meta'), { recursive: true })
   await writeFile(sourcePath, bytes)
-  await writeFile(metaPath, JSON.stringify({ fileId: sha, sha256: sha, size: bytes.length,
-    format: 'pptx', createdAt: '2026-11-09T00:00:00.000Z' }))
+  await writeFile(
+    metaPath,
+    JSON.stringify({
+      fileId: sha,
+      sha256: sha,
+      size: bytes.length,
+      format: 'pptx',
+      createdAt: '2026-11-09T00:00:00.000Z',
+    }),
+  )
   const libraryPath = join(dataDir, 'library.json')
-  await writeFile(libraryPath, JSON.stringify([{ id: randomUUID(), fileId: sha,
-    displayName: 'saved.pptx', retention: 'saved', createdAt: 1, updatedAt: 1 }]))
-  const identity: ArtifactIdentity = { fileId: sha, format: 'pptx',
-    parserFingerprint: 'backup-manifest-test', schemaVersion: 1, options: {} }
+  await writeFile(
+    libraryPath,
+    JSON.stringify([
+      {
+        id: randomUUID(),
+        fileId: sha,
+        displayName: 'saved.pptx',
+        retention: 'saved',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ]),
+  )
+  const identity: ArtifactIdentity = {
+    fileId: sha,
+    format: 'pptx',
+    parserFingerprint: 'backup-manifest-test',
+    schemaVersion: 1,
+    options: {},
+  }
   const generations = new ArtifactGenerations(dataDir)
   const ready = await generations.publish(identity, 1, async (writer) => {
     await writer.append('document', { slides: 1 })
     await writer.append('unit:0', { index: 0 })
   })
-  return { dataDir, sha, sourceBytes: bytes, sourceSize: bytes.length,
-    sourcePath, metaPath, libraryPath, identity, ready,
-    generations, generationDir: join(dataDir, ready.storagePath),
-    source: filesystemBackupCatalogSource(dataDir) }
+  return {
+    dataDir,
+    sha,
+    sourceBytes: bytes,
+    sourceSize: bytes.length,
+    sourcePath,
+    metaPath,
+    libraryPath,
+    identity,
+    ready,
+    generations,
+    generationDir: join(dataDir, ready.storagePath),
+    source: filesystemBackupCatalogSource(dataDir),
+  }
 }
 
 /** A catalog with SQL-shaped rows, injected so ready fencing needs no database. */
-function sqlSnapshot(f: Fixture, overrides: Partial<BackupCatalogSnapshot> = {}): BackupCatalogSnapshot {
-  const artifact: BackupArtifactRow = { key: f.ready.key, fileId: f.sha, generation: 1,
-    identityValid: true, ready: f.ready, readyInvalid: false }
+function sqlSnapshot(
+  f: Fixture,
+  overrides: Partial<BackupCatalogSnapshot> = {},
+): BackupCatalogSnapshot {
+  const artifact: BackupArtifactRow = {
+    key: f.ready.key,
+    fileId: f.sha,
+    generation: 1,
+    identityValid: true,
+    ready: f.ready,
+    readyInvalid: false,
+  }
   return {
     backend: 'mysql',
     files: [{ fileId: f.sha, sha256: f.sha, size: f.sourceSize, format: 'pptx' }],
-    library: [], artifacts: [artifact], jobs: [{ key: f.ready.key, generation: 1 }],
-    retirements: [], flatArchives: [], archives: [], references: [f.sha],
+    library: [],
+    artifacts: [artifact],
+    jobs: [{ key: f.ready.key, generation: 1 }],
+    retirements: [],
+    flatArchives: [],
+    archives: [],
+    references: [f.sha],
     ...overrides,
   }
 }
-function injectedSource(snapshot: BackupCatalogSnapshot,
+function injectedSource(
+  snapshot: BackupCatalogSnapshot,
   current?: BackupCatalogSnapshot | (() => BackupCatalogSnapshot),
-  recheck = true) {
+  recheck = true,
+) {
   const reading = current ?? snapshot
   const live = typeof reading === 'function' ? reading : () => reading
   const close = vi.fn(async () => undefined)
@@ -100,7 +159,9 @@ describe('consistent backup manifest', () => {
     expect(paths).toContain('library.json')
     expect(paths).toContain(`${f.ready.storagePath}/manifest.json`)
     expect(paths).toContain(`${f.ready.storagePath}/units.bin`)
-    expect(manifest.entries.every((entry) => entry.required === (entry.kind !== 'artifact'))).toBe(true)
+    expect(manifest.entries.every((entry) => entry.required === (entry.kind !== 'artifact'))).toBe(
+      true,
+    )
     const report = await verifyRestore({ dataDir: f.dataDir, manifest, source: f.source })
     expect(report.ok).toBe(true)
     expect(report.readyAllowed).toBe(true)
@@ -118,26 +179,38 @@ describe('consistent backup manifest', () => {
     const manifest = await createBackupManifest({ dataDir: f.dataDir, source: f.source })
     const altered = JSON.parse(JSON.stringify(manifest)) as BackupManifest
     altered.entries[0].sha256 = 'a'.repeat(64)
-    await expect(verifyRestore({ dataDir: f.dataDir, manifest: altered, source: f.source }))
-      .rejects.toBeInstanceOf(BackupManifestError)
+    await expect(
+      verifyRestore({ dataDir: f.dataDir, manifest: altered, source: f.source }),
+    ).rejects.toBeInstanceOf(BackupManifestError)
     const wrongVersion = { ...manifest, schemaVersion: 99 } as unknown as BackupManifest
-    await expect(verifyRestore({ dataDir: f.dataDir, manifest: wrongVersion, source: f.source }))
-      .rejects.toBeInstanceOf(BackupManifestError)
+    await expect(
+      verifyRestore({ dataDir: f.dataDir, manifest: wrongVersion, source: f.source }),
+    ).rejects.toBeInstanceOf(BackupManifestError)
     const badPath = JSON.parse(JSON.stringify(manifest)) as BackupManifest
     badPath.entries[0].path = '../etc/passwd'
-    await expect(verifyRestore({ dataDir: f.dataDir, manifest: badPath, source: f.source }))
-      .rejects.toBeInstanceOf(BackupManifestError)
+    await expect(
+      verifyRestore({ dataDir: f.dataDir, manifest: badPath, source: f.source }),
+    ).rejects.toBeInstanceOf(BackupManifestError)
   })
 
   it('fails the drill when a catalogued source has no bytes in the inventory', async () => {
     const f = await fixture()
     const manifest = await createBackupManifest({ dataDir: f.dataDir, source: f.source })
     const entries = manifest.entries.filter((entry) => entry.kind !== 'source')
-    const reduced: BackupManifest = { ...manifest, entries,
-      digest: createHash('sha256').update(canonicalJson({
-        schemaVersion: 1, createdAt: manifest.createdAt,
-        catalog: manifest.catalog, entries,
-      })).digest('hex') }
+    const reduced: BackupManifest = {
+      ...manifest,
+      entries,
+      digest: createHash('sha256')
+        .update(
+          canonicalJson({
+            schemaVersion: 1,
+            createdAt: manifest.createdAt,
+            catalog: manifest.catalog,
+            entries,
+          }),
+        )
+        .digest('hex'),
+    }
     const report = await verifyRestore({ dataDir: f.dataDir, manifest: reduced, source: f.source })
     expect(issueCodes(report.errors)).toContain('source_not_in_backup')
     expect(report.ok).toBe(false)
@@ -181,23 +254,38 @@ describe('consistent backup manifest', () => {
 
   it('refuses to snapshot an inconsistent filesystem index', async () => {
     const f = await fixture()
-    await writeFile(f.libraryPath, JSON.stringify([{ id: randomUUID(),
-      fileId: 'b'.repeat(64), displayName: 'dangling', retention: 'saved',
-      createdAt: 1, updatedAt: 1 }]))
-    await expect(createBackupManifest({ dataDir: f.dataDir, source: f.source }))
-      .rejects.toThrow(/dangling.*reference/)
+    await writeFile(
+      f.libraryPath,
+      JSON.stringify([
+        {
+          id: randomUUID(),
+          fileId: 'b'.repeat(64),
+          displayName: 'dangling',
+          retention: 'saved',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ]),
+    )
+    await expect(createBackupManifest({ dataDir: f.dataDir, source: f.source })).rejects.toThrow(
+      /dangling.*reference/,
+    )
     await writeFile(f.libraryPath, JSON.stringify([]))
-    await writeFile(f.metaPath, JSON.stringify({ fileId: f.sha, sha256: 'c'.repeat(64),
-      size: 48, format: 'pptx' }))
-    await expect(createBackupManifest({ dataDir: f.dataDir, source: f.source }))
-      .rejects.toThrow(/invalid file metadata entry/)
+    await writeFile(
+      f.metaPath,
+      JSON.stringify({ fileId: f.sha, sha256: 'c'.repeat(64), size: 48, format: 'pptx' }),
+    )
+    await expect(createBackupManifest({ dataDir: f.dataDir, source: f.source })).rejects.toThrow(
+      /invalid file metadata entry/,
+    )
   })
 
   it('refuses a manifest when the catalog changes while files are hashed', async () => {
     const f = await fixture()
     const { source, close } = injectedSource(await f.source.read(), undefined, false)
-    await expect(createBackupManifest({ dataDir: f.dataDir, source }))
-      .rejects.toBeInstanceOf(BackupConcurrencyError)
+    await expect(createBackupManifest({ dataDir: f.dataDir, source })).rejects.toBeInstanceOf(
+      BackupConcurrencyError,
+    )
     expect(close).toHaveBeenCalledTimes(1)
   })
 
@@ -205,8 +293,15 @@ describe('consistent backup manifest', () => {
     const f = await fixture()
     const manifest = await createBackupManifest({ dataDir: f.dataDir, source: f.source })
     const extra = 'd'.repeat(64)
-    await writeFile(join(f.dataDir, 'meta', `${extra}.json`), JSON.stringify({
-      fileId: extra, sha256: extra, size: 1, format: 'pptx' }))
+    await writeFile(
+      join(f.dataDir, 'meta', `${extra}.json`),
+      JSON.stringify({
+        fileId: extra,
+        sha256: extra,
+        size: 1,
+        format: 'pptx',
+      }),
+    )
     const report = await verifyRestore({ dataDir: f.dataDir, manifest, source: f.source })
     expect(report.warnings.some((issue) => issue.code === 'unlisted_file')).toBe(true)
     const mysql = injectedSource({ ...manifest.catalog, backend: 'mysql', artifacts: [] })
@@ -227,8 +322,13 @@ describe('recovery drill with SQL-shaped catalog rows', () => {
 
   it('proves every ready pointer against the manifest before allowing readiness', async () => {
     const { f, injected, manifest } = await sqlFixture()
-    const report = await verifyRestore({ dataDir: f.dataDir, manifest,
-      source: injected.source, generations: f.generations, deep: true })
+    const report = await verifyRestore({
+      dataDir: f.dataDir,
+      manifest,
+      source: injected.source,
+      generations: f.generations,
+      deep: true,
+    })
     expect(report.ok).toBe(true)
     expect(report.readyAllowed).toBe(true)
     expect(report.counts.readyPointers).toBe(1)
@@ -249,8 +349,13 @@ describe('recovery drill with SQL-shaped catalog rows', () => {
       live = { ...snapshot, artifacts: [{ ...snapshot.artifacts[0], ready: null }] }
       return true
     })
-    const report = await verifyRestore({ dataDir: f.dataDir, manifest,
-      source, generations: f.generations, catalog: { invalidateReady } })
+    const report = await verifyRestore({
+      dataDir: f.dataDir,
+      manifest,
+      source,
+      generations: f.generations,
+      catalog: { invalidateReady },
+    })
     expect(invalidateReady).toHaveBeenCalledWith(f.ready)
     expect(report.blockedReady).toHaveLength(1)
     expect(report.blockedReady[0]).toMatchObject({ key: f.ready.key, reconciled: true })
@@ -262,15 +367,24 @@ describe('recovery drill with SQL-shaped catalog rows', () => {
   it('fails closed when a bad ready pointer cannot be withdrawn', async () => {
     const { f, injected, manifest } = await sqlFixture()
     await rm(join(f.generationDir, 'manifest.json'))
-    const readonly = await verifyRestore({ dataDir: f.dataDir, manifest,
-      source: injected.source, generations: f.generations, invalidate: false })
+    const readonly = await verifyRestore({
+      dataDir: f.dataDir,
+      manifest,
+      source: injected.source,
+      generations: f.generations,
+      invalidate: false,
+    })
     expect(readonly.ok).toBe(false)
     expect(readonly.readyAllowed).toBe(false)
     expect(issueCodes(readonly.errors)).toContain('ready_not_reconciled')
 
-    const refused = await verifyRestore({ dataDir: f.dataDir, manifest,
-      source: injected.source, generations: f.generations,
-      catalog: { invalidateReady: async () => false } })
+    const refused = await verifyRestore({
+      dataDir: f.dataDir,
+      manifest,
+      source: injected.source,
+      generations: f.generations,
+      catalog: { invalidateReady: async () => false },
+    })
     expect(refused.ok).toBe(false)
     expect(issueCodes(refused.errors)).toContain('ready_not_reconciled')
   })
@@ -278,8 +392,10 @@ describe('recovery drill with SQL-shaped catalog rows', () => {
   it('accepts a concurrently cleared pointer as reconciled', async () => {
     const { f, snapshot, manifest } = await sqlFixture()
     await rm(join(f.generationDir, 'units.bin'))
-    const cleared: BackupCatalogSnapshot = { ...snapshot,
-      artifacts: [{ ...snapshot.artifacts[0], ready: null }] }
+    const cleared: BackupCatalogSnapshot = {
+      ...snapshot,
+      artifacts: [{ ...snapshot.artifacts[0], ready: null }],
+    }
     let reads = 0
     const source: BackupCatalogSource = {
       backend: 'mysql',
@@ -288,8 +404,13 @@ describe('recovery drill with SQL-shaped catalog rows', () => {
       // sees that another process already withdrew it.
       read: async () => (++reads === 1 ? snapshot : cleared),
     }
-    const report = await verifyRestore({ dataDir: f.dataDir, manifest, source,
-      generations: f.generations, catalog: { invalidateReady: async () => false } })
+    const report = await verifyRestore({
+      dataDir: f.dataDir,
+      manifest,
+      source,
+      generations: f.generations,
+      catalog: { invalidateReady: async () => false },
+    })
     expect(reads).toBeGreaterThanOrEqual(2)
     expect(report.ok).toBe(true)
     expect(report.blockedReady[0].reconciled).toBe(true)
@@ -307,12 +428,21 @@ describe('recovery drill with SQL-shaped catalog rows', () => {
     // Re-snapshotting would bless the damaged bytes, so the full-file hashes
     // alone cannot detect it. Only the per-frame gzip/sha256 deep check can.
     const manifest = await createBackupManifest({ dataDir: f.dataDir, source: injected.source })
-    const shallow = await verifyRestore({ dataDir: f.dataDir, manifest,
-      source: injected.source, generations: f.generations })
+    const shallow = await verifyRestore({
+      dataDir: f.dataDir,
+      manifest,
+      source: injected.source,
+      generations: f.generations,
+    })
     expect(shallow.readyVerified).toEqual([f.ready.key])
-    const deep = await verifyRestore({ dataDir: f.dataDir, manifest,
-      source: injected.source, generations: f.generations, deep: true,
-      catalog: { invalidateReady: async () => true } })
+    const deep = await verifyRestore({
+      dataDir: f.dataDir,
+      manifest,
+      source: injected.source,
+      generations: f.generations,
+      deep: true,
+      catalog: { invalidateReady: async () => true },
+    })
     expect(deep.blockedReady).toHaveLength(1)
     expect(deep.readyVerified).toEqual([])
     // The injected catalog keeps advertising the bad generation after the
@@ -327,13 +457,26 @@ describe('recovery drill with SQL-shaped catalog rows', () => {
     const manifest = await createBackupManifest({ dataDir: f.dataDir, source: injected.source })
     const entries = manifest.entries.filter((entry) => entry.kind !== 'artifact')
     // Deliberately omit the generation bytes so verification must hash them live.
-    const withoutArtifacts: BackupManifest = { ...manifest, entries,
-      digest: createHash('sha256').update(canonicalJson({
-        schemaVersion: 1, createdAt: manifest.createdAt,
-        catalog: manifest.catalog, entries,
-      })).digest('hex') }
-    const report = await verifyRestore({ dataDir: f.dataDir, manifest: withoutArtifacts,
-      source: injected.source, generations: f.generations })
+    const withoutArtifacts: BackupManifest = {
+      ...manifest,
+      entries,
+      digest: createHash('sha256')
+        .update(
+          canonicalJson({
+            schemaVersion: 1,
+            createdAt: manifest.createdAt,
+            catalog: manifest.catalog,
+            entries,
+          }),
+        )
+        .digest('hex'),
+    }
+    const report = await verifyRestore({
+      dataDir: f.dataDir,
+      manifest: withoutArtifacts,
+      source: injected.source,
+      generations: f.generations,
+    })
     expect(report.readyVerified).toEqual([f.ready.key])
     expect(report.warnings.some((issue) => issue.code === 'unlisted_file')).toBe(true)
   })
@@ -348,12 +491,20 @@ describe('recovery drill with SQL-shaped catalog rows', () => {
     const injected = injectedSource(snapshot)
     const manifest = await createBackupManifest({ dataDir: f.dataDir, source: injected.source })
     const lost: BackupCatalogSnapshot = {
-      ...snapshot, files: [], library: [], artifacts: [],
-      archives: [], references: [],
+      ...snapshot,
+      files: [],
+      library: [],
+      artifacts: [],
+      archives: [],
+      references: [],
     }
     const broken = injectedSource(snapshot, lost)
-    const report = await verifyRestore({ dataDir: f.dataDir, manifest,
-      source: broken.source, generations: f.generations })
+    const report = await verifyRestore({
+      dataDir: f.dataDir,
+      manifest,
+      source: broken.source,
+      generations: f.generations,
+    })
     expect(report.ok).toBe(false)
     expect(report.readyAllowed).toBe(false)
     const codes = issueCodes(report.errors)
@@ -369,12 +520,19 @@ describe('recovery drill with SQL-shaped catalog rows', () => {
     const snapshot = sqlSnapshot(f)
     const injected = injectedSource(snapshot)
     const manifest = await createBackupManifest({ dataDir: f.dataDir, source: injected.source })
-    const malformed: BackupCatalogSnapshot = { ...snapshot,
-      artifacts: [{ ...snapshot.artifacts[0], ready: null, readyInvalid: true,
-        identityValid: false }] }
+    const malformed: BackupCatalogSnapshot = {
+      ...snapshot,
+      artifacts: [
+        { ...snapshot.artifacts[0], ready: null, readyInvalid: true, identityValid: false },
+      ],
+    }
     const { source } = injectedSource(snapshot, malformed)
-    const report = await verifyRestore({ dataDir: f.dataDir, manifest, source,
-      generations: f.generations })
+    const report = await verifyRestore({
+      dataDir: f.dataDir,
+      manifest,
+      source,
+      generations: f.generations,
+    })
     expect(issueCodes(report.errors)).toContain('invalid_ready_pointer')
     expect(issueCodes(report.errors)).toContain('catalog_identity_mismatch')
     expect(report.ok).toBe(false)
@@ -382,13 +540,26 @@ describe('recovery drill with SQL-shaped catalog rows', () => {
 
   it('rejects a snapshot whose generation path does not match its key', async () => {
     const f = await fixture()
-    const wrong: ReadyArtifact = { ...f.ready,
-      storagePath: artifactGenerationPath('e'.repeat(64), 1) }
-    const snapshot = sqlSnapshot(f, { artifacts: [{ key: f.ready.key, fileId: f.sha,
-      generation: 1, identityValid: true, ready: wrong, readyInvalid: false }] })
+    const wrong: ReadyArtifact = {
+      ...f.ready,
+      storagePath: artifactGenerationPath('e'.repeat(64), 1),
+    }
+    const snapshot = sqlSnapshot(f, {
+      artifacts: [
+        {
+          key: f.ready.key,
+          fileId: f.sha,
+          generation: 1,
+          identityValid: true,
+          ready: wrong,
+          readyInvalid: false,
+        },
+      ],
+    })
     const { source } = injectedSource(snapshot)
-    await expect(createBackupManifest({ dataDir: f.dataDir, source }))
-      .rejects.toThrow(/invalid generation path/)
+    await expect(createBackupManifest({ dataDir: f.dataDir, source })).rejects.toThrow(
+      /invalid generation path/,
+    )
   })
 })
 
@@ -399,7 +570,14 @@ describe('artifact dependency graph in backups', () => {
     const snapshot = sqlSnapshot(f, {
       artifacts: [
         ...sqlSnapshot(f).artifacts,
-        { key: otherKey, fileId: f.sha, generation: 1, identityValid: true, ready: null, readyInvalid: false },
+        {
+          key: otherKey,
+          fileId: f.sha,
+          generation: 1,
+          identityValid: true,
+          ready: null,
+          readyInvalid: false,
+        },
       ],
       dependencies: [
         { artifactKey: f.ready.key, type: 'file', id: f.sha },
@@ -418,22 +596,37 @@ describe('artifact dependency graph in backups', () => {
     const f = await fixture()
     const injected = injectedSource(sqlSnapshot(f))
     const manifest = await createBackupManifest({ dataDir: f.dataDir, source: injected.source })
-    const tampered = { ...manifest, catalog: { ...manifest.catalog, dependencies: [
-      { artifactKey: f.ready.key, type: 'file', id: 'd'.repeat(64) },
-      { artifactKey: 'e'.repeat(64), type: 'file', id: f.sha },
-    ] } }
+    const tampered = {
+      ...manifest,
+      catalog: {
+        ...manifest.catalog,
+        dependencies: [
+          { artifactKey: f.ready.key, type: 'file', id: 'd'.repeat(64) },
+          { artifactKey: 'e'.repeat(64), type: 'file', id: f.sha },
+        ],
+      },
+    }
     const sealed = {
-      schemaVersion: tampered.schemaVersion, createdAt: tampered.createdAt,
-      catalog: tampered.catalog, entries: tampered.entries,
-      digest: createHash('sha256').update(canonicalJson({
-        schemaVersion: tampered.schemaVersion, createdAt: tampered.createdAt,
-        catalog: tampered.catalog, entries: tampered.entries,
-      })).digest('hex'),
+      schemaVersion: tampered.schemaVersion,
+      createdAt: tampered.createdAt,
+      catalog: tampered.catalog,
+      entries: tampered.entries,
+      digest: createHash('sha256')
+        .update(
+          canonicalJson({
+            schemaVersion: tampered.schemaVersion,
+            createdAt: tampered.createdAt,
+            catalog: tampered.catalog,
+            entries: tampered.entries,
+          }),
+        )
+        .digest('hex'),
     }
     // The shape/catalog consistency gate rejects the tampered catalog before the
     // drill can produce a report: dangling edges never become "ok".
-    await expect(verifyRestore({ dataDir: f.dataDir, manifest: sealed, source: injected.source }))
-      .rejects.toThrow(/dangling (file|artifact) dependency/)
+    await expect(
+      verifyRestore({ dataDir: f.dataDir, manifest: sealed, source: injected.source }),
+    ).rejects.toThrow(/dangling (file|artifact) dependency/)
   })
 
   it('warns when the live catalog has an edge the backup did not capture', async () => {
@@ -446,7 +639,9 @@ describe('artifact dependency graph in backups', () => {
     const manifest = await createBackupManifest({ dataDir: f.dataDir, source: source.source })
     const report = await verifyRestore({ dataDir: f.dataDir, manifest, source: source.source })
     expect(report.ok).toBe(true)
-    expect(report.warnings.some((warning) => warning.code === 'dependency_added_after_backup')).toBe(true)
+    expect(
+      report.warnings.some((warning) => warning.code === 'dependency_added_after_backup'),
+    ).toBe(true)
   })
 
   it('refuses to snapshot a catalog with dangling dependency edges', async () => {
@@ -454,8 +649,11 @@ describe('artifact dependency graph in backups', () => {
     const snapshot = sqlSnapshot(f, {
       dependencies: [{ artifactKey: f.ready.key, type: 'file', id: 'f'.repeat(64) }],
     })
-    await expect(createBackupManifest({
-      dataDir: f.dataDir, source: injectedSource(snapshot).source,
-    })).rejects.toThrow(/dangling file dependency/)
+    await expect(
+      createBackupManifest({
+        dataDir: f.dataDir,
+        source: injectedSource(snapshot).source,
+      }),
+    ).rejects.toThrow(/dangling file dependency/)
   })
 })

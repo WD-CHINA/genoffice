@@ -1,3 +1,4 @@
+import { serverRoot } from './helpers/paths'
 import { once } from 'node:events'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -95,7 +96,7 @@ for (const format of ['pptx', 'docx'] as const) {
     const bytes =
       format === 'pptx'
         ? Buffer.from(await createBlankPptx())
-        : await readFile(join(process.cwd(), 'tests/fixtures/docx/table.docx'))
+        : await readFile(join(serverRoot, 'tests/fixtures/docx/table.docx'))
     const upload = await fetch(`${first.url}/v1/files`, { method: 'POST', body: bytes })
     expect(upload.status).toBe(201)
     const { fileId } = (await upload.json()) as { fileId: string }
@@ -127,14 +128,21 @@ it('rejects pre-aborted ownership without spawning a parser process', () => {
   const controller = new AbortController()
   const reason = new Error('lease already lost')
   controller.abort(reason)
-  expect(() => worker({ heapMb: 64, rssMb: 512, groupId: 'pre-abort', signal: controller.signal })).toThrow(reason)
+  expect(() =>
+    worker({ heapMb: 64, rssMb: 512, groupId: 'pre-abort', signal: controller.signal }),
+  ).toThrow(reason)
   expect(isolatedMemory('pre-abort').processes).toBe(0)
 })
 
 it('ownership cancellation kills a CPU-bound child and detaches its listener', async () => {
   const controller = new AbortController()
   const removed = vi.spyOn(controller.signal, 'removeEventListener')
-  const child = worker({ heapMb: 64, rssMb: 512, signal: controller.signal, groupId: 'lease-abort' })
+  const child = worker({
+    heapMb: 64,
+    rssMb: 512,
+    signal: controller.signal,
+    groupId: 'lease-abort',
+  })
   const failed = new Promise<Error>((resolve) => child.once('error', resolve))
   const started = once(child, 'message')
   child.postMessage({ op: 'spin' })

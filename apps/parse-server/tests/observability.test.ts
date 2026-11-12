@@ -1,3 +1,4 @@
+import { serverRoot } from './helpers/paths'
 import { createBlankPptx } from '@genoffice/pptx-engine'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -18,7 +19,7 @@ type StartOptions = Omit<Parameters<typeof createParseServer>[0], 'dataDir'> & {
 }
 
 async function start(options: StartOptions): Promise<ParseServer> {
-  const dataDir = options.dataDir ?? await mkdtemp(join(tmpdir(), 'observability-'))
+  const dataDir = options.dataDir ?? (await mkdtemp(join(tmpdir(), 'observability-')))
   if (!options.dataDir) dirs.push(dataDir)
   const server = await createParseServer({ ...options, dataDir })
   servers.push(server)
@@ -35,21 +36,22 @@ it('exposes unit-read latency, queue age, signing, artifact and bundle counters'
       ...init,
       headers: { Authorization: 'Bearer secret', ...init.headers },
     })
-  const docx = await readFile(join(process.cwd(), 'tests', 'fixtures', 'docx', 'table.docx'))
+  const docx = await readFile(join(serverRoot, 'tests', 'fixtures', 'docx', 'table.docx'))
   const uploaded = await call('/v1/files', { method: 'POST', body: docx })
   expect(uploaded.status).toBe(201)
-  const { fileId } = await uploaded.json() as { fileId: string }
+  const { fileId } = (await uploaded.json()) as { fileId: string }
   // v2 cold open exercises the artifact-miss counter and the async path.
   const opened = await call('/v2/sessions', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ fileId }),
   })
   expect([201, 202]).toContain(opened.status)
-  const { sessionId } = await opened.json() as { sessionId: string }
+  const { sessionId } = (await opened.json()) as { sessionId: string }
   const deadline = Date.now() + 20_000
   for (;;) {
     const status = await call(`/v2/sessions/${sessionId}`)
-    const body = await status.json() as { state: string }
+    const body = (await status.json()) as { state: string }
     if (body.state === 'ready') break
     if (body.state === 'failed') throw new Error('session failed')
     if (Date.now() > deadline) throw new Error('session did not become ready')
@@ -79,7 +81,7 @@ it('exposes unit-read latency, queue age, signing, artifact and bundle counters'
   expect(text).toMatch(/genoffice_parse_storage_artifact_bytes \d+/)
   expect(text).toMatch(/genoffice_parse_storage_staging_bytes \d+/)
   // The same counters are visible through health/artifacts.
-  const health = await (await call('/v1/health')).json() as {
+  const health = (await (await call('/v1/health')).json()) as {
     artifacts: { misses: number; corruptions: number }
   }
   expect(health.artifacts.misses).toBeGreaterThan(0)
@@ -89,14 +91,16 @@ it('exposes unit-read latency, queue age, signing, artifact and bundle counters'
 it('counts bytes removed by content GC', async () => {
   const server = await start({ contentTtlMs: 0 })
   const uploaded = await fetch(server.url + '/v1/files', {
-    method: 'POST', body: Buffer.from(await createBlankPptx()),
+    method: 'POST',
+    body: Buffer.from(await createBlankPptx()),
   })
-  const { fileId } = await (await uploaded.json()) as { fileId: string }
+  const { fileId } = (await await uploaded.json()) as { fileId: string }
   const opened = await fetch(server.url + '/v1/sessions', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ fileId }),
   })
-  const { sessionId } = await opened.json() as { sessionId: string }
+  const { sessionId } = (await opened.json()) as { sessionId: string }
   await fetch(server.url + `/v1/sessions/${sessionId}`, { method: 'DELETE' })
   await new Promise((resolve) => setTimeout(resolve, 5))
   await server.gc()
@@ -108,7 +112,12 @@ it('counts bytes removed by content GC', async () => {
 it('reports the oldest waiting build age', async () => {
   const queue = new ParseQueue(1, 4, 8192, 1)
   let release!: () => void
-  const first = queue.run(() => new Promise<void>((resolve) => { release = resolve }))
+  const first = queue.run(
+    () =>
+      new Promise<void>((resolve) => {
+        release = resolve
+      }),
+  )
   const second = queue.run(async () => undefined)
   await new Promise((resolve) => setTimeout(resolve, 25))
   expect(queue.snapshot.queued).toBe(1)

@@ -1,22 +1,8 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { registerHooks } from 'node:module'
+import { loadModelSession, workerProbe } from './helpers/session-probes.ts'
 
-// Vite turns font imports into URLs; mirror that asset boundary in Node tests.
-const assets = registerHooks({
-  load(url, context, nextLoad) {
-    if (/\.(ttf|woff2)(\?url)?$/.test(url)) {
-      return {
-        format: 'module',
-        source: `export default ${JSON.stringify(url)}`,
-        shortCircuit: true,
-      }
-    }
-    return nextLoad(url, context)
-  },
-})
-const { createModelPptxSession } = await import('../src/web/pptx-model-session.ts')
-assets.deregister()
+const { createModelPptxSession } = await loadModelSession()
 
 // Exercise the real session's RPC/lifecycle with controlled worker replies and HTTP.
 test('125-minute idle presentation keeps its session alive; concurrent reads deduplicate', async (t) => {
@@ -26,28 +12,11 @@ test('125-minute idle presentation keeps its session alive; concurrent reads ded
   const calls: string[] = []
   const messages: Array<{ id: number; op: string; input: any }> = []
   const unit = { slide: { widthPx: 960, heightPx: 540, nodes: [] }, playback: {}, mediaRefs: [] }
-  class WorkerStub {
-    static current: WorkerStub
-    onmessage?: (event: { data: unknown }) => void
-    onerror?: (event: unknown) => void
-    terminated = false
-    constructor() {
-      WorkerStub.current = this
-    }
-    postMessage(message: { id: number; op: string; input: any }) {
-      messages.push(message)
-      if (message.op === 'open')
-        queueMicrotask(() => this.reply(message.id, { unit, measurements: [], fallbacks: [] }))
-      if (message.op === 'release')
-        queueMicrotask(() => this.reply(message.id, { dropped: message.input.indexes }))
-    }
-    reply(id: number, result: unknown) {
-      this.onmessage?.({ data: { id, ok: true, result } })
-    }
-    terminate() {
-      this.terminated = true
-    }
-  }
+  const WorkerStub = workerProbe((worker, message) => {
+    messages.push(message)
+    if (message.op === 'open') worker.reply(message.id, { unit, measurements: [], fallbacks: [] })
+    if (message.op === 'release') worker.reply(message.id, { dropped: message.input.indexes })
+  })
   globalThis.Worker = WorkerStub as unknown as typeof Worker
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
     calls.push(`${init?.method || 'GET'} ${url}`)

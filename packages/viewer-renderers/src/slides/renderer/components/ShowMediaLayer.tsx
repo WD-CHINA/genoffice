@@ -183,6 +183,7 @@ export function ShowMediaLayer({
               style={style}
               onError={() => mediaError(n.sourceId, '无法播放该视频：资源无法读取或当前浏览器不支持其编码。')}
               playsInline
+              controls={true}
               muted={muted}
               onClick={(e) => {
                 e.stopPropagation()

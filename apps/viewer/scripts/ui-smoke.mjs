@@ -1,3 +1,4 @@
+/* global innerWidth, getComputedStyle, matchMedia, document, requestAnimationFrame */
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mkdir, readFile } from 'node:fs/promises'
@@ -74,7 +75,7 @@ function samplePdf() {
 }
 const fixtures = {
   PPT: resolve(root, 'packages/pptx-engine/tests/fixtures/01_standard_business.pptx'),
-  Word: resolve(root, 'apps/docs/tests/pagination-corpus/docx/07-page-breaks.docx'),
+  Word: resolve(root, 'apps/docs/tests/pagination-corpus/docx/05-long-table.docx'),
   PDF: samplePdf(),
 }
 const browser = await chromium.launch({
@@ -91,9 +92,14 @@ async function load(page, format, query = '') {
   await page.getByLabel('打开文件').setInputFiles(fixtures[format])
   const frame = page.frameLocator('iframe')
   try {
-    await expect(frame.getByLabel(`${format} 页码`).locator('option').nth(1)).toBeAttached({
-      timeout: 60000,
-    })
+    if (format === 'Word')
+      await expect(frame.getByRole('toolbar', { name: 'Word 控制栏' })).toBeVisible({
+        timeout: 60000,
+      })
+    else
+      await expect(frame.getByLabel(`${format} 页码`).locator('option').nth(1)).toBeAttached({
+        timeout: 60000,
+      })
   } catch (error) {
     console.error(format, await frame.locator('body').innerText())
     throw error
@@ -101,11 +107,16 @@ async function load(page, format, query = '') {
   return frame
 }
 async function minimalControls(frame, bar, format) {
-  await expect(bar.getByLabel(`${format} 页码`)).toBeHidden()
-  await expect(bar.getByLabel(`${format} 当前页`)).toBeVisible()
-  const current = await bar.getByLabel(`${format} 页码`).inputValue()
-  const total = await bar.getByLabel(`${format} 页码`).locator('option').count()
-  await expect(bar.getByLabel(`${format} 当前页`)).toHaveText(`${current} / ${total}`)
+  if (format === 'Word') {
+    await expect(bar.locator('.viewer-page-controls')).toHaveCount(0)
+    await expect(frame.locator('.pv-page, .viewer-doc-remote-page')).toHaveCount(0)
+  } else {
+    await expect(bar.getByLabel(`${format} 页码`)).toBeHidden()
+    await expect(bar.getByLabel(`${format} 当前页`)).toBeVisible()
+    const current = await bar.getByLabel(`${format} 页码`).inputValue()
+    const total = await bar.getByLabel(`${format} 页码`).locator('option').count()
+    await expect(bar.getByLabel(`${format} 当前页`)).toHaveText(`${current} / ${total}`)
+  }
   const width = await bar.evaluate(() => innerWidth)
   if (format !== 'PPT' && width > 700)
     await expect(bar.locator('.viewer-zoom-controls').first()).toBeVisible()
@@ -113,10 +124,12 @@ async function minimalControls(frame, bar, format) {
   if (format === 'PPT') await expect(bar.locator('details')).toBeHidden()
   else await expect(bar.locator('summary')).toBeVisible()
   if (format === 'PPT') await expect(frame.locator('.viewer-thumb-total')).toBeHidden()
-  const border = await bar
-    .getByLabel(`${format} 当前页`)
-    .evaluate((element) => getComputedStyle(element).borderWidth)
-  assert.equal(border, '0px', `Static ${format} page status has a border`)
+  if (format !== 'Word') {
+    const border = await bar
+      .getByLabel(`${format} 当前页`)
+      .evaluate((element) => getComputedStyle(element).borderWidth)
+    assert.equal(border, '0px', `Static ${format} page status has a border`)
+  }
 }
 // Hidden controls remain mounted; invoke their callbacks to check preserved behavior.
 async function hiddenAction(bar, label) {
@@ -133,7 +146,9 @@ async function layout(frame) {
     const rect = root.getBoundingClientRect()
     const bar = root.querySelector(':scope > .viewer-floating-bar')
     const bounds = bar.getBoundingClientRect()
-    const body = root.querySelector('.viewer-reading-body, .viewer-deck').getBoundingClientRect()
+    const body = root
+      .querySelector('.viewer-reading-body, .viewer-doc-reading-scroll, .viewer-deck')
+      .getBoundingClientRect()
     const controls = [...bar.querySelectorAll('button, select, summary')].filter((el) =>
       el.checkVisibility(),
     )
@@ -166,8 +181,6 @@ async function layout(frame) {
   )
   assert.deepEqual(result.smallControls, [], 'Controls became too small')
   assert.equal(result.zoom, '', 'Toolbar uses JS zoom')
-  if (result.width <= 700) {
-  }
   if (result.width <= 700 || result.coarsePointer) {
     assert.ok(
       result.toolbarHeight <= 64,
@@ -179,7 +192,9 @@ async function layout(frame) {
     )
   }
   const sizes = await frame.locator('.viewer-preview').evaluate(async (root) => {
-    const page = root.querySelector('.viewer-slide-stage, .pv-page, .viewer-pdf-page')
+    const page = root.querySelector(
+      '.viewer-slide-stage, .viewer-doc-reading-paper, .viewer-pdf-page',
+    )
     const read = () => {
       const rect = page.getBoundingClientRect()
       return { width: rect.width, height: rect.height }
@@ -202,26 +217,8 @@ async function layout(frame) {
     `Toolbar visibility changes content fit: ${JSON.stringify(sizes)}`,
   )
   if (await frame.locator('.viewer-doc').count()) {
-    const state = await frame.locator('.pv-scroll').evaluate((scroll) => {
-      const viewport = scroll.getBoundingClientRect()
-      const pages = [...scroll.querySelectorAll('.pv-page')]
-      const height = (page) => {
-        const rect = page.getBoundingClientRect()
-        return Math.max(
-          0,
-          Math.min(rect.bottom, viewport.bottom) - Math.max(rect.top, viewport.top),
-        )
-      }
-      const visible = pages.reduce(
-        (best, page) => (!best || height(page) > height(best) ? page : best),
-        null,
-      )
-      return {
-        expected: Number(visible.dataset.pvPage) + 1,
-        current: Number(document.querySelector('[aria-label="Word 页码"]').value),
-      }
-    })
-    assert.equal(state.current, state.expected, 'Word page status does not match the visible page')
+    await expect(frame.locator('.viewer-doc-reading-paper')).toHaveCount(1)
+    await expect(frame.locator('[contenteditable="true"]')).toHaveCount(0)
   }
 }
 try {
@@ -244,7 +241,7 @@ try {
         await page.waitForTimeout(180)
         await layout(frame)
         await minimalControls(frame, bar, format)
-        await toolbarAction(bar, '适合页面', format)
+        await toolbarAction(bar, format === 'Word' ? '适合宽度' : '适合页面', format)
         await page.screenshot({ path: `${output}/${format}-${theme}-${width}.png` })
       }
       await page.setViewportSize({ width: 375, height: 520 })
@@ -252,14 +249,21 @@ try {
       await layout(frame)
       await page.setViewportSize({ width: 1440, height: 820 })
       await page.waitForTimeout(180)
-      const current = Number(await bar.getByLabel(`${format} 页码`).inputValue())
-      for (let index = current; index > 1; index--)
+      if (format === 'Word') {
+        const scroll = frame.locator('.viewer-doc-reading-scroll')
+        await scroll.focus()
+        await scroll.press('PageDown')
+        await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)
+      } else {
+        const current = Number(await bar.getByLabel(`${format} 页码`).inputValue())
+        for (let index = current; index > 1; index--)
+          await bar.getByRole('button', { name: '上一页', exact: true }).click()
+        await bar.getByRole('button', { name: '下一页', exact: true }).click()
+        await page.waitForTimeout(100)
+        await expect(frame.getByLabel(`${format} 页码`)).toHaveValue('2')
         await bar.getByRole('button', { name: '上一页', exact: true }).click()
-      await bar.getByRole('button', { name: '下一页', exact: true }).click()
-      await page.waitForTimeout(100)
-      await expect(frame.getByLabel(`${format} 页码`)).toHaveValue('2')
-      await bar.getByRole('button', { name: '上一页', exact: true }).click()
-      await expect(frame.getByLabel(`${format} 页码`)).toHaveValue('1')
+        await expect(frame.getByLabel(`${format} 页码`)).toHaveValue('1')
+      }
       const desktopZoom = bar.locator('.viewer-bar-track > .viewer-zoom-controls')
       const zoom = await desktopZoom.getByLabel('缩放比例').textContent()
       if (format === 'PPT') {
@@ -388,10 +392,14 @@ try {
         'Mobile menu overflows viewport',
       )
       await page.screenshot({ path: `${output}/${format}-touch-menu-390.png` })
-      await bar.getByRole('button', { name: '适合页面', exact: true }).tap()
+      await bar
+        .getByRole('button', { name: format === 'Word' ? '适合宽度' : '适合页面', exact: true })
+        .tap()
     }
-    await bar.getByRole('button', { name: '下一页', exact: true }).tap()
-    await expect(frame.getByLabel(`${format} 页码`)).toHaveValue('2')
+    if (format !== 'Word') {
+      await bar.getByRole('button', { name: '下一页', exact: true }).tap()
+      await expect(frame.getByLabel(`${format} 页码`)).toHaveValue('2')
+    }
     await minimalControls(frame, bar, format)
     await page.screenshot({ path: `${output}/${format}-touch-390.png` })
     for (const viewport of [

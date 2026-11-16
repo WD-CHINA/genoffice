@@ -536,11 +536,93 @@ html[data-viewer-errors='false'] #root .viewer-warning {
 .viewer-doc-pages .pv-page {
   user-select: text;
 }
+/* Viewing pages retain native text selection without exposing authoring controls. */
+:is(.viewer-doc, .viewer-doc-remote)
+  :is(
+    .doc-move-handle,
+    .box-resize-handle,
+    .img-resize-handle,
+    .doc-image-anchor-marker,
+    .column-resize-handle,
+    .doc-formula-edit
+  ) {
+  display: none !important;
+}
+:is(.viewer-doc, .viewer-doc-remote) :is(.doc-protected, .doc-img-wrap, .doc-inline-pic) {
+  cursor: default;
+  user-select: text;
+  -webkit-user-select: text;
+}
+:is(.viewer-doc, .viewer-doc-remote) img {
+  -webkit-user-drag: none;
+}
+:is(.viewer-doc, .viewer-doc-remote) .doc-page .doc-protected :is(.doc-textbox, td) {
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
 .viewer-doc-pages .pv-clip .doc-page {
   pointer-events: auto;
 }
 .viewer-doc-pages [data-viewer-focus] {
   outline: 2px solid var(--accent);
+}
+/* Match apps/docs Read Mode: one continuous body, with no paper-height slicing. */
+.viewer-doc-reading.viewer-doc-remote {
+  padding: 0;
+  overflow: hidden;
+}
+.viewer-doc-reading-scroll.editor-scroll {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 44px 24px 72px;
+  background: var(--docs-pv-canvas);
+}
+.viewer-doc-reading .doc-zoom {
+  width: max-content;
+  min-width: 0;
+  margin: 0 auto;
+}
+.viewer-doc-reading .viewer-doc-reading-paper {
+  position: relative;
+  min-height: 0;
+  box-sizing: border-box;
+  margin: 0 auto;
+  background: var(--docs-paper, white);
+  color: var(--docs-paper-ink, black);
+  box-shadow: var(--shadow-modal-strong);
+}
+.viewer-doc-reading .doc-page {
+  width: auto;
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+.viewer-doc-reading .page-hf > * {
+  opacity: 1;
+}
+.viewer-doc-reading .page-hf {
+  border-color: transparent;
+}
+.viewer-doc-reading :is(.page-hf-tags, .doc-sectbreak-label, .doc-field-pagebreak),
+.viewer-doc-reading .page-break-before:where(:not(.doc-li))::before,
+.viewer-doc-reading .doc-li.page-break-before::after {
+  display: none;
+}
+.viewer-doc-reading-notes {
+  border-top: 1px solid currentColor;
+  margin-top: 16px;
+  padding-top: 8px;
+  line-height: 1.4;
+}
+.viewer-doc-reading-notes sup {
+  font-size: 0.65em;
+  margin-right: 4px;
 }
 .viewer-info {
   position: absolute;

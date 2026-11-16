@@ -1,9 +1,13 @@
-import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react'
-import { ViewerBar } from './viewer-bar'
-import { FitControls, PageControl, ToolbarMore, ZoomControl, contentArea } from './viewer-controls'
+import React, { useEffect, useState, useRef, useMemo } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { parseLazyMediaUrl } from '@genoffice/docx-engine/lazy-media'
-import { readPageColor, setAltChunkHtmlConverter } from '@genoffice/docx-engine'
+import {
+  readPageColor,
+  readSections,
+  readSectionSettings,
+  setAltChunkHtmlConverter,
+  type DocxReadingContext,
+} from '@genoffice/docx-engine'
 import JSZip from 'jszip'
 import {
   decryptDocx,
@@ -11,87 +15,41 @@ import {
   isEncryptedDocx,
 } from '@genoffice/viewer-services/docs/decrypt'
 import { parseDocxOffThread } from '@genoffice/viewer-renderers/docs/renderer/parse-off-thread'
-import {
-  editorExtensions,
-  setLazyMediaHashes,
-} from '@genoffice/viewer-renderers/docs/renderer/editor/extensions'
+import { setLazyMediaHashes } from '@genoffice/viewer-renderers/docs/renderer/editor/extensions'
+import { viewerEditorOptions } from '@genoffice/viewer-renderers/docs/renderer/viewer-extensions'
 import {
   blocksToPmDoc,
   pmDocOptions,
 } from '@genoffice/viewer-renderers/docs/renderer/editor/convert'
 import { adoptEmbeddedFonts } from '@genoffice/viewer-renderers/docs/renderer/embedded-fonts'
-import {
-  setDocFontTable,
-  cssFontFamily,
-} from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
+import { setDocFontTable } from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
 import { applyDocLayoutSettings } from '@genoffice/viewer-renderers/docs/renderer/viewer-initialize'
-import { viewerLayout } from '@genoffice/viewer-renderers/docs/renderer/viewer-layout'
-import { PaginationPreview } from '@genoffice/viewer-renderers/docs/renderer/components/PaginationPreview'
 import {
   docStyleCss,
   docThemeCss,
   docBodyFont,
 } from '@genoffice/viewer-renderers/docs/renderer/doc-style-css'
-import { hfVariantsFromParsed } from '@genoffice/viewer-renderers/docs/renderer/doc-state'
-import { resolveHf } from '@genoffice/viewer-renderers/docs/renderer/hf-sections'
-import {
-  sectionPageBox,
-  canvasContentTopPx,
-  docGridPitchPt,
-  docCharSpacePt,
-  sectionGridPitchPt,
-  paperWidthPx,
-} from '@genoffice/viewer-renderers/docs/renderer/pagination'
-import {
-  hfReservedHeightPx,
-  bumpHfProbeFontEpoch,
-} from '@genoffice/viewer-renderers/docs/renderer/editor/hf-dom'
-import { bumpLineSampleFontEpoch } from '@genoffice/viewer-renderers/docs/renderer/pagination-lines'
-import { hfHeaderGeom } from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
 import { LocaleProvider } from '@genoffice/viewer-renderers/docs/renderer/i18n/locale'
-import '@genoffice/viewer-renderers/docs/renderer/styles.css'
-import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
-import { createViewerLayoutController } from '@genoffice/viewer-renderers/docs/renderer/viewer-layout-controller'
-import {
-  hfPhantomSpec,
-  hfLayoutResolved,
-  hfWithPhantom,
-} from '@genoffice/viewer-renderers/docs/renderer/hf-phantom'
-import {
-  findDocMatches,
-  paintDocMatches,
-  scrollDocMatch,
-  copyDocSelection,
-  docPaintRect,
-  type DocMatch,
-} from './doc-search'
 import {
   setContentPhased,
   waitForFullContent,
   cancelPhasedContent,
 } from '@genoffice/viewer-renderers/docs/renderer/phased-content'
+import { DocxReadingBar, DocxReadingHf, DocxReadingNotes, useDocxReadingZoom } from './docx-reading'
+import { docxSectionTypography } from './docx-style-context'
+import '@genoffice/viewer-renderers/docs/renderer/styles.css'
+import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
 
 export function Docs({ src }: { src: string }) {
-  const [parsed, setParsed] = useState<any>(null),
-    [error, setError] = useState(''),
-    [ready, setReady] = useState(false)
-  const [zoom, setZoom] = useState(1),
-    [fontEpoch, setFontEpoch] = useState(0),
-    [pages, setPages] = useState(0),
-    [currentPage, setCurrentPage] = useState(1),
-    [query, setQuery] = useState(''),
-    [matches, setMatches] = useState<DocMatch[]>([]),
-    [matchIndex, setMatchIndex] = useState(0),
-    [accessible, setAccessible] = useState(''),
-    [navigation, setNavigation] = useState<{ title: string; idx: string }[]>([]),
-    [revision, setRevision] = useState('all'),
-    [fit, setFit] = useState<'width' | 'page' | null>('page')
-  const container = useRef<HTMLDivElement>(null)
+  const [parsed, setParsed] = useState<any>(null)
+  const [error, setError] = useState('')
+  const [ready, setReady] = useState(false)
+  const [revision, setRevision] = useState('all')
+  const viewport = useRef<HTMLDivElement>(null)
   const conversionError = useRef<string | null>(null)
   const opening = useRef<{ src: string; promise: Promise<any> } | null>(null)
   const editor = useEditor({
-    extensions: editorExtensions,
-    editable: false,
+    ...viewerEditorOptions,
     editorProps: { attributes: { class: 'doc-page' } },
   })
   useEffect(() => {
@@ -196,7 +154,6 @@ export function Docs({ src }: { src: string }) {
       editor.storage.listNumbering.docDefaults = doc.docDefaults
       editor.storage.listNumbering.defs = doc.numbering
       applyDocLayoutSettings(editor, doc)
-      const layout = viewerLayout(doc, editor)
       setContentPhased(
         {
           setContent: (value) => {
@@ -216,7 +173,7 @@ export function Docs({ src }: { src: string }) {
           getDirty: () => false,
           setDirty: () => {},
         },
-        blocksToPmDoc(doc.blocks, layout.sections, pmDocOptions(doc)),
+        blocksToPmDoc(doc.blocks, readSections(doc), pmDocOptions(doc)),
       )
       await waitForFullContent()
       if (cancelled) return
@@ -233,322 +190,85 @@ export function Docs({ src }: { src: string }) {
   }, [editor, src])
   useEffect(() => {
     if (!parsed) return
-    let stopped = false,
-      generation = 0,
-      signature: string | undefined,
-      timer: ReturnType<typeof setTimeout> | undefined
+    let cancelled = false
     const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
-    const settle = async () => {
-      const current = ++generation
-      // Parsed document styles must commit and initiate font loads before ready is read.
+    void (async () => {
       await frame()
       await frame()
       await document.fonts.ready
-      await frame()
-      await frame()
-      if (stopped || current !== generation) return
-      const next = [...document.fonts]
-        .map((face) => `${face.family}|${face.weight}|${face.style}|${face.status}`)
-        .sort()
-        .join('\n')
-      if (signature === next) return
-      signature = next
-      bumpLineSampleFontEpoch()
-      bumpHfProbeFontEpoch()
-      setFontEpoch((value) => value + 1)
-      setReady(true)
-    }
-    const changed = () => {
-      clearTimeout(timer)
-      timer = setTimeout(() => void settle(), 300)
-    }
-    setReady(false)
-    void settle()
-    document.fonts.addEventListener('loadingdone', changed)
-    document.fonts.addEventListener('loadingerror', changed)
+      if (!cancelled) setReady(true)
+    })()
     return () => {
-      stopped = true
-      clearTimeout(timer)
-      document.fonts.removeEventListener('loadingdone', changed)
-      document.fonts.removeEventListener('loadingerror', changed)
+      cancelled = true
     }
   }, [parsed])
-  const layout = useMemo(
-    () => (parsed && editor ? viewerLayout(parsed, editor) : null),
-    [parsed, editor, fontEpoch],
-  )
-  const pageColor = parsed ? readPageColor(parsed) : null
-  const phantom = parsed && pageColor ? hfPhantomSpec(parsed) : null
-  const controller = useMemo(
+  const context = useMemo<DocxReadingContext | undefined>(
     () =>
-      editor && layout
-        ? createViewerLayoutController(
-            editor.view,
-            layout.colMode === 'mixed',
-            !!parsed.mirrorMargins,
-            () => setError('文档布局尚未稳定，请核对复杂分栏和浮动对象的位置。'),
-          )
+      parsed
+        ? {
+            sections: readSections(parsed),
+            hfParts: parsed.hfParts ?? {},
+            evenAndOddHeaders: !!parsed.evenOddHf,
+            mirrorMargins: !!parsed.mirrorMargins,
+            footnotes: parsed.footnotes ?? [],
+            endnotes: parsed.endnotes ?? [],
+            noteNumbers: parsed.noteNumbers ?? {},
+            footnoteProps: parsed.footnoteProps,
+            endnoteProps: parsed.endnoteProps,
+          }
         : undefined,
-    [editor, layout, parsed, revision],
+    [parsed],
   )
-  const variants = parsed ? hfVariantsFromParsed(parsed) : null
-  const header = parsed
-    ? {
-        text: parsed.headerText || '',
-        paras: parsed.headerParas,
-        pageNumber: parsed.headerHasPageNumber,
-      }
-    : null
-  const footer = parsed
-    ? {
-        text: parsed.footerText || '',
-        paras: parsed.footerParas,
-        pageNumber: parsed.footerHasPageNumber,
-      }
-    : null
-  const hfState = layout
-    ? {
-        sections: layout.sections,
-        edits: {},
-        links: {},
-        parsed,
-        docStrips: { header, footer, variants },
-      }
-    : null
-  const canvasSection = layout ? layout.sections[0]?.settings || layout.section : null
-  const box = canvasSection ? sectionPageBox(canvasSection) : null
-  const paperWidth = layout ? paperWidthPx(layout.sections, canvasSection!) : 0
-  const paperHeight = layout
-    ? Math.max(
-        ...layout.sections.map((section) => sectionPageBox(section.settings).height),
-        box!.height,
-      )
-    : 0
-  const contentWidth = box?.contentWidth || 0
-  const headerPx = layout
-    ? hfReservedHeightPx(
-        'header',
-        phantom ? hfWithPhantom(header, phantom, parsed.headerImages) : header,
-        contentWidth,
-        parsed.headerImages,
-        hfHeaderGeom(canvasSection!),
-      )
-    : 0
-  const canvasTop = layout ? canvasContentTopPx(layout.sections, canvasSection!, headerPx) : 0
-  const gridPitch = layout
-    ? (docGridPitchPt(layout.sections) ??
-      layout.sections.map(sectionGridPitchPt).find((p) => p != null))
-    : null
-  const charSpace = layout ? docCharSpacePt(layout.sections) : null
-  const onReady = useCallback((count: number, html: string) => {
-    setMatches([])
-    paintDocMatches([], 0)
-    setPages(count)
-    const host = document.createElement('div')
-    host.innerHTML = html
-    for (const element of host.querySelectorAll<HTMLElement>('*')) {
-      element.removeAttribute('style')
-      if (element instanceof HTMLAnchorElement) element.removeAttribute('tabindex')
-    }
-    setAccessible(host.innerHTML)
-    setNavigation(
-      [...host.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6,[data-bookmarks]')]
-        .map((el) => ({
-          title: el.textContent?.trim() || el.dataset.bookmarks || '',
-          idx: el.dataset.idx || '',
-        }))
-        .filter((row) => row.title && row.idx),
-    )
-  }, [])
-  const trackPage = useCallback(() => {
-    const scroll = container.current?.querySelector<HTMLElement>('.pv-scroll')
-    if (!scroll) return
-    const viewport = scroll.getBoundingClientRect()
-    const sheets = [...scroll.querySelectorAll<HTMLElement>('.pv-page')]
-    const visibleHeight = (page: HTMLElement) => {
-      const rect = page.getBoundingClientRect()
-      return Math.max(0, Math.min(rect.bottom, viewport.bottom) - Math.max(rect.top, viewport.top))
-    }
-    const nearest = sheets.reduce<HTMLElement | null>(
-      (best, page) => (!best || visibleHeight(page) > visibleHeight(best) ? page : best),
-      null,
-    )
-    if (nearest) setCurrentPage(Number(nearest.dataset.pvPage) + 1)
-  }, [])
-  useEffect(() => {
-    const element = container.current
-    if (!element) return
-    // Rotation and fit changes can move the visible page without a scroll event.
-    let frame = 0
-    const update = () => {
-      cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(trackPage)
-    }
-    const observer = new ResizeObserver(update)
-    observer.observe(element)
-    update()
-    return () => {
-      observer.disconnect()
-      cancelAnimationFrame(frame)
-    }
-  }, [trackPage, zoom, pages, ready])
-  const goPage = (value: number) => {
-    const next = Math.max(1, Math.min(pages, value))
-    container.current
-      ?.querySelector(`[data-pv-page="${next - 1}"]`)
-      ?.scrollIntoView({ block: 'start' })
-    setCurrentPage(next)
-  }
-  const goBlock = (idx: string) => {
-    const elements =
-      container.current?.querySelectorAll<HTMLElement>(
-        `.pv-content [data-idx="${CSS.escape(idx)}"]`,
-      ) || []
-    for (const el of elements) {
-      const sheet = el.closest<HTMLElement>('.pv-page')
-      if (!sheet) continue
-      const rect = docPaintRect(el),
-        scroll = el.closest<HTMLElement>('.pv-scroll')
-      if (rect && scroll) {
-        scroll.scrollTop += rect.top - scroll.getBoundingClientRect().top - scroll.clientHeight / 2
-        setCurrentPage(Number(sheet.dataset.pvPage) + 1)
-        return
-      }
-    }
-  }
-  const search = () => {
-    const found = container.current ? findDocMatches(container.current, query.trim()) : []
-    setMatches(found)
-    setMatchIndex(0)
-    paintDocMatches(found, 0)
-    scrollDocMatch(found[0])
-  }
-  const stepMatch = (delta: number) => {
-    if (!matches.length) return
-    const next = (matchIndex + delta + matches.length) % matches.length
-    setMatchIndex(next)
-    paintDocMatches(matches, next)
-    scrollDocMatch(matches[next])
-  }
-  useEffect(() => {
-    if (!fit || !container.current || !box) return
-    const element = container.current
-    const update = () => {
-      const area = contentArea(element.querySelector<HTMLElement>('.pv-scroll') || element)
-      setZoom(
-        Math.max(
-          0.25,
-          Math.min(
-            3,
-            fit === 'width'
-              ? area.width / paperWidth
-              : Math.min(area.width / paperWidth, area.height / paperHeight),
-          ),
-        ),
-      )
-    }
-    const observer = new ResizeObserver(update)
-    observer.observe(element)
-    update()
-    return () => observer.disconnect()
-  }, [fit, paperWidth, paperHeight, ready])
+  const section = parsed ? readSectionSettings(parsed) : undefined
+  const width = section ? section.pageWidth / 15 : 794
+  const controls = useDocxReadingZoom(viewport, width)
+  const pageColor = parsed ? readPageColor(parsed) : null
   const follow = (event: React.MouseEvent) => {
-    const a = (event.target as Element).closest('a')
-    if (!a) return
-    const href = a.getAttribute('href') || ''
+    const link = (event.target as Element).closest('a')
+    if (!link) return
+    const href = link.getAttribute('href') ?? ''
     if (href.startsWith('#')) {
       event.preventDefault()
-      let name = href.slice(1)
       try {
-        name = decodeURIComponent(name)
+        const name = decodeURIComponent(href.slice(1))
+        const target = viewport.current?.querySelector<HTMLElement>(
+          `[data-bookmarks~="${CSS.escape(name)}"], [id="${CSS.escape(name)}"]`,
+        )
+        target?.scrollIntoView({ block: 'center' })
       } catch {
-        return
+        /* Ignore malformed bookmark names. */
       }
-      const el = container.current?.querySelector<HTMLElement>(
-        `.pv-content [data-bookmarks~="${CSS.escape(name)}"]`,
-      )
-      if (el?.dataset.idx) goBlock(el.dataset.idx)
-    } else if (!/^https?:|^mailto:/i.test(href)) event.preventDefault()
-    else {
-      a.target = '_blank'
-      a.rel = 'noopener noreferrer'
-    }
-  }
-  const changeZoom = (direction: number) => {
-    setFit(null)
-    setZoom((value) => Math.max(0.25, Math.min(3, value + direction * 0.1)))
+    } else if (/^https?:|^mailto:/i.test(href)) {
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+    } else event.preventDefault()
   }
   return (
     <LocaleProvider initial="zh">
       <div
-        className={`viewer-doc viewer-preview rev-display-${revision === 'final' ? 'none' : revision}${revision === 'all' ? ' rev-balloon' : ''}`}
+        className={`viewer-doc viewer-preview viewer-doc-reading read-mode rev-display-${revision === 'final' ? 'none' : revision}`}
         onKeyDown={(event) => {
-          const command = event.ctrlKey || event.metaKey
-          const searchInput =
-            event.currentTarget.querySelector<HTMLInputElement>('[aria-label="搜索 Word"]')
-          if (
-            command &&
-            event.key.toLowerCase() === 'f' &&
-            searchInput &&
-            !searchInput.closest('[hidden]')
-          ) {
+          if ((event.ctrlKey || event.metaKey) && ['+', '=', '-'].includes(event.key)) {
             event.preventDefault()
-            searchInput.focus()
-          } else if (command && ['+', '=', '-'].includes(event.key)) {
-            event.preventDefault()
-            setFit(null)
-            setZoom((value) =>
-              Math.max(0.25, Math.min(3, value + (event.key === '-' ? -0.1 : 0.1))),
-            )
-          } else if (
-            !(event.target as Element).closest('input,textarea,select') &&
-            ['PageUp', 'PageDown'].includes(event.key)
-          ) {
-            event.preventDefault()
-            goPage(currentPage + (event.key === 'PageUp' ? -1 : 1))
+            controls.changeZoom(event.key === '-' ? -1 : 1)
           }
         }}
       >
         {ready && (
-          <ViewerBar floating label="Word 控制栏">
-            <PageControl
-              format="Word"
-              selectable={false}
-              current={currentPage}
-              total={pages}
-              onChange={goPage}
-            />
-            <ZoomControl value={zoom} onZoom={changeZoom} />
-            <ToolbarMore zoom={{ value: zoom, onZoom: changeZoom }}>
-              <FitControls fit={fit} onFit={setFit} />
-              <label className="viewer-revision-control viewer-toolbar-end">
-                修订
-                <select
-                  aria-label="修订显示"
-                  value={revision}
-                  onChange={(e) => setRevision(e.target.value)}
-                >
-                  <option value="all">全部标记</option>
-                  <option value="final">最终版本</option>
-                  <option value="original">原始版本</option>
-                </select>
-              </label>
-            </ToolbarMore>
-            <div className="viewer-search-controls" hidden>
-              <input
-                aria-label="搜索 Word"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') search()
-                }}
-              />
-              <button onClick={search}>搜索</button>
-              <span>{matches.length ? `${matchIndex + 1}/${matches.length}` : '无匹配'}</span>
-              <button onClick={() => stepMatch(-1)}>上一处</button>
-              <button onClick={() => stepMatch(1)}>下一处</button>
-            </div>
-          </ViewerBar>
+          <DocxReadingBar controls={controls}>
+            <label className="viewer-revision-control">
+              修订
+              <select
+                aria-label="修订显示"
+                value={revision}
+                onChange={(event) => setRevision(event.target.value)}
+              >
+                <option value="all">全部标记</option>
+                <option value="final">最终版本</option>
+                <option value="original">原始版本</option>
+              </select>
+            </label>
+          </DocxReadingBar>
         )}
         {error && (
           <p role="alert" className="viewer-error">
@@ -557,7 +277,7 @@ export function Docs({ src }: { src: string }) {
         )}
         {!ready && !error && (
           <p className="viewer-status viewer-doc-status" role="status">
-            正在解析和分页…
+            正在加载文档…
           </p>
         )}
         {parsed && (
@@ -566,139 +286,38 @@ export function Docs({ src }: { src: string }) {
               docThemeCss(parsed.themeFonts, parsed.themeColors, !!docBodyFont(parsed))}
           </style>
         )}
-        {gridPitch != null && <style>{`.doc-page { --doc-grid-pitch:${gridPitch}pt }`}</style>}
-        {charSpace != null && (
-          <style>{`.doc-page { --doc-char-space:${Math.round(charSpace * 10000) / 10000}pt }`}</style>
-        )}
-        <div className="viewer-doc-canvas editor-scroll">
-          <div className="doc-zoom" style={{ zoom: 1 }}>
-            <div className="page-wrap" style={box ? { width: paperWidth } : undefined}>
-              <EditorContent editor={editor} />
-            </div>
-          </div>
-        </div>
-        {layout && (
-          <style>{`.viewer-doc-canvas .doc-page { width:${paperWidth}px; --page-w:${paperWidth}px; --section-content-w:${contentWidth}px; --doc-margin-left:${canvasSection!.marginLeft / 15}px; --doc-margin-right:${canvasSection!.marginRight / 15}px; --doc-margin-top:${canvasSection!.marginTop / 15}px; ${pageColor ? `--page-bg:#${pageColor};` : ''} padding:${canvasTop}px ${canvasSection!.marginRight / 15}px ${canvasSection!.marginBottom / 15}px ${canvasSection!.marginLeft / 15}px; box-sizing:border-box; }`}</style>
-        )}
-        {layout?.colFlow && (
-          <style>{`.editor-scroll .doc-page { column-count:${layout.colFlow.cols}; column-gap:${layout.colFlow.gapPx}px; column-fill:balance } .editor-scroll .doc-page.measuring-columns { column-count:auto; width:${layout.colFlow.colWidthPx + (layout.sections[0]?.settings || layout.section).marginLeft / 15 + (layout.sections[0]?.settings || layout.section).marginRight / 15}px }`}</style>
-        )}
-        {ready && layout && (
-          <div className="viewer-reading-body">
-            <aside className="viewer-navigation" hidden>
-              <strong>标题与书签</strong>
-              {navigation.map((row, i) => (
-                <button key={i} onClick={() => goBlock(row.idx)}>
-                  {row.title}
-                </button>
-              ))}
-              {parsed.comments?.map((comment: any, i: number) => (
-                <details key={`c${i}`}>
-                  <summary>{comment.author || '批注'}</summary>
-                  <button
-                    onClick={() => {
-                      const span = container.current?.querySelector<HTMLElement>(
-                        `.pv-content [data-comment-ids~="${CSS.escape(String(comment.id))}"]`,
-                      )
-                      const idx = span?.closest<HTMLElement>('[data-idx]')?.dataset.idx
-                      if (idx) goBlock(idx)
-                    }}
-                  >
-                    定位批注
-                  </button>
-                  <p>
-                    {comment.text ||
-                      comment.paras
-                        ?.flat()
-                        .map((r: any) => r.text)
-                        .join('')}
-                  </p>
-                </details>
-              ))}
-            </aside>
-            <div
-              ref={container}
-              className="viewer-doc-pages"
-              onClick={follow}
-              onCopy={(event) => copyDocSelection(event.currentTarget, event)}
-              onScrollCapture={(event) => {
-                const scroll = event.target as HTMLElement
-                if (scroll.classList.contains('pv-scroll')) trackPage()
-              }}
-            >
+        <div
+          ref={viewport}
+          className="viewer-doc-reading-scroll editor-scroll"
+          tabIndex={0}
+          onClick={follow}
+        >
+          {parsed && context && section && (
+            <div className="doc-zoom" style={{ zoom: controls.zoom }}>
               <div
-                className="viewer-doc-a11y"
-                role="document"
-                aria-label="Word 文档正文"
-                onFocusCapture={(event) => {
-                  const anchor = (event.target as HTMLElement).closest('a')
-                  if (!anchor) return
-                  for (const el of container.current?.querySelectorAll<HTMLElement>(
-                    '.pv-content a',
-                  ) || []) {
-                    const rect = docPaintRect(el)
-                    if (el.getAttribute('href') !== anchor.getAttribute('href') || !rect) continue
-                    el.dataset.viewerFocus = 'true'
-                    const scroll = el.closest<HTMLElement>('.pv-scroll')!
-                    scroll.scrollTop +=
-                      rect.top - scroll.getBoundingClientRect().top - scroll.clientHeight / 2
-                    break
-                  }
+                className="page-wrap viewer-doc-reading-paper"
+                style={{
+                  width,
+                  padding: `${section.marginTop / 15}px ${section.marginRight / 15}px ${section.marginBottom / 15}px ${section.marginLeft / 15}px`,
+                  ...(pageColor ? { background: `#${pageColor}` } : {}),
+                  ...docxSectionTypography(section),
                 }}
-                onBlurCapture={() => {
-                  for (const el of container.current?.querySelectorAll<HTMLElement>(
-                    '[data-viewer-focus]',
-                  ) || [])
-                    delete el.dataset.viewerFocus
-                }}
-                dangerouslySetInnerHTML={{ __html: accessible }}
-              />
-              <style>{`.viewer-doc-pages .pv-page { zoom:${zoom}; ${pageColor ? `background:#${pageColor};` : ''} } .viewer-doc-pages .pv-toolbar { display:none }`}</style>
-              <PaginationPreview
-                key={`${revision}:${fontEpoch}`}
-                reading
-                onLayout={controller}
-                onReady={onReady}
-                section={layout.section}
-                canvasTop={canvasTop}
-                sections={layout.sections}
-                mirrorMargins={parsed.mirrorMargins}
-                hfParts={parsed.hfParts || {}}
-                colFlow={layout.colFlow}
-                colMode={layout.colMode}
-                hf={{
-                  header: phantom ? hfWithPhantom(header, phantom, parsed.headerImages) : header,
-                  footer,
-                  ...variants!,
-                  titlePg: parsed.titlePg,
-                  evenOddHf: parsed.evenOddHf,
-                  images: {
-                    header: parsed.headerImages,
-                    footer: parsed.footerImages,
-                    headerFirst: parsed.headerFirst?.images,
-                    footerFirst: parsed.footerFirst?.images,
-                    headerEven: parsed.headerEven?.images,
-                    footerEven: parsed.footerEven?.images,
-                  },
-                }}
-                watermark={parsed.watermark || null}
-                blockMetaOf={layout.blockMetaOf}
-                pageFootnotesOf={layout.pageFootnotesOf}
-                footnotesBeneathText={parsed.footnoteProps?.pos === 'beneathText'}
-                endnoteItems={layout.endnoteItems}
-                resolveHf={(_, i, kind, variant) =>
-                  hfLayoutResolved(kind, resolveHf(hfState as any, i, kind, variant), phantom)
-                }
-                comments={revision === 'all' ? parsed.comments : []}
-                anchorBlocks={parsed.blocks}
-                revisionView={revision === 'all' ? editor!.view : null}
-                onClose={() => {}}
-                onExportPdf={() => {}}
-                suppressEscape
-              />
+              >
+                <DocxReadingHf context={context} kind="header" />
+                {parsed.watermark && (
+                  <div className="page-watermark" aria-hidden="true">
+                    {parsed.watermark}
+                  </div>
+                )}
+                <div role="document" aria-label="Word 文档正文">
+                  <EditorContent editor={editor} />
+                </div>
+                <DocxReadingNotes context={context} styles={parsed} />
+                <DocxReadingHf context={context} kind="footer" />
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </LocaleProvider>
   )

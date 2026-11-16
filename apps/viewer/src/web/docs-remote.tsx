@@ -1,50 +1,47 @@
 import type { DocxBlockGeometry } from './docx-fragments'
-import { measureNotes, RemoteNoteView, noteKey, NOTE_SEPARATOR, type RemoteNote } from './docx-notes'
 import { openingStateText } from './server-session'
 import { combineAbortSignals } from './abort-signals'
 import { DocxRemoteSession } from './docx-remote-session'
 import { DocxFontScope } from './docx-font-scope'
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
-import { editorExtensions } from '@genoffice/viewer-renderers/docs/renderer/editor/extensions'
+import { viewerEditorOptions } from '@genoffice/viewer-renderers/docs/renderer/viewer-extensions'
 import {
   blocksToPmDoc,
   pmDocOptions,
 } from '@genoffice/viewer-renderers/docs/renderer/editor/convert'
-import '@genoffice/viewer-renderers/docs/renderer/styles.css'
-import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
-import { visiblePages, type PageDescriptor } from './docx-pagination'
-import type { DocxReadingContext, SectionInfo, SectionSettings } from '@genoffice/docx-engine'
+import { LocaleProvider } from '@genoffice/viewer-renderers/docs/renderer/i18n/locale'
+import { visiblePages } from './docx-pagination'
+import type { DocxReadingContext, DocxStyleContext, SectionInfo } from '@genoffice/docx-engine'
 import { sectionFromSectPr } from '@genoffice/docx-engine'
-import { HeaderFooterArea } from '@genoffice/viewer-renderers/docs/renderer/components/HeaderFooterArea'
-import { formatPageNumber } from '@genoffice/viewer-renderers/docs/renderer/pagination-hf'
 import { setNoteNumFmts } from '@genoffice/viewer-renderers/docs/renderer/note-format'
-import { hfReservedHeightPx, hfStripGeom } from '@genoffice/viewer-renderers/docs/renderer/editor/hf-dom'
-import { hfHeightKey, layoutSectionBlocks, sectionColumns, sectionContentHeight, sectionIndexAt, type HfHeights } from './docx-section-layout'
-import { captureDocxAnchor, restoreDocxAnchor } from './docx-scroll-anchor'
 import {
-  loadReadingPosition, saveDocxReadingAnchor, type DocxReadingAnchor,
+  loadReadingPosition,
+  saveDocxReadingAnchor,
+  type DocxReadingAnchor,
 } from './reading-position'
 import { type TableRowLayout } from './docx-table-pagination'
 import { indexDocxUnit, replaceDocxUnitIndex, type DocxPageBlock } from './docx-page-index'
 import { DocxReadQueue } from './docx-read-queue'
-import { measureTableRows, sliceTableBlock } from './docx-table-measure'
+import { measureTableRows } from './docx-table-measure'
 import { measureBlockHeights } from './docx-block-measure'
-import { DocxFragmentSlice } from './docx-fragment-slice'
-import { reviveDocxStyles, mountDocxStyles, docxSectionTypography, type RemoteDocxStyleContext } from './docx-style-context'
-import type { DocxStyleContext } from '@genoffice/docx-engine'
+import {
+  reviveDocxStyles,
+  mountDocxStyles,
+  docxSectionTypography,
+  type RemoteDocxStyleContext,
+} from './docx-style-context'
+import {
+  continuousDocxLayout,
+  captureContinuousDocxAnchor,
+  restoreContinuousDocxAnchor,
+} from './docx-continuous-layout'
+import { DocxReadingBar, DocxReadingHf, DocxReadingNotes, useDocxReadingZoom } from './docx-reading'
 import themeSansUrl from '@genoffice/viewer-renderers/docs/renderer/fonts/NotoSansCJKsc-Regular-subset.woff2?url'
+import '@genoffice/viewer-renderers/docs/renderer/styles.css'
+import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
 
-interface PageSettings {
-  pageWidth: number
-  pageHeight: number
-  marginTop: number
-  marginRight: number
-  marginBottom: number
-  marginLeft: number
-}
-
-const DEFAULT_PAGE: PageSettings = {
+const DEFAULT_PAGE = {
   pageWidth: 11906,
   pageHeight: 16838,
   marginTop: 1440,
@@ -52,40 +49,46 @@ const DEFAULT_PAGE: PageSettings = {
   marginBottom: 1440,
   marginLeft: 1440,
 }
-const PAGE_GAP = 24
-const OVERSCAN = 2
-const twipsToPx = (twips: number): number => twips / 15
-
 interface Props {
   server: string
   fileId: string
   token?: string
   name?: string
 }
-
 type StyleContext = RemoteDocxStyleContext
+interface RemoteLayout {
+  styleContext: StyleContext
+  docx: DocxReadingContext
+}
 
-function PageEditor({ blocks, doc, unitKey, onAssetsReady }: {
-  blocks: any[]; doc: StyleContext; unitKey: string; onAssetsReady: (id: string) => void
+function ReadingUnit({
+  blocks,
+  doc,
+  unitId,
+  onAssetsReady,
+}: {
+  blocks: any[]
+  doc: StyleContext
+  unitId: string
+  onAssetsReady: (id: string) => void
 }) {
   const editor = useEditor({
-    extensions: editorExtensions,
-    editable: false,
+    ...viewerEditorOptions,
     editorProps: { attributes: { class: 'doc-page', lang: doc.docDefaults?.lang ?? 'en-US' } },
   })
   useEffect(() => {
     if (!editor) return
     const storage = editor.storage.listNumbering as any
-    storage.styles = doc.styles; storage.docDefaults = doc.docDefaults; storage.defs = doc.numbering
+    storage.styles = doc.styles
+    storage.docDefaults = doc.docDefaults
+    storage.defs = doc.numbering
     editor.commands.setContent(blocksToPmDoc(blocks, undefined, pmDocOptions(doc)), {
       emitUpdate: false,
     })
   }, [editor, blocks, doc])
   useEffect(() => {
     if (!editor) return
-    const ready = () => {
-      for (const id of JSON.parse(unitKey) as string[]) onAssetsReady(id)
-    }
+    const ready = () => onAssetsReady(unitId)
     const root = editor.view.dom
     root.addEventListener('load', ready, true)
     root.addEventListener('error', ready, true)
@@ -98,81 +101,55 @@ function PageEditor({ blocks, doc, unitKey, onAssetsReady }: {
       document.fonts.removeEventListener('loadingdone', ready)
       observer.disconnect()
     }
-  }, [editor, unitKey, onAssetsReady])
+  }, [editor, unitId, onAssetsReady])
   return <EditorContent editor={editor} />
 }
 
-function RemoteHf({ part, kind, settings, number, total, id, left, onHeight }: {
-  part: DocxReadingContext['hfParts'][string] | undefined
-  kind: 'header' | 'footer'; settings: SectionSettings; number: string; total: number | string
-  id?: string; left: number; onHeight: (key: string, height: number) => void
-}) {
-  const root = useRef<HTMLDivElement>(null)
-  const width = twipsToPx(settings.pageWidth - settings.marginLeft - settings.marginRight)
-  useLayoutEffect(() => {
-    const element = root.current?.querySelector<HTMLElement>('.page-hf')
-    if (!element || !id) return
-    const measure = () => onHeight(hfHeightKey(id, width), hfReservedHeightPx(kind,
-      part ? { text: part.text, pageNumber: part.hasPageNumber, paras: part.paras } : null, width, part?.images,
-      { marginTopPx: twipsToPx(settings.marginTop), headerDistPx: twipsToPx(settings.headerDist ?? 720) }))
-    const observer = new ResizeObserver(measure)
-    observer.observe(element)
-    element.addEventListener('load', measure, true)
-    document.fonts.addEventListener('loadingdone', measure)
-    measure()
-    return () => { observer.disconnect(); element.removeEventListener('load', measure, true); document.fonts.removeEventListener('loadingdone', measure) }
-  }, [id, width, onHeight, part, kind, settings.marginTop, settings.headerDist])
-  if (!part) return null
-  return <div ref={root} className="viewer-doc-remote-hf" data-hf-part={id} style={{ position: 'absolute', top: 0, bottom: 0, left, width, pointerEvents: 'none' }}>
-    <HeaderFooterArea kind={kind} value={{ text: part.text, pageNumber: part.hasPageNumber, paras: part.paras }}
-      images={part.images} readOnly onCommit={() => {}} pageNo={number} pageTotal={total}
-      boxGeom={hfStripGeom(settings)}
-      style={{ width, left: 0, transform: 'none', pointerEvents: 'auto',
-        ...(kind === 'header' ? { top: twipsToPx(settings.headerDist ?? 720), bottom: 'auto' }
-          : { bottom: twipsToPx(settings.footerDist ?? 720), top: 'auto' }) }} />
-  </div>
-}
-
-interface RemoteLayout {
-  styleContext: StyleContext
-  docx: DocxReadingContext
-  hfHeights: HfHeights
-}
-
-async function measureUnit(id: string, blocks: any[], layout: RemoteLayout, signal: AbortSignal): Promise<DocxPageBlock[]> {
-  const rows = new Map<number, TableRowLayout[]>()
-  const heights = new Map<number, number>()
+/** Full source blocks are measured once; paper height never divides a table or paragraph. */
+async function measureUnit(
+  id: string,
+  blocks: any[],
+  layout: RemoteLayout,
+  signal: AbortSignal,
+): Promise<DocxPageBlock[]> {
+  const settings = layout.docx.sections.at(-1)!.settings
+  const width = (settings.pageWidth - settings.marginLeft - settings.marginRight) / 15
   const geometries = new Map<number, DocxBlockGeometry>()
-  const groups = new Map<number, any[]>()
-  for (const block of blocks) {
-    const section = sectionIndexAt(layout.docx.sections, block.docxIndex)
-    const group = groups.get(section) ?? []
-    group.push(block); groups.set(section, group)
-  }
-  for (const [index, group] of groups) {
-    const width = Math.min(...sectionColumns(layout.docx.sections[index].settings).map((column) => column.width))
-    for (const block of group)
-      if (block.type === 'table') rows.set(block.docxIndex, await measureTableRows(layout.styleContext, block, width, signal, geometries, layout.docx.sections[index].settings))
-    for (const block of group) if (block.type === 'table') {
-      const tableRows = rows.get(block.docxIndex)
-      if (tableRows) heights.set(block.docxIndex, tableRows.reduce((sum, row) => sum + row.height, 0))
+  const rows = new Map<number, TableRowLayout[]>()
+  const heights = await measureBlockHeights(
+    layout.styleContext,
+    blocks.filter((block) => block.type !== 'table'),
+    100,
+    width,
+    signal,
+    geometries,
+    settings,
+  )
+  for (const block of blocks)
+    if (block.type === 'table') {
+      const tableRows = await measureTableRows(
+        layout.styleContext,
+        block,
+        width,
+        signal,
+        geometries,
+        settings,
+      )
+      rows.set(block.docxIndex, tableRows)
+      heights.set(
+        block.docxIndex,
+        tableRows.reduce((sum, row) => sum + row.height, 0),
+      )
     }
-    const measured = await measureBlockHeights(layout.styleContext, group.filter((block) => block.type !== 'table'), 100, width, signal, geometries, layout.docx.sections[index].settings)
-    for (const [key, value] of measured) heights.set(key, value)
-  }
-  return indexDocxUnit(id, blocks, heights, rows, (block) =>
-    sectionContentHeight(layout.docx, sectionIndexAt(layout.docx.sections, block.docxIndex), layout.hfHeights), geometries)
+  return indexDocxUnit(id, blocks, heights, rows, Infinity, geometries)
 }
 
 export function DocsRemote({ server, fileId, token, name }: Props) {
   const [sourceBlocks, setRenderBlocks] = useState<DocxPageBlock[]>([])
   const [visibleUnits, setVisibleUnits] = useState<Map<string, { blocks: any[] }>>(new Map())
   const [retryWindow, setRetryWindow] = useState(0)
-  const [page, setPage] = useState<PageSettings>(DEFAULT_PAGE)
-  const [docx, setDocx] = useState<DocxReadingContext | undefined>()
-  const [noteFontEpoch, setNoteFontEpoch] = useState(0)
-  const [notes, setNotes] = useState<Map<string, RemoteNote>>(new Map())
-  const [hfHeights, setHfHeights] = useState<Map<string, number>>(new Map())
+  const [page, setPage] = useState(DEFAULT_PAGE)
+  const [docx, setDocx] = useState<DocxReadingContext>()
   const [styleContext, setStyleContext] = useState<StyleContext>({
     styles: new Map(),
     numbering: new Map(),
@@ -182,67 +159,93 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
   const [error, setError] = useState('')
   const [windowError, setWindowError] = useState('')
   const [scrollTop, setScrollTop] = useState(0)
+  const [viewportHeight, setViewportHeight] = useState(720)
+  const [contentOffset, setContentOffset] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [cursor, setCursor] = useState<string | undefined>()
+  const [cursor, setCursor] = useState<string>()
   const [hasMore, setHasMore] = useState(false)
   const session = useRef<DocxRemoteSession | null>(null)
   const viewport = useRef<HTMLDivElement>(null)
+  const canvas = useRef<HTMLDivElement>(null)
   const scrollPosition = useRef(0)
   const restoredAnchor = useRef(false)
   const pendingAnchor = useRef<DocxReadingAnchor | undefined>(undefined)
   const prefetchAttempts = useRef(0)
   const prefetching = useRef(false)
-  const previousLayout = useRef<{
-    key: string; blocks: DocxPageBlock[]; pages: PageDescriptor[]; tops: number[]; paddingTop: number
-  } | undefined>(undefined)
+  const previousLayout = useRef<
+    { key: string; blocks: DocxPageBlock[]; offset: number } | undefined
+  >(undefined)
   const loadingRef = useRef(false)
   const visibleModels = useRef(visibleUnits)
   visibleModels.current = visibleUnits
   const remeasureQueue = useRef(new DocxReadQueue(2))
-  const remeasureJobs = useRef(new Map<string, { active: DocxRemoteSession; dirty: boolean; controller: AbortController }>())
-  const fallbackSection = useMemo<SectionInfo>(() => ({ ...sectionFromSectPr('', 0, Number.MAX_SAFE_INTEGER),
-    settings: { ...sectionFromSectPr('', 0, Number.MAX_SAFE_INTEGER).settings, ...page } }), [page])
-  const documentContext = useMemo<DocxReadingContext>(() => docx ?? {
-    sections: [fallbackSection], hfParts: {}, evenAndOddHeaders: false, mirrorMargins: false,
-    footnotes: [], endnotes: [], noteNumbers: {},
-  }, [docx, fallbackSection])
-  const layoutContext = useRef<RemoteLayout>({ styleContext, docx: documentContext, hfHeights })
+  const remeasureJobs = useRef(
+    new Map<string, { active: DocxRemoteSession; dirty: boolean; controller: AbortController }>(),
+  )
+  const fallbackSection = useMemo<SectionInfo>(
+    () => ({
+      ...sectionFromSectPr('', 0, Number.MAX_SAFE_INTEGER),
+      settings: { ...sectionFromSectPr('', 0, Number.MAX_SAFE_INTEGER).settings, ...page },
+    }),
+    [page],
+  )
+  const documentContext = useMemo<DocxReadingContext>(
+    () =>
+      docx ?? {
+        sections: [fallbackSection],
+        hfParts: {},
+        evenAndOddHeaders: false,
+        mirrorMargins: false,
+        footnotes: [],
+        endnotes: [],
+        noteNumbers: {},
+      },
+    [docx, fallbackSection],
+  )
+  const settings = documentContext.sections.at(-1)!.settings
+  const controls = useDocxReadingZoom(viewport, settings.pageWidth / 15)
+  const layoutContext = useRef<RemoteLayout>({ styleContext, docx: documentContext })
+  layoutContext.current = { styleContext, docx: documentContext }
   const auth = useMemo<Record<string, string>>(
-    () => (token ? { Authorization: `Bearer ${token}` } : {}) as Record<string, string>,
+    () => (token ? { Authorization: `Bearer ${token}` } : ({} as Record<string, string>)),
     [token],
   )
-  const paddingTop = twipsToPx(page.marginTop)
-  layoutContext.current = { styleContext, docx: documentContext, hfHeights }
-  const onHfHeight = useCallback((key: string, height: number) => setHfHeights((previous) =>
-    Math.abs((previous.get(key) ?? 0) - height) < 0.5 ? previous : new Map(previous).set(key, height)), [])
-
   const onAssetsReady = useCallback((id: string) => {
     const active = session.current
     if (!active) return
     const existing = remeasureJobs.current.get(id)
-    if (existing?.active === active && !existing.controller.signal.aborted) { existing.dirty = true; return }
+    if (existing?.active === active && !existing.controller.signal.aborted) {
+      existing.dirty = true
+      return
+    }
     const job = { active, dirty: true, controller: new AbortController() }
     const combined = combineAbortSignals([active.signal, job.controller.signal])
     const signal = combined.signal
     remeasureJobs.current.set(id, job)
-    void remeasureQueue.current.run(signal, async () => {
-      while (job.dirty && session.current === active) {
-        job.dirty = false
-        const unit = visibleModels.current.get(id)
-        if (!unit) return
-        const layout = layoutContext.current
-        const replacement = await measureUnit(id, unit.blocks, layout, signal)
-        if (signal.aborted || session.current !== active || !visibleModels.current.has(id)) return
-        setRenderBlocks((old) => signal.aborted || session.current !== active ||
-          visibleModels.current.get(id) !== unit ? old : replaceDocxUnitIndex(old, id, replacement))
-      }
-    }).catch((caught) => {
-      if (session.current === active && !signal.aborted)
-        setWindowError(caught instanceof Error ? caught.message : String(caught))
-    }).finally(() => {
-      combined.dispose()
-      if (remeasureJobs.current.get(id) === job) remeasureJobs.current.delete(id)
-    })
+    void remeasureQueue.current
+      .run(signal, async () => {
+        while (job.dirty && session.current === active) {
+          job.dirty = false
+          const unit = visibleModels.current.get(id)
+          if (!unit) return
+          const layout = layoutContext.current
+          const replacement = await measureUnit(id, unit.blocks, layout, signal)
+          if (signal.aborted || session.current !== active || !visibleModels.current.has(id)) return
+          setRenderBlocks((old) =>
+            signal.aborted || session.current !== active || visibleModels.current.get(id) !== unit
+              ? old
+              : replaceDocxUnitIndex(old, id, replacement),
+          )
+        }
+      })
+      .catch((caught) => {
+        if (session.current === active && !signal.aborted)
+          setWindowError(caught instanceof Error ? caught.message : String(caught))
+      })
+      .finally(() => {
+        combined.dispose()
+        if (remeasureJobs.current.get(id) === job) remeasureJobs.current.delete(id)
+      })
   }, [])
 
   const loadChunk = useCallback(async (active: DocxRemoteSession, next?: string) => {
@@ -260,8 +263,9 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
         }
       })
       if (session.current !== active) return
-      setRenderBlocks((old) => session.current === active && !active.signal.aborted
-        ? [...old, ...descriptors] : old)
+      setRenderBlocks((old) =>
+        session.current === active && !active.signal.aborted ? [...old, ...descriptors] : old,
+      )
       setCursor(result.next)
       setHasMore(result.hasMore)
       setError('')
@@ -284,9 +288,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     setVisibleUnits(new Map())
     setPage(DEFAULT_PAGE)
     setDocx(undefined)
-    setNotes(new Map())
     setNoteNumFmts({})
-    setHfHeights(new Map())
     setStyleContext({ styles: new Map(), numbering: new Map(), css: '' })
     setCursor(undefined)
     setHasMore(false)
@@ -317,11 +319,16 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
         setVisibleUnits(new Map())
         setRetryWindow((value) => value + 1)
         if (opened.model?.page) {
-          const settings = opened.model.page as unknown as PageSettings
+          const settings = opened.model.page as unknown as typeof DEFAULT_PAGE
           setPage(settings)
           const fallback = sectionFromSectPr('', 0, Number.MAX_SAFE_INTEGER)
-          layoutContext.current = { ...layoutContext.current, docx: { ...layoutContext.current.docx,
-            sections: [{ ...fallback, settings: { ...fallback.settings, ...settings } }] } }
+          layoutContext.current = {
+            ...layoutContext.current,
+            docx: {
+              ...layoutContext.current.docx,
+              sections: [{ ...fallback, settings: { ...fallback.settings, ...settings } }],
+            },
+          }
         }
         if (opened.model?.docx) {
           const context = opened.model.docx as unknown as DocxReadingContext
@@ -339,7 +346,11 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
         const styles = (await response.json()) as DocxStyleContext
         if (session.current === active && !signal.aborted) {
           disposeStyles()
-          const context = reviveDocxStyles(styles, layoutContext.current.docx, fontScope.lineMetrics())
+          const context = reviveDocxStyles(
+            styles,
+            layoutContext.current.docx,
+            fontScope.lineMetrics(),
+          )
           disposeStyles = mountDocxStyles(context, themeSansUrl)
           layoutContext.current = { ...layoutContext.current, styleContext: context }
           setStyleContext(context)
@@ -356,110 +367,65 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     }
   }, [server, fileId, token, auth, loadChunk])
 
-  useEffect(() => {
-    const ready = () => setNoteFontEpoch((epoch) => epoch + 1)
-    document.fonts.addEventListener('loadingdone', ready)
-    return () => document.fonts.removeEventListener('loadingdone', ready)
-  }, [])
+  const layout = useMemo(() => continuousDocxLayout(sourceBlocks), [sourceBlocks])
   useLayoutEffect(() => {
-    if (!docx) return
-    const required = new Set<string>()
-    for (const block of sourceBlocks) for (const ref of block.geometry?.notes ?? [])
-      required.add(noteKey(sectionIndexAt(docx.sections, block.docxIndex), ref.kind, ref.id))
-    const measured = measureNotes(docx, styleContext, required)
-    setNotes((old) => !old.size && !measured.size ? old : measured)
-  }, [docx, styleContext, sourceBlocks, noteFontEpoch])
-  const indexed = useMemo(() => {
-    const endnotes = new Map<string, { unitId: string; blockIndex: number; docxIndex?: number }>()
-    const output: DocxPageBlock[] = []
-    const sectionEnd = documentContext.endnoteProps?.pos === 'sectEnd'
-    const addNotes = () => {
-      for (const [key, owner] of endnotes) {
-        const note = notes.get(key)
-        if (note) output.push({ ...owner, noteKey: key, height: note.height,
-          geometry: { cuts: note.cuts, notes: [] }, keepWithNext: false })
-      }
-      endnotes.clear()
+    const element = viewport.current,
+      body = canvas.current
+    if (!element || !body) return
+    const update = () => {
+      setViewportHeight(element.clientHeight)
+      const offset =
+        (body.getBoundingClientRect().top -
+          element.getBoundingClientRect().top +
+          element.scrollTop) /
+        controls.zoom
+      setContentOffset((old) => (Math.abs(old - offset) < 0.5 ? old : offset))
     }
-    for (const [index, block] of sourceBlocks.entries()) {
-      const section = sectionIndexAt(documentContext.sections, block.docxIndex)
-      for (const ref of block.geometry?.notes ?? []) if (ref.kind === 'endnote') {
-        const key = noteKey(section, ref.kind, ref.id)
-        if (!endnotes.has(key)) endnotes.set(key, { unitId: block.unitId, blockIndex: block.blockIndex,
-          docxIndex: sectionEnd ? documentContext.sections[section].lastBlockIndex : documentContext.sections.at(-1)?.lastBlockIndex })
-      }
-      output.push(block)
-      const next = sourceBlocks[index + 1]
-      if (sectionEnd && ((next && sectionIndexAt(documentContext.sections, next.docxIndex) !== section)
-        || (!hasMore && index === sourceBlocks.length - 1))) addNotes()
-    }
-    if (!sectionEnd && !hasMore) addNotes()
-    return output
-  }, [sourceBlocks, documentContext, notes, hasMore])
-  const { blocks: renderBlocks, pages } = useMemo(() => layoutSectionBlocks(indexed, documentContext, hfHeights, notes),
-    [indexed, documentContext, hfHeights, notes])
-  useEffect(() => {
-    for (const id of visibleModels.current.keys()) onAssetsReady(id)
-  }, [hfHeights, onAssetsReady])
-  // An oversized image/table can be taller than the text area; let that page
-  // grow instead of clipping the block at the page edge.
-  const pageBoxHeights = useMemo(
-    () => pages.map((page) => Math.max(page.pageHeight, page.height + page.paddingTop + page.paddingBottom)),
-    [pages],
-  )
-  const tops = useMemo(() => {
-    const result: number[] = []
-    let top = 0
-    for (const height of pageBoxHeights) {
-      result.push(top)
-      top += height + PAGE_GAP
-    }
-    return result
-  }, [pageBoxHeights])
-  const totalHeight = tops.length
-    ? tops[tops.length - 1] + pageBoxHeights[pageBoxHeights.length - 1]
-    : 0
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    observer.observe(body.parentElement!)
+    update()
+    return () => observer.disconnect()
+  }, [controls.zoom, documentContext])
   useLayoutEffect(() => {
     const key = JSON.stringify([server, fileId])
     const previous = previousLayout.current
     const element = viewport.current
-    if (previous?.key === key && element) {
-      const anchor = captureDocxAnchor(previous.blocks, previous.pages, previous.tops,
-        scrollPosition.current, previous.paddingTop)
-      const restored = anchor && restoreDocxAnchor(anchor, renderBlocks, pages, tops, paddingTop)
+    if (previous?.key === key && element && scrollPosition.current >= previous.offset) {
+      const anchor = captureContinuousDocxAnchor(
+        previous.blocks,
+        scrollPosition.current - previous.offset,
+      )
+      const restored = anchor && restoreContinuousDocxAnchor(anchor, sourceBlocks)
       if (restored !== undefined) {
-        element.scrollTop = restored
-        scrollPosition.current = element.scrollTop
-        setScrollTop(element.scrollTop)
+        const next = restored + contentOffset
+        element.scrollTop = next * controls.zoom
+        scrollPosition.current = next
+        setScrollTop(next)
       }
     }
-    previousLayout.current = { key, blocks: renderBlocks, pages, tops, paddingTop }
-  }, [server, fileId, renderBlocks, pages, tops, paddingTop])
-  // Restore a saved DOCX source anchor once, as soon as the first window has
-  // enough blocks to resolve it. An anchor whose unit is not loaded yet is left
-  // for a later window instead of jumping to the top.
+    previousLayout.current = { key, blocks: sourceBlocks, offset: contentOffset }
+  }, [server, fileId, sourceBlocks, contentOffset, controls.zoom])
   useEffect(() => {
-    if (restoredAnchor.current || !fileId || !renderBlocks.length || !pages.length || !viewport.current)
-      return
+    if (restoredAnchor.current || !sourceBlocks.length || !viewport.current) return
     const saved = pendingAnchor.current ?? loadReadingPosition(fileId)?.anchor
     if (!saved) {
       restoredAnchor.current = true
       return
     }
-    const top = restoreDocxAnchor(saved, renderBlocks, pages, tops, paddingTop)
-    if (top === undefined) return
+    const restored = restoreContinuousDocxAnchor(saved, sourceBlocks)
+    if (restored === undefined) return
     restoredAnchor.current = true
     pendingAnchor.current = undefined
-    viewport.current.scrollTop = top
-    scrollPosition.current = top
-    setScrollTop(top)
-  }, [fileId, renderBlocks, pages, tops, paddingTop])
-  // A saved anchor can live past the first window: keep fetching bounded chunks
-  // until its unit appears (or the document ends), then the restore effect jumps.
+    const next = restored + contentOffset
+    viewport.current.scrollTop = next * controls.zoom
+    scrollPosition.current = next
+    setScrollTop(next)
+  }, [fileId, sourceBlocks, contentOffset, controls.zoom])
   useEffect(() => {
     const saved = pendingAnchor.current
-    if (!saved || restoredAnchor.current || !renderBlocks.length) return
-    if (renderBlocks.some((block) => block.unitId === saved.unitId)) return
+    if (!saved || restoredAnchor.current || !sourceBlocks.length) return
+    if (sourceBlocks.some((block) => block.unitId === saved.unitId)) return
     if (!hasMore || loadingRef.current || prefetching.current || prefetchAttempts.current >= 20) {
       pendingAnchor.current = undefined
       return
@@ -467,35 +433,40 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
     prefetchAttempts.current++
     prefetching.current = true
     const active = session.current
-    if (active) void loadChunk(active, cursor).finally(() => { prefetching.current = false })
+    if (active)
+      void loadChunk(active, cursor).finally(() => {
+        prefetching.current = false
+      })
     else prefetching.current = false
-  }, [renderBlocks, pages, hasMore, cursor, loadChunk])
-  // Keep the anchor instead of a page number: reflow can move pages around.
+  }, [sourceBlocks, hasMore, cursor, loadChunk])
   useEffect(() => {
-    if (!fileId || !renderBlocks.length || !pages.length) return
+    if (!sourceBlocks.length) return
     const timer = setTimeout(() => {
-      const anchor = captureDocxAnchor(renderBlocks, pages, tops,
-        scrollPosition.current, paddingTop)
-      if (anchor) {
-        saveDocxReadingAnchor(fileId, anchor)
-        session.current?.setLayoutPrefs({
-          anchor: { unitId: anchor.unitId, blockIndex: anchor.blockIndex,
-            offsetPx: Math.round(anchor.offset) },
-        })
-      }
+      const anchor = captureContinuousDocxAnchor(
+        sourceBlocks,
+        scrollPosition.current - contentOffset,
+      )
+      if (!anchor) return
+      saveDocxReadingAnchor(fileId, anchor)
+      session.current?.setLayoutPrefs({
+        anchor: {
+          unitId: anchor.unitId,
+          blockIndex: anchor.blockIndex,
+          offsetPx: Math.round(anchor.offset),
+        },
+      })
     }, 600)
     return () => clearTimeout(timer)
-  }, [fileId, renderBlocks, pages, tops, paddingTop, scrollTop])
-  const viewportHeight = viewport.current?.clientHeight || 720
-  const range = visiblePages(tops, pageBoxHeights, scrollTop, viewportHeight, OVERSCAN)
-
-  const requiredKey = useMemo(() => {
-    const ids = new Set<string>()
-    for (const page of pages.slice(range.start, range.end))
-      for (const item of renderBlocks.slice(page.blockStart, page.blockEnd)) if (!item.noteKey) ids.add(item.unitId)
-    return JSON.stringify([...ids])
-  }, [pages, range.start, range.end, renderBlocks])
-
+  }, [fileId, sourceBlocks, scrollTop, contentOffset])
+  const tops = useMemo(
+    () => layout.units.map((unit) => unit.top + contentOffset),
+    [layout, contentOffset],
+  )
+  const heights = useMemo(() => layout.units.map((unit) => unit.height), [layout])
+  const range = visiblePages(tops, heights, scrollTop, viewportHeight / controls.zoom, 2)
+  const requiredKey = JSON.stringify(
+    layout.units.slice(range.start, range.end).map((unit) => unit.id),
+  )
   useEffect(() => {
     const active = session.current
     if (!active) return
@@ -510,11 +481,16 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
         job.controller.abort()
       }
     }
-    // Keep overlapping pages mounted, but drop every model outside the new window.
-    setVisibleUnits((old) => new Map(requiredUnits.flatMap((id) => {
-      const unit = old.get(id)
-      return unit ? [[id, unit] as const] : []
-    })))
+    // Keep overlapping units mounted, but drop every model outside the new window.
+    setVisibleUnits(
+      (old) =>
+        new Map(
+          requiredUnits.flatMap((id) => {
+            const unit = old.get(id)
+            return unit ? [[id, unit] as const] : []
+          }),
+        ),
+    )
     void (async () => {
       try {
         for (const id of requiredUnits) {
@@ -528,136 +504,130 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
           setWindowError(caught instanceof Error ? caught.message : String(caught))
       }
     })()
-    return () => { cancelled = true }
+    return () => {
+      cancelled = true
+    }
   }, [requiredKey, retryWindow])
 
+  useEffect(() => {
+    const element = viewport.current
+    if (
+      hasMore &&
+      !loadingMore &&
+      !error &&
+      element &&
+      element.scrollHeight <= element.clientHeight + 240 &&
+      session.current
+    )
+      void loadChunk(session.current, cursor)
+  }, [hasMore, loadingMore, error, cursor, loadChunk, layout.height])
   const onScroll = (event: React.UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget
-    setScrollTop(element.scrollTop)
-    scrollPosition.current = element.scrollTop
-    if (!hasMore || loadingRef.current) return
-    if (element.scrollTop + element.clientHeight > element.scrollHeight - 240) {
-      if (session.current) void loadChunk(session.current, cursor)
-    }
+    setScrollTop(element.scrollTop / controls.zoom)
+    scrollPosition.current = element.scrollTop / controls.zoom
+    if (
+      hasMore &&
+      !loadingRef.current &&
+      element.scrollTop + element.clientHeight > element.scrollHeight - 240 &&
+      session.current
+    )
+      void loadChunk(session.current, cursor)
   }
-
   return (
-    <div className="viewer-preview viewer-doc-remote" data-docx-theme-fallback={styleContext.missingThemeFallback ? 'bundled' : undefined}>
-      {name && <span className="viewer-doc-remote-name">{name}</span>}
-      {status && <p className="viewer-status">{status}</p>}
-      {(error || windowError) && (
-        <div className="viewer-doc-remote-error" role="alert">
-          <span>{error || windowError}</span>
-          <button
-            type="button"
-            onClick={() => {
-              setError('')
-              setWindowError('')
-              setRetryWindow((value) => value + 1)
-              if (error && session.current) void loadChunk(session.current, cursor)
-            }}
-          >
-            重试
-          </button>
-        </div>
-      )}
-      <div className="viewer-doc-remote-viewport" ref={viewport} onScroll={onScroll} style={{ overflowAnchor: 'none' }}>
-        <div className="viewer-doc-remote-canvas" style={{ height: totalHeight }}>
-          {pages.slice(range.start, range.end).map((page) => (
-            <div
-              key={page.index}
-              className="viewer-doc-remote-slot"
-              style={{
-                width: page.width,
-                marginLeft: -page.width / 2,
-                transform: `translateY(${tops[page.index]}px)`,
+    <LocaleProvider initial="zh">
+      <div
+        className="viewer-preview viewer-doc-remote viewer-doc-reading read-mode"
+        data-docx-theme-fallback={styleContext.missingThemeFallback ? 'bundled' : undefined}
+        onKeyDown={(event) => {
+          if ((event.ctrlKey || event.metaKey) && ['+', '=', '-'].includes(event.key)) {
+            event.preventDefault()
+            controls.changeZoom(event.key === '-' ? -1 : 1)
+          }
+        }}
+      >
+        {name && <span className="viewer-doc-remote-name">{name}</span>}
+        {!!sourceBlocks.length && <DocxReadingBar controls={controls} />}
+        {status && <p className="viewer-status">{status}</p>}
+        {(error || windowError) && (
+          <div className="viewer-doc-remote-error" role="alert">
+            <span>{error || windowError}</span>
+            <button
+              type="button"
+              onClick={() => {
+                setError('')
+                setWindowError('')
+                setRetryWindow((value) => value + 1)
+                if (error && session.current) void loadChunk(session.current, cursor)
               }}
             >
+              重试
+            </button>
+          </div>
+        )}
+        <div
+          className="viewer-doc-reading-scroll editor-scroll"
+          tabIndex={0}
+          ref={viewport}
+          onScroll={onScroll}
+          style={{ overflowAnchor: 'none' }}
+        >
+          <div className="doc-zoom" style={{ zoom: controls.zoom }}>
+            <div
+              className="page-wrap viewer-doc-reading-paper"
+              style={{
+                width: settings.pageWidth / 15,
+                padding: `${settings.marginTop / 15}px ${settings.marginRight / 15}px ${settings.marginBottom / 15}px ${settings.marginLeft / 15}px`,
+                ...docxSectionTypography(settings),
+              }}
+            >
+              <DocxReadingHf context={documentContext} kind="header" />
               <div
-                className="viewer-doc-remote-page"
-                data-section-index={page.sectionIndex}
-                data-page-index={page.index}
-                data-page-number={formatPageNumber(page.number, documentContext.sections[page.sectionIndex].pageNumberFmt)}
-                style={{
-                  position: 'relative',
-                  width: page.width,
-                  height: pageBoxHeights[page.index],
-                  padding: 0,
-                }}
+                ref={canvas}
+                className="viewer-doc-remote-canvas"
+                role="document"
+                aria-label="Word 文档正文"
+                style={{ height: layout.height }}
               >
-                <RemoteHf kind="header" id={page.headerId} part={page.headerId ? documentContext.hfParts[page.headerId] : undefined}
-                  settings={page.settings} number={formatPageNumber(page.number, documentContext.sections[page.sectionIndex].pageNumberFmt)}
-                  total={hasMore ? '…' : pages.length} left={page.paddingLeft} onHeight={onHfHeight} />
-                {page.regions.map((region, regionIndex) => (
-                  <div key={regionIndex} className="viewer-doc-remote-region" data-section-index={region.sectionIndex}
-                    data-columns={region.columns.length} style={{ position: 'absolute', top: page.paddingTop + region.top,
-                      left: twipsToPx(documentContext.mirrorMargins && page.number % 2 === 0
-                        ? documentContext.sections[region.sectionIndex].settings.marginRight
-                        : documentContext.sections[region.sectionIndex].settings.marginLeft) }}>
-                    {region.columns.filter((column) => column.blockEnd > column.blockStart).map((column, columnIndex) => {
-                      const items = renderBlocks.slice(column.blockStart, column.blockEnd)
-                      const groups = items.reduce<DocxPageBlock[][]>((groups, item) => {
-                        const last = groups.at(-1)
-                        if (!item.clip && !item.noteKey && last && !last[0].clip && !last[0].noteKey) last.push(item)
-                        else groups.push([item])
-                        return groups
-                      }, [])
-                      return <div key={columnIndex} className="viewer-doc-remote-column"
-                        style={{ position: 'absolute', left: column.left, width: column.width, ...docxSectionTypography(docx?.sections[region.sectionIndex]?.settings) }}>
-                        {groups.map((group, itemIndex) => {
-                          const item = group[0]
-                          if (item.noteKey) {
-                            const note = notes.get(item.noteKey)
-                            return note ? <RemoteNoteView key={itemIndex} note={note} from={item.clip?.from} to={item.clip?.to} /> : null
-                          }
-                          const block = visibleUnits.get(item.unitId)?.blocks[item.blockIndex]
-                          if (!group.every((value) => visibleUnits.has(value.unitId)) || !block) return <p key={itemIndex} role="status">正在加载正文…</p>
-                          if (!item.clip) return <PageEditor key={itemIndex} unitKey={JSON.stringify([...new Set(group.map((value) => value.unitId))])}
-                            onAssetsReady={onAssetsReady} blocks={group.map((value) => {
-                              const source = visibleUnits.get(value.unitId)!.blocks[value.blockIndex]
-                              return value.tablePage ? sliceTableBlock(source, value.tablePage) : source
-                            })} doc={styleContext} />
-                          const header = item.clip.from > 0 ? item.geometry?.headerHeight ?? 0 : 0
-                          return <div key={itemIndex} className="viewer-doc-fragment" data-docx-index={item.docxIndex}
-                            data-source-from={item.clip.from} data-source-to={item.clip.to} style={{ height: item.height, position: 'relative' }}>
-                            {header > 0 && <div className="viewer-doc-fragment-slice" style={{ height: header, clipPath: `inset(0 -${page.width}px)`, position: 'relative' }}>
-                              <PageEditor unitKey={JSON.stringify([item.unitId])} onAssetsReady={onAssetsReady} blocks={[block]} doc={styleContext} />
-                            </div>}
-                            {/* Clip continuation rows vertically; table rounding/indent may cross the text column's edge. */}
-                            <DocxFragmentSlice from={item.clip.from} to={item.clip.to} pageWidth={page.width} table={block.type === 'table'} flow={item.tableFlow} geometry={item.geometry?.tableFlow}>
-                              <PageEditor unitKey={JSON.stringify([item.unitId])} onAssetsReady={onAssetsReady} blocks={[block]} doc={styleContext} />
-                            </DocxFragmentSlice>
-                          </div>
-                        })}
-                      </div>
-                    })}
+                {layout.units.slice(range.start, range.end).map((unit) => (
+                  <div
+                    key={unit.id}
+                    className="viewer-doc-reading-unit"
+                    data-unit-id={unit.id}
+                    style={{ position: 'absolute', top: unit.top, width: '100%' }}
+                  >
+                    {visibleUnits.has(unit.id) ? (
+                      <ReadingUnit
+                        blocks={visibleUnits.get(unit.id)!.blocks}
+                        doc={styleContext}
+                        unitId={unit.id}
+                        onAssetsReady={onAssetsReady}
+                      />
+                    ) : (
+                      <p role="status">正在加载正文…</p>
+                    )}
                   </div>
                 ))}
-                {!!page.notes?.length && <div className="viewer-doc-remote-notes" style={{ position: 'absolute',
-                  left: page.paddingLeft, width: page.width - page.paddingLeft - page.paddingRight,
-                  ...(documentContext.footnoteProps?.pos === 'beneathText'
-                    ? { top: page.paddingTop + page.height }
-                    : { bottom: page.paddingBottom }), borderTop: '1px solid currentColor', paddingTop: NOTE_SEPARATOR - 1 }}>
-                  {page.notes.map((slice, index) => <RemoteNoteView key={index} note={notes.get(slice.key)!} from={slice.from} to={slice.to} />)}
-                </div>}
-                <RemoteHf kind="footer" id={page.footerId} part={page.footerId ? documentContext.hfParts[page.footerId] : undefined}
-                  settings={page.settings} number={formatPageNumber(page.number, documentContext.sections[page.sectionIndex].pageNumberFmt)}
-                  total={hasMore ? '…' : pages.length} left={page.paddingLeft} onHeight={onHfHeight} />
               </div>
+              {!hasMore && !loadingMore && (
+                <>
+                  <DocxReadingNotes context={documentContext} styles={styleContext} />
+                  <DocxReadingHf context={documentContext} kind="footer" />
+                </>
+              )}
             </div>
-          ))}
+          </div>
+          {loadingMore && <p className="viewer-doc-remote-loading">正在加载更多…</p>}
+          {hasMore && !loadingMore && (
+            <button
+              type="button"
+              className="viewer-doc-remote-more"
+              onClick={() => session.current && void loadChunk(session.current, cursor)}
+            >
+              加载更多
+            </button>
+          )}
         </div>
       </div>
-      {loadingMore && <p className="viewer-doc-remote-loading">正在加载更多…</p>}
-      {hasMore && !loadingMore && (
-        <button
-          type="button"
-          className="viewer-doc-remote-more"
-          onClick={() => session.current && void loadChunk(session.current, cursor)}
-        >
-          加载更多
-        </button>
-      )}
-    </div>
+    </LocaleProvider>
   )
 }

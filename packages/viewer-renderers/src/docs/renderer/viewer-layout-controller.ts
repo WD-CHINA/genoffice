@@ -86,8 +86,13 @@ export function createViewerLayoutController(
 export function readonlyCloneHtml(html: string): string {
   const host = document.createElement('div')
   host.innerHTML = html
+  for (const element of host.querySelectorAll(
+    '.doc-move-handle,.box-resize-handle,.img-resize-handle,.doc-image-anchor-marker,.column-resize-handle,.doc-formula-edit',
+  ))
+    element.remove()
   for (const element of host.querySelectorAll<HTMLElement>('*')) {
     element.removeAttribute('contenteditable')
+    element.removeAttribute('draggable')
     if (element.matches('a[href],input,textarea,select,button,[tabindex]')) element.tabIndex = -1
     for (const attribute of [...element.attributes])
       if (attribute.name.startsWith('on')) element.removeAttribute(attribute.name)

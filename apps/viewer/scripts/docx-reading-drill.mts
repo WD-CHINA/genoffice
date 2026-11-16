@@ -5,7 +5,6 @@ import { resolve, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import JSZip from 'jszip'
 import { chromium } from 'playwright-core'
-import { inspectDocxTableFlow, summarizeDocxTableFlow } from './docx-flow-probe.mjs'
 
 const output = resolve(process.env.WORD_EVIDENCE_DIR ?? '/tmp/genoffice-word-fixes')
 await mkdir(output, { recursive: true })
@@ -194,11 +193,13 @@ await writeFile(typographyPath, await typographyZip.generateAsync({ type: 'nodeb
 sources.push({ name: 'typography-defaults', path: typographyPath })
 const browser = await chromium.launch({
   headless: true,
-  executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  executablePath:
+    process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
 })
 const report: any = {
   samples: [],
-  scope: 'Actual browser pagination and model fidelity; no independent Office visual baseline',
+  scope:
+    'Continuous reading, bounded source windows and model fidelity; no independent Office visual baseline',
 }
 try {
   for (const source of sources.filter(
@@ -220,43 +221,24 @@ try {
     page.on('pageerror', (error) => sample.errors.push(error.message))
     try {
       const params = new URLSearchParams({
-        parse: 'server',
+        format: 'docx',
+        src: 'remote',
         server: base,
         fileId,
         token,
         name: source.name,
         theme: 'dark',
       })
-      await page.goto('http://127.0.0.1:11019/?' + params)
-      const frame = page.frameLocator('iframe')
-      await frame.locator('.viewer-doc-remote-page').first().waitFor({ timeout: 120000 })
-      const content = page.frames().find((frame) => frame.url().includes('preview.html'))!
-      await content.evaluate(async () => {
+      await page.goto(
+        (process.env.WORD_VIEWER_URL ?? 'http://127.0.0.1:11001').replace(/\/$/, '') +
+          '/preview.html?' +
+          params,
+      )
+      await page.locator('.viewer-doc-reading-unit .doc-page').first().waitFor({ timeout: 120000 })
+      await page.evaluate(async () => {
         await document.fonts.ready
       })
-      await page.waitForTimeout(1200)
-      sample.start = await content.evaluate(() => ({
-        paper: getComputedStyle(document.querySelector('.viewer-doc-remote-page')!).backgroundColor,
-        text: document.body.innerText.slice(-1000),
-        notes: document.querySelectorAll('[data-note-body]').length,
-        fragments: document.querySelectorAll('[data-source-from]').length,
-        pages: [...document.querySelectorAll<HTMLElement>('.viewer-doc-remote-page')].map(
-          (page) => ({
-            index: page.dataset.pageIndex,
-            height: page.getBoundingClientRect().height,
-            overflow: [...page.querySelectorAll<HTMLElement>('.viewer-doc-remote-column')].some(
-              (column) =>
-                column.getBoundingClientRect().bottom > page.getBoundingClientRect().bottom + 1,
-            ),
-          }),
-        ),
-      }))
-      assert.equal(
-        sample.start.paper,
-        'rgb(255, 255, 255)',
-        'Word paper must stay readable in a dark shell',
-      )
-      sample.typography = await content.evaluate(() => {
+      sample.typography = await page.evaluate(() => {
         const root = document.querySelector<HTMLElement>('.viewer-doc-remote')!
         const editor = root.querySelector('.doc-page')!
         const chinese = root.querySelector('.doc-east-asian-font')
@@ -276,13 +258,13 @@ try {
         assert.equal(
           sample.typography.themeLoaded,
           true,
-          'the actual fallback face must finish loading before pagination',
+          'the actual fallback face must finish loading before reading',
         )
         assert.match(sample.typography.chineseFont, /GenOffice Theme Sans SC/)
       }
       if (source.name === 'typography-defaults') {
-        sample.inheritedStyle = await content.evaluate(() => {
-          const ps = [...document.querySelectorAll('.viewer-doc-remote-column p')]
+        sample.inheritedStyle = await page.evaluate(() => {
+          const ps = [...document.querySelectorAll('.viewer-doc-reading-unit p')]
           const css = (text: string) => {
             const node = ps.find((p) => p.textContent?.includes(text))!,
               style = getComputedStyle(node)
@@ -316,287 +298,76 @@ try {
           'style paragraph spacing must reach descendants',
         )
       }
-      if (source.name === 'business' || source.name === 'table-right-edge') {
-        if (source.name === 'business') {
-          sample.pictureExtents = await content.evaluate(() =>
-            [
-              ...document.querySelectorAll<HTMLImageElement>(
-                '.viewer-doc-remote-column .doc-inline-pic > img',
-              ),
-            ]
-              .filter((image) => image.naturalWidth > 0)
-              .map((image) => {
-                const rect = image.getBoundingClientRect(),
-                  wrapper = image.parentElement!
-                return {
-                  width: rect.width,
-                  height: rect.height,
-                  authoredWidth: parseFloat(image.style.width),
-                  authoredHeight: parseFloat(image.style.height),
-                  cropWidth: wrapper.getBoundingClientRect().width,
-                  clip: getComputedStyle(wrapper).clipPath,
-                }
-              }),
-          )
-          assert.ok(sample.pictureExtents.length, 'business document pictures must be rendered')
-          for (const image of sample.pictureExtents) {
-            assert.ok(
-              Math.abs(image.width / image.height - image.authoredWidth / image.authoredHeight) <
-                0.002,
-              'narrow cells must preserve the authored drawing ratio',
-            )
-            assert.ok(
-              Math.abs(image.width - image.authoredWidth) < 0.1,
-              'drawing width must retain the source extent',
-            )
-            assert.ok(
-              image.cropWidth < image.width && image.clip !== 'none',
-              'oversized picture must crop inside its cell',
-            )
-          }
-        }
-        sample.rightEdge = await content.evaluate(() => {
-          const table = [
-            ...document.querySelectorAll<HTMLTableElement>('.viewer-doc-remote-column .doc-table'),
-          ].find((node) => !node.closest('[data-docx-flow-source]'))!
-          const cell = table.rows[0].cells[table.rows[0].cells.length - 1]
-          const rect = cell.getBoundingClientRect()
-          const x = rect.right - 0.25,
-            y = rect.top + rect.height / 2
-          const hit = () =>
-            document.elementsFromPoint(x, y).some((node) => node === cell || cell.contains(node))
-          const slices = [
-            ...table
-              .closest('.viewer-doc-fragment')!
-              .querySelectorAll<HTMLElement>('.viewer-doc-fragment-slice'),
-          ]
-          const original = slices.map((node) => node.style.cssText)
-          const visible = hit()
-          try {
-            for (const slice of slices) {
-              slice.style.clipPath = 'none'
-              slice.style.overflow = 'hidden'
-            }
-            return {
-              visible,
-              oldClipVisible: hit(),
-              border: getComputedStyle(cell).borderRight,
-              tableWidth: table.getBoundingClientRect().width,
-              clipWidth: slices[0].getBoundingClientRect().width,
-            }
-          } finally {
-            slices.forEach((node, i) => {
-              node.style.cssText = original[i]
-            })
-          }
-        })
-        assert.equal(
-          sample.rightEdge.visible,
-          true,
-          'outer right table border must be inside the painted region',
-        )
-        assert.equal(
-          sample.rightEdge.oldClipVisible,
-          false,
-          'the fixture must reproduce the former horizontal clipping',
-        )
-      }
-      sample.pendingPageTotal = await content.evaluate(() =>
-        [...document.querySelectorAll('.page-hf')].some((node) => node.textContent?.includes('…')),
-      )
-      if (source.name === 'partial-pages')
-        assert.equal(sample.pendingPageTotal, true, 'partial page totals must be marked pending')
-      await page.screenshot({ path: join(output, `${source.name}-first.png`) })
-      const visited = new Set<string>()
-      const noteIds = new Set<string>()
-      const tableFrames = new Map<string, any>()
-      const flows = new Map<string, any>()
-      for (let step = 0; step < 160; step++) {
-        if (['business', 'independent-cells'].includes(source.name)) {
-          const entries = await content.evaluate(({ code, skip }) => (0, eval)(`(${code})`)(skip), {
-            code: inspectDocxTableFlow.toString(),
-            skip: [...flows.keys()],
-          })
-          for (const entry of entries) flows.set(entry.key, entry)
-        }
-
-        if (
-          ['business', 'table-right-edge', 'table-borderless', 'table-styled'].includes(source.name)
-        ) {
-          const frames = await content.evaluate(() =>
-            [...document.querySelectorAll<HTMLElement>('.viewer-doc-fragment')]
-              .map((fragment) => {
-                const slices = [
-                  ...fragment.querySelectorAll<HTMLElement>('.viewer-doc-fragment-slice'),
-                ]
-                const slice = slices.at(-1)!,
-                  grid = [...slice.querySelectorAll('table')].find(
-                    (node) => !node.closest('[data-docx-flow-source]'),
-                  )
-                if (!grid) return null
-                const box = slice.getBoundingClientRect(),
-                  table = grid.getBoundingClientRect()
-                const edges = [
-                  ...slice.querySelectorAll<HTMLElement>('[data-docx-table-edge]'),
-                ].filter(
-                  (edge) =>
-                    parseFloat(
-                      getComputedStyle(edge)[
-                        edge.dataset.docxTableEdge === 'top'
-                          ? 'borderTopWidth'
-                          : 'borderBottomWidth'
-                      ],
-                    ) > 0,
-                )
-                return {
-                  key: `${fragment.dataset.docxIndex}:${fragment.dataset.sourceFrom}`,
-                  topNeeded: box.top > table.top + 1,
-                  bottomNeeded: box.bottom < table.bottom - 1,
-                  top: edges.some((edge) => edge.dataset.docxTableEdge === 'top'),
-                  bottom: edges.some((edge) => edge.dataset.docxTableEdge === 'bottom'),
-                  borders: edges.map((edge) => {
-                    const css = getComputedStyle(edge)
-                    return edge.dataset.docxTableEdge === 'top'
-                      ? { style: css.borderTopStyle, color: css.borderTopColor }
-                      : { style: css.borderBottomStyle, color: css.borderBottomColor }
-                  }),
-                }
-              })
-              .filter(Boolean),
-          )
-          for (const frame of frames) tableFrames.set(frame!.key, frame)
-        }
-        const status = await content.evaluate(() => {
-          const viewport = document.querySelector<HTMLElement>('.viewer-doc-remote-viewport')!
-          const pages = [...document.querySelectorAll<HTMLElement>('.viewer-doc-remote-page')].map(
-            (page) => page.dataset.pageIndex!,
-          )
-          const notes = [...document.querySelectorAll<HTMLElement>('[data-note-body]')].map(
-            (node) => node.dataset.noteBody!,
-          )
-          const terminal = viewport.scrollTop + viewport.clientHeight >= viewport.scrollHeight - 2
-          const more = !!document.querySelector(
-            '.viewer-doc-remote-more,.viewer-doc-remote-loading',
-          )
-          viewport.scrollTop = Math.min(viewport.scrollHeight, viewport.scrollTop + 700)
-          return { pages, notes, terminal, more }
-        })
-        status.pages.forEach((id) => visited.add(id))
-        status.notes.forEach((id) => noteIds.add(id))
-        if (status.terminal && !status.more) break
-        await page.waitForTimeout(80)
-      }
-      if (['business', 'independent-cells'].includes(source.name)) {
-        sample.cellFlow = summarizeDocxTableFlow([...flows.values()])
-        assert.ok(
-          sample.cellFlow.fragments > 1,
-          'independent cell flow must be active across pages',
-        )
-        assert.ok(sample.cellFlow.expected > 100, 'probe must cover actual text')
-        assert.deepEqual(sample.cellFlow.missing, [], 'all source glyphs must be painted')
-        assert.deepEqual(sample.cellFlow.duplicates, [], 'source glyphs must be painted once')
-        if (source.name === 'independent-cells') {
-          const markers = sample.cellFlow.markers
-          assert.equal(markers.length, 2, 'completed short cells appear in only one fragment')
-          const middle = markers.find((marker: any) => marker.text === 'FLOW_MIDDLE')!
-          const bottom = markers.find((marker: any) => marker.text === 'FLOW_BOTTOM')!
-          assert.ok(
-            middle && Math.abs(middle.top - middle.bottom) < 4,
-            'middle alignment uses the first fragment height',
-          )
-          assert.ok(
-            bottom && bottom.bottom >= -0.1 && bottom.bottom < 15,
-            'bottom alignment uses the first fragment height',
-          )
-        }
-      }
-      sample.visited = visited.size
-      if (
-        ['business', 'table-right-edge', 'table-borderless', 'table-styled'].includes(source.name)
-      ) {
-        sample.tableFrames = [...tableFrames.values()]
-        assert.ok(
-          sample.tableFrames.some((frame: any) => frame.bottomNeeded),
-          'fixture must exercise a split table',
-        )
-        for (const frame of sample.tableFrames) {
-          assert.equal(
-            frame.top,
-            source.name !== 'table-borderless' && frame.topNeeded,
-            'continuation frame must respect table top borders',
-          )
-          assert.equal(
-            frame.bottom,
-            source.name !== 'table-borderless' && frame.bottomNeeded,
-            'continuation frame must respect table bottom borders',
-          )
-          if (source.name === 'table-styled')
-            for (const border of frame.borders) {
-              assert.equal(
-                border.style,
-                'double',
-                'continuation frame must preserve the line style',
-              )
-              assert.equal(
-                border.color,
-                'rgb(51, 102, 153)',
-                'continuation frame must preserve the line color',
-              )
-            }
-        }
-      }
-      sample.noteIds = [...noteIds]
-      if (source.name === 'long-notes') {
-        assert.ok(visited.size > 2, 'long footnote must continue across physical pages')
-        assert.ok(
-          await content.locator('[data-note-body][data-note-kind="endnote"]').count(),
-          'endnote body must appear at document end',
-        )
-      }
-      sample.notesOverlap = await content.evaluate(() =>
-        [...document.querySelectorAll<HTMLElement>('.viewer-doc-remote-page')].some((page) => {
-          const notes = page.querySelector<HTMLElement>('.viewer-doc-remote-notes')
-          return (
-            notes &&
-            [...page.querySelectorAll<HTMLElement>('.viewer-doc-remote-column')].some((column) =>
-              [...column.querySelectorAll<HTMLElement>('.viewer-doc-fragment,.doc-page > *')]
-                .filter(
-                  (element) =>
-                    !element.closest('.viewer-doc-fragment') ||
-                    element.matches('.viewer-doc-fragment'),
-                )
-                .some(
-                  (element) =>
-                    element.getBoundingClientRect().bottom > notes.getBoundingClientRect().top + 1,
-                ),
-            )
-          )
-        }),
-      )
-      assert.equal(sample.notesOverlap, false, 'body must not overlap the reserved footnote area')
-      assert.ok(
-        sample.start.pages.every((page: any) => !page.overflow),
-        'body must not overflow physical pages',
-      )
-      sample.final = await content.evaluate(() => ({
-        alerts: [...document.querySelectorAll('[role=alert]')].map((node) => node.textContent),
-        text: document.body.innerText.slice(-1200),
-      }))
-      if (source.name === 'partial-pages') {
-        assert.ok(sample.final.text.includes('CHUNK_PARAGRAPH_419'), 'last chunk must be reached')
-        assert.ok(
-          !(await content.evaluate(() =>
-            [...document.querySelectorAll('.page-hf')].some((node) =>
-              node.textContent?.includes('…'),
+      const units = new Map<string, string>()
+      const notes = new Set<string>()
+      let finished = false
+      for (let step = 0; step < 1200; step++) {
+        const state = await page.evaluate(() => {
+          const root = document.querySelector('.viewer-doc-reading')!
+          const scroll = root.querySelector<HTMLElement>('.viewer-doc-reading-scroll')!
+          return {
+            paper: getComputedStyle(root.querySelector('.viewer-doc-reading-paper')!)
+              .backgroundColor,
+            pages: root.querySelectorAll('.pv-page,.viewer-doc-remote-page,[data-source-from]')
+              .length,
+            editable: root.querySelectorAll('[contenteditable="true"],.doc-content-editing').length,
+            counters: root.querySelectorAll('.viewer-page-controls').length,
+            units: [...root.querySelectorAll<HTMLElement>('[data-unit-id]')].map(
+              (unit) => [unit.dataset.unitId!, unit.textContent ?? ''] as const,
             ),
-          )),
-          'complete page total must be resolved',
+            notes: [...root.querySelectorAll<HTMLElement>('[data-note-body]')].map(
+              (note) => `${note.dataset.noteKind}:${note.dataset.noteBody}`,
+            ),
+            broken: [...root.querySelectorAll<HTMLImageElement>('img[src]')].filter(
+              (image) => image.complete && !image.naturalWidth,
+            ).length,
+            atEnd: scroll.scrollTop + scroll.clientHeight >= scroll.scrollHeight - 2,
+            busy:
+              !!root.querySelector('[role="status"]') ||
+              !!root.querySelector('.viewer-doc-remote-loading'),
+            more: !!root.querySelector('.viewer-doc-remote-more'),
+            alerts: [...root.querySelectorAll('[role="alert"]')].map((node) => node.textContent),
+          }
+        })
+        assert.equal(state.paper, 'rgb(255, 255, 255)')
+        assert.equal(
+          state.pages,
+          0,
+          'continuous reading must never create paper pages or table slices',
         )
+        assert.equal(state.editable, 0)
+        assert.equal(state.counters, 0)
+        assert.equal(state.broken, 0)
+        assert.deepEqual(state.alerts, [])
+        for (const [id, text] of state.units) units.set(id, text)
+        for (const id of state.notes) notes.add(id)
+        if (state.atEnd && !state.busy && !state.more) {
+          finished = true
+          break
+        }
+        await page
+          .locator('.viewer-doc-reading-scroll')
+          .evaluate((element) => element.scrollBy(0, element.clientHeight * 0.75))
+        await page.waitForTimeout(200)
       }
-      assert.equal(sample.errors.length, 0, JSON.stringify(sample.errors))
-      assert.equal(sample.final.alerts.length, 0)
+      assert.equal(finished, true, 'reading must reach the final source unit')
+      const text = [...units.values()].join('')
+      if (source.name === 'partial-pages') assert.ok(text.includes('CHUNK_PARAGRAPH_419'))
+      if (source.name === 'long-and-merged')
+        for (const marker of ['LONG_START', 'LONG_END', 'MERGE_START', 'MERGE_END', 'DOCUMENT_END'])
+          assert.ok(text.includes(marker), marker)
       if (source.name === '06-with-footnotes')
-        assert.ok(noteIds.size, 'footnote bodies must be rendered')
+        assert.ok(notes.size, 'footnotes must remain visible at the end')
+      assert.deepEqual(sample.errors, [])
+      assert.equal(
+        createHash('sha256')
+          .update(await readFile(source.path))
+          .digest('hex'),
+        sample.sha256,
+      )
+      await page.screenshot({ path: join(output, `${source.name}-continuous.png`) })
+      sample.units = units.size
+      sample.notes = notes.size
       sample.status = 'passed'
     } catch (error) {
       sample.status = 'failed'
@@ -604,12 +375,12 @@ try {
     }
     await page.close()
     await writeFile(join(output, 'browser-report.json'), JSON.stringify(report, null, 2))
-    console.log(source.name, sample.status, sample.error ?? '', sample.visited)
+    console.log(source.name, sample.status, sample.error ?? '')
   }
 } finally {
   await browser.close()
 }
 assert.ok(
   report.samples.every((sample: any) => sample.status === 'passed'),
-  'DOCX browser regression failed',
+  'DOCX continuous reading regression failed',
 )

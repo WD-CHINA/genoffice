@@ -4,7 +4,7 @@ import { waitForDocxImages } from './docx-image-ready'
 import { waitForDocxLayout } from './docx-layout-ready'
 import { docxSectionTypography } from './docx-style-context'
 import type { SectionSettings } from '@genoffice/docx-engine'
-import { editorExtensions } from '@genoffice/viewer-renderers/docs/renderer/editor/extensions'
+import { viewerEditorOptions } from '@genoffice/viewer-renderers/docs/renderer/viewer-extensions'
 import {
   blocksToPmDoc,
   pmDocOptions,
@@ -26,14 +26,13 @@ export async function measureBlockHeights(
   const heights = new Map<number, number>()
   if (!blocks.length) return heights
   const host = document.createElement('div')
-  host.className = 'viewer-doc-remote viewer-doc-remote-measure'
+  host.className = 'viewer-doc-remote viewer-doc-reading viewer-doc-remote-measure'
   host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;height:auto;display:block;visibility:hidden;pointer-events:none`
   for (const [key, value] of Object.entries(docxSectionTypography(settings))) host.style.setProperty(key, value)
   document.body.appendChild(host)
   const editor = new Editor({
     element: host,
-    extensions: editorExtensions,
-    editable: false,
+    ...viewerEditorOptions,
     editorProps: { attributes: { class: 'doc-page', lang: doc.docDefaults?.lang ?? 'en-US' } },
   })
   try {

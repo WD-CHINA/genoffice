@@ -15,9 +15,15 @@ const sdkAdb = join(
 )
 const adbBinary = process.env.ADB || (existsSync(sdkAdb) ? sdkAdb : 'adb')
 const execute = promisify(execFile)
+// ADB joins shell operands before invoking the device shell. Preserve empty
+// strings and quote metacharacters so intent extras keep their argument slots.
+const remoteArgs = (args) =>
+  args[0] === 'shell'
+    ? ['shell', ...args.slice(1).map((word) => "'" + String(word).replaceAll("'", "'\\''") + "'")]
+    : args
 export async function androidAdb(serial, ...args) {
   return (
-    await execute(adbBinary, ['-s', serial, ...args], {
+    await execute(adbBinary, ['-s', serial, ...remoteArgs(args)], {
       maxBuffer: 32 * 1024 * 1024,
       timeout: 180_000,
     })
@@ -42,7 +48,7 @@ export function createAndroidTestDevice(
     ),
   ]
   const adb = (...args) =>
-    execFileSync(adbBinary, ['-s', serial, ...args], {
+    execFileSync(adbBinary, ['-s', serial, ...remoteArgs(args)], {
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
     })

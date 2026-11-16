@@ -1,39 +1,59 @@
 import { open } from 'node:fs/promises'
 
-export const MEDIA_PROFILE = 'web-media-v2:reuse-h264-l51:encode-high-l41-1080p30:aac-lc:mp3-192k:faststart'
+export const MEDIA_PROFILE =
+  'web-media-v3:reuse-h264-l51:encode-high-l41-1080p30-tv:aac-lc:mp3-192k:faststart'
 export type MediaKind = 'video' | 'audio'
 export type MediaStrategy = 'reuse' | 'remux' | 'transcode'
 export interface MediaProbe {
   format: { format_name?: string; duration?: string; tags?: { major_brand?: string } }
-  streams: Array<{ index: number; codec_type: string; codec_name: string; profile?: string;
-    pix_fmt?: string; width?: number; height?: number; level?: number; avg_frame_rate?: string;
-    disposition?: { attached_pic?: number } }>
+  streams: Array<{
+    index: number
+    codec_type: string
+    codec_name: string
+    profile?: string
+    pix_fmt?: string
+    width?: number
+    height?: number
+    level?: number
+    avg_frame_rate?: string
+    disposition?: { attached_pic?: number }
+  }>
 }
 
 export function mediaStreams(probe: MediaProbe, kind: MediaKind) {
   const video = probe.streams?.find((s) => s.codec_type === 'video' && !s.disposition?.attached_pic)
   const audio = probe.streams?.find((s) => s.codec_type === 'audio')
-  if ((kind === 'video' && !video) || (kind === 'audio' && !audio) ||
-      !Number.isFinite(Number(probe.format?.duration)) || Number(probe.format.duration) <= 0)
+  if (
+    (kind === 'video' && !video) ||
+    (kind === 'audio' && !audio) ||
+    !Number.isFinite(Number(probe.format?.duration)) ||
+    Number(probe.format.duration) <= 0
+  )
     throw Object.assign(new Error('媒体没有可用的音视频流或有效时长。'), { code: 'media_invalid' })
   return { video, audio }
 }
 
-export function mediaStrategy(probe: MediaProbe, kind: MediaKind, faststart: boolean): MediaStrategy {
+export function mediaStrategy(
+  probe: MediaProbe,
+  kind: MediaKind,
+  faststart: boolean,
+): MediaStrategy {
   const { video, audio } = mediaStreams(probe, kind)
   const formats = probe.format.format_name?.split(',') ?? []
   if (kind === 'audio') {
     if (audio!.codec_name !== 'mp3') return 'transcode'
     return formats.includes('mp3') ? 'reuse' : 'remux'
   }
-  const compatible = video!.codec_name === 'h264' &&
+  const compatible =
+    video!.codec_name === 'h264' &&
     ['yuv420p', 'yuvj420p'].includes(video!.pix_fmt ?? '') &&
     ['Constrained Baseline', 'Baseline', 'Main', 'High'].includes(video!.profile ?? '') &&
-    (video!.level ?? 999) <= 51 && (!audio ||
-      (audio.codec_name === 'aac' && audio.profile === 'LC'))
+    (video!.level ?? 999) <= 51 &&
+    (!audio || (audio.codec_name === 'aac' && audio.profile === 'LC'))
   if (!compatible) return 'transcode'
   return formats.includes('mp4') && probe.format.tags?.major_brand?.trim() !== 'qt' && faststart
-    ? 'reuse' : 'remux'
+    ? 'reuse'
+    : 'remux'
 }
 
 /** Read only top-level atom headers; never search arbitrary compressed payload. */
@@ -61,5 +81,7 @@ export async function hasFaststart(path: string): Promise<boolean> {
       offset += length
     }
     return false
-  } finally { await file.close() }
+  } finally {
+    await file.close()
+  }
 }

@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "policy": "Business originals and private copies stay outside Git; run explicitly, never in the fast unit suite.",
+  "samples": [
+    {
+      "id": "nanning-tiantao",
+      "name": "南宁天桃实验.pptx",
+      "format": "pptx",
+      "addedAt": "2026-11-16",
+      "localDirectoryRelativeToHome": "Library/Application Support/GenOffice/test-samples/nanning-tiantao",
+      "sourceHint": "Downloads/南宁天桃实验.pptx",
+      "bytes": 82805864,
+      "sha256": "7ecabe9e2e97b2595cd176387d95e43da8e188f74b8d2de1dd2ea8d4245f17a3",
+      "expected": {
+        "slideCount": 16,
+        "slideSizeEmu": {
+          "cx": 12192000,
+          "cy": 6858000
+        },
+        "embeddedMedia": {
+          "mp4": 8,
+          "mp3": 5,
+          "png": 15,
+          "gif": 5,
+          "jpeg": 1
+        },
+        "chartCount": 1,
+        "slidesWithTiming": 12,
+        "externalRelationshipCount": 0
+      },
+      "notes": [
+        "Actual geometry is 16:9; the presentation size type tag is screen4x3. Preserve and use actual geometry.",
+        "No independent Office/WPS visual or animation baseline has been accepted."
+      ],
+      "validationReport": "nanning-tiantao.zh-CN.md",
+      "lastValidation": {
+        "date": "2026-11-16",
+        "status": "passed",
+        "apiUnitCount": 16,
+        "restartEquivalent": true,
+        "browserPageNumbers": [1, 9, 16],
+        "preparedMediaCount": 13,
+        "preparationStrategies": {
+          "remux": 2,
+          "reuse": 11
+        },
+        "evidenceIndex": "/tmp/genoffice-nanning-20261116/validation.json"
+      },
+      "androidValidation": {
+        "date": "2026-11-16",
+        "status": "passed",
+        "model": "AGS5-W00",
+        "android": "12",
+        "onlinePages": 16,
+        "offlineColdStartPages": 16,
+        "preparedMediaResources": 13,
+        "offlineBundleBytes": 153909550,
+        "physicalNetworkUnavailable": true,
+        "evidenceIndex": "/tmp/genoffice-nanning-android-20261116/android-validation.json"
+      }
+    }
+  ]
+}

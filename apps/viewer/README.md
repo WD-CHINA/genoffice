@@ -1,6 +1,6 @@
 # GenOffice Web Viewer
 
-当前三端说明：[功能与架构](../../docs/runtime-workflows.zh-CN.md) · [运行边界](../../docs/runtime-boundaries.zh-CN.md) · [测试与验收](../../docs/testing-guide.zh-CN.md)。历史报告保留各自的验证日期与环境。
+当前三端说明：[功能与架构](../../docs/runtime-workflows.zh-CN.md) · [运行边界](../../docs/runtime-boundaries.zh-CN.md) · [测试与验收](../../docs/testing-guide.zh-CN.md)。业务回归样本见[南宁天桃实验](../../docs/samples/nanning-tiantao.zh-CN.md)。历史报告保留各自的验证日期与环境。
 
 独立的静态预览页面，支持 `.pptx`、`.pdf`、`.docx` 只读展示和 PPT 放映；可使用浏览器本地解析，或连接独立 parse-server 读取远程模型。当前业务文档修复与验证见 [2026-11-11 修复验收](../../docs/parse-viewer-fixes-validation.zh-CN.md)；容量 / 恢复环境边界见 [Docker 验收报告](../../docs/parse-docker-validation.zh-CN.md)。复杂文档的完整视觉还原仍在验收中。
 

@@ -208,12 +208,13 @@ export function ShowMediaLayer({
         const onPlay = () => setPlaying((p) => ({ ...p, [n.sourceId]: true }))
         const onPause = () => setPlaying((p) => ({ ...p, [n.sourceId]: false }))
         if (media.kind === 'video') {
+          // Letterboxing must cover the canvas poster instead of showing it through.
           return (
             <video
               key={n.sourceId}
               ref={ref(n.sourceId)}
               src={media.dataUrl}
-              style={style}
+              style={{ ...style, objectFit: 'contain', background: '#000' }}
               onError={() =>
                 mediaError(n.sourceId, '无法播放该视频：资源无法读取或当前浏览器不支持其编码。')
               }

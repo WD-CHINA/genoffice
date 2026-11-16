@@ -89,3 +89,22 @@ node --import tsx apps/parse-server/scripts/corpus-drill.mts \
 - [现有真实媒体回归](../../apps/parse-server/tests/media-mysql.test.ts)加入全范围 BT.709 源的强制转码场景，检查输入 `yuvj420p/pc`，输出 `yuv420p/tv`、H.264、尺寸和 AAC 音轨。没有放宽校验以绕过失败。
 
 本轮只验单台设备、短时静音播放与定位播放，不认证可听音质、完整媒体时长、全部动画时序、所有安卓机型或逐帧无闪。设备网络设置、USB 转发和临时验证服务的恢复/清理结果记录在汇总中。
+
+## 放映视频封面透出修复（2026-11-16）
+
+用户在第 4 页指出“视频有两层”。实机 DOM 只有一个 `<video>`：视频原尺寸为 568×320，显示框约 952×440 CSS 像素，`object-fit: contain` 产生左右空白；原播放器背景透明，露出了 Canvas 中宽度不同的静态封面。先前播放时间推进检查没有覆盖这个视觉问题。
+
+[共享放映媒体层](../../packages/viewer-renderers/src/slides/renderer/components/ShowMediaLayer.tsx)现明确保持原视频比例，并用不透明黑色填满播放器空白区，避免封面透出；预览、缩略图和音频封面保持各自原有逻辑。这里只修改渲染，不修改业务 PPT、转码内容或离线包格式。
+
+新增[像素回归脚本](../../apps/viewer/scripts/media-letterbox-smoke.mts)，以实际 ShowMediaLayer 叠加不同颜色的 Canvas 封面，分别验证左右/上下留黑区域、视频帧和外部画布；透明背景负对照须确实露出封面，从而避免仅断言样式或把全黑空视频记为通过。复跑命令：
+
+```sh
+MEDIA_LETTERBOX_EVIDENCE=/tmp/genoffice-media-letterbox \
+  node --import tsx apps/viewer/scripts/media-letterbox-smoke.mts
+```
+
+该检查复用现有 Vite、Playwright 和 PNG 工具，需要本机 FFmpeg 与 Chrome，不需要 MySQL 或业务二进制。新 APK 与实机复验的命令、截图、像素采样和原始失败记录保存在 `/tmp/genoffice-nanning-video-layer-20261116/`，结论见该目录的 `validation.json`。
+
+本轮实际结果：宽框/高框 2 组像素回归通过，透明背景负对照均重现封面透出；新 APK 已安装并核对 SHA-256。第 4、11 页暂停、播放和中段定位共 6 组实机截图通过，两侧各 121 个采样点均为黑色，DOM 均只有一个视频。另用原离线包完成断网冷启动、16 页触控翻页、13 个音视频资源解码/seek 和第 4 页媒体预览/放映触控，外部资源请求为零。Viewer 133 项、类型、定向 lint、生产打包及 APK 构建通过。
+
+先前两次收尾探针分别遇到放映层覆盖预览导航、系统音量浮层遮挡右侧像素采样，失败记录与截图保留；退出放映后重跑完整离线检查，并在浮层消失后重采 6 组截图。业务包未被改写或重新下载，设备网络设置与转发已恢复。

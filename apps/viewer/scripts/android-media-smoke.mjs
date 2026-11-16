@@ -3,6 +3,7 @@
  * Uses USB reverse isolation; preserves app data and restores the prior reverse mappings.
  * Media playback is muted; this does not certify audible quality or Office animation fidelity.
  */
+import assert from 'node:assert/strict'
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { createAndroidTestDevice, wait } from './android-test-device.mjs'
@@ -66,12 +67,19 @@ try {
         for (const [id, ctx] of c.contexts)
           if (ctx.auxData?.isDefault) {
             const state = await c.evaluate(
-              '({path:location.pathname,fileId:new URL(location.href).searchParams.get("fileId"),canvas:!!document.querySelector(".viewer-slide-stage canvas"),text:document.body.innerText})',
+              '({path:location.pathname,fileId:new URL(location.href).searchParams.get("fileId"),canvas:!!document.querySelector(".viewer-slide-stage canvas"),text:document.body.innerText,topLevel:window===top,query:location.search})',
               id,
             )
             if (state.path === '/viewer/preview.html' && state.fileId === x.fileId) {
               if (/失败|Error/.test(state.text)) throw Error(state.text)
-              if (state.canvas) ctxId = id
+              if (state.canvas) {
+                assert.ok(state.topLevel, 'offline preview must be a top-level document')
+                assert.deepEqual([...new URLSearchParams(state.query).keys()].sort(), [
+                  'fileId',
+                  'theme',
+                ])
+                ctxId = id
+              }
             }
           }
         if (ctxId) break
@@ -132,7 +140,8 @@ try {
         ctxId,
       )
       media.push({ part: m.part, kind: m.kind, ...result })
-      console.log('MEDIA', m.part, m.kind, result.pass ? 'PASS' : result.error)
+      await writeFile(join(output, `${x.fileId}-media-probe.json`), JSON.stringify(media, null, 2))
+      console.log('MEDIA', m.part, m.kind, result.pass ? 'PASS' : JSON.stringify(result))
       if (!result.pass) throw Error(`${x.name} ${m.part}: ${result.error}`)
     }
     await screenshot(c, `${x.fileId}-offline-first.png`)
@@ -318,7 +327,7 @@ async function onlineCheck(x) {
       for (const [id, ctx] of c.contexts)
         if (ctx.auxData?.isDefault) {
           const ready = await c.evaluate(
-            "({origin:location.origin,fileId:new URL(location.href).searchParams.get('fileId'),preview:location.pathname.endsWith('/preview.html'),canvas:!!document.querySelector('.viewer-slide-stage canvas'),text:document.body.innerText})",
+            "({origin:location.origin,fileId:new URL(location.href).searchParams.get('fileId'),preview:location.pathname.endsWith('/preview.html'),canvas:!!document.querySelector('.viewer-slide-stage canvas'),text:document.body.innerText,topLevel:window===top,query:location.search})",
             id,
           )
           if (
@@ -327,6 +336,16 @@ async function onlineCheck(x) {
             ready.preview &&
             ready.canvas
           ) {
+            assert.ok(ready.topLevel, 'online preview must be a top-level document')
+            const query = new URLSearchParams(ready.query)
+            for (const key of ['src', 'format', 'name', 'layout', 'parse', 'contentUrl'])
+              assert.equal(query.has(key), false, `online preview must omit ${key}`)
+            assert.equal(query.has('token'), Boolean(token))
+            assert.equal(
+              query.has('server'),
+              new URL(base).origin !== new URL(viewer).origin ||
+                !['', '/'].includes(new URL(base).pathname),
+            )
             const ui = await exerciseUI(c, id)
             await screenshot(c, `${x.fileId}-online.png`)
             return ui

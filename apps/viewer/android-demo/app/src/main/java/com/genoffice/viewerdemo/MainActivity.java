@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.Configuration;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
@@ -21,6 +22,9 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
+import android.widget.Spinner;
+import android.widget.ArrayAdapter;
+import android.widget.AdapterView;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -49,6 +53,10 @@ public class MainActivity extends Activity {
     private static final String PREFS = "viewer-demo";
     private static final int FILE_REQ = 1;
 
+    private DocumentBrowser documentBrowser;
+    private Button documentsButton;
+    private String themeChoice = "light";
+    private boolean busy;
     private EditText viewerInput;
     private Button onlineButton;
     private View fullscreen;
@@ -85,6 +93,9 @@ public class MainActivity extends Activity {
     // ── setup screen ─────────────────────────────────────────────────────────
 
     private void showSetup() {
+        if (documentBrowser != null) { documentBrowser.close(); documentBrowser = null; }
+        busy = false;
+        systemBars(false);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(24);
@@ -103,7 +114,7 @@ public class MainActivity extends Activity {
         root.addView(hint);
 
         SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
-        viewerInput = field("在线预览地址", prefs.getString("viewer", "http://127.0.0.1:11019/"));
+        viewerInput = field("在线预览地址", prefs.getString("viewer", "http://127.0.0.1:11001/"));
         root.addView(labeled("在线预览地址", viewerInput));
         serverInput = field("解析服务地址", prefs.getString("server", "http://127.0.0.1:8787"));
         fileInput = field("文件 ID（sha256）", prefs.getString("fileId", ""));
@@ -112,6 +123,23 @@ public class MainActivity extends Activity {
         root.addView(labeled("解析服务地址", serverInput));
         root.addView(labeled("文件 ID", fileInput));
         root.addView(labeled("访问令牌（可留空）", tokenInput));
+
+        themeChoice = PreviewTheme.normalize(prefs.getString("previewTheme", "light"));
+        Spinner themes = new Spinner(this);
+        themes.setContentDescription("预览主题");
+        themes.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item,
+                new String[]{"浅色（默认）", "跟随系统", "深色"}));
+        String[] themeValues = {"light", "system", "dark"};
+        themes.setSelection("system".equals(themeChoice) ? 1 : "dark".equals(themeChoice) ? 2 : 0);
+        themes.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
+            @Override public void onItemSelected(AdapterView<?> parent, View view, int position, long id) {
+                themeChoice = themeValues[position]; prefs.edit().putString("previewTheme", themeChoice).apply();
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent) { }
+        });
+        root.addView(labeled("预览主题", themes));
+        documentsButton = new Button(this); documentsButton.setText("浏览服务端文档");
+        documentsButton.setOnClickListener(v -> showServerDocuments()); root.addView(documentsButton, matchWrapTop(dp(16)));
 
         onlineButton = new Button(this);
         onlineButton.setText("在线打开（文件 ID 可留空上传）");
@@ -163,6 +191,48 @@ public class MainActivity extends Activity {
         scroll.addView(root);
         setContentView(scroll);
         applyIntent(getIntent());
+    }
+
+    private String previewTheme() {
+        boolean night = (getResources().getConfiguration().uiMode & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
+        return PreviewTheme.resolve(themeChoice, night);
+    }
+    private int viewerBackground() { return "dark".equals(previewTheme()) ? 0xFF16181A : 0xFFFFFFFF; }
+    private void systemBars(boolean dark) {
+        int color = dark ? 0xFF16181A : 0xFFF0F1F5;
+        getWindow().setStatusBarColor(color);
+        getWindow().setNavigationBarColor(color);
+        int light = View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR | View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
+        View decor = getWindow().getDecorView();
+        int flags = decor.getSystemUiVisibility();
+        decor.setSystemUiVisibility(dark ? flags & ~light : flags | light);
+    }
+    private void saveConnection() {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("viewer", viewerInput.getText().toString().trim())
+                .putString("server", serverInput.getText().toString().trim()).putString("token", tokenInput.getText().toString().trim())
+                .putString("previewTheme", themeChoice).apply();
+    }
+    private void showServerDocuments() {
+        if (busy) return;
+        systemBars(false);
+        saveConnection();
+        if (documentBrowser != null) documentBrowser.close();
+        documentBrowser = new DocumentBrowser(this, serverInput.getText().toString().trim(), tokenInput.getText().toString().trim(), cache,
+                new DocumentBrowser.Actions() {
+                    @Override public void open(ServerDocuments.Document document, String action) {
+                        fileInput.setText(document.fileId);
+                        getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("fileId", document.fileId).apply();
+                        if ("online".equals(action)) startOnline();
+                        else if ("download".equals(action)) startDownload();
+                        else openCached(document.fileId);
+                    }
+                    @Override public void settings() { setIntent(new Intent()); showSetup(); }
+                    @Override public void cancelDownload() {
+                        BundleDownloader download = activeDownload;
+                        if (download != null) { setStatus("正在取消下载…"); download.cancel(); }
+                    }
+                });
+        status = documentBrowser.statusView(); setContentView(documentBrowser.view()); documentBrowser.refresh();
     }
 
     /** adb convenience: --es server … --es fileId … [--ez download true] */
@@ -252,7 +322,7 @@ public class MainActivity extends Activity {
         return input;
     }
 
-    private View labeled(String label, EditText input) {
+    private View labeled(String label, View input) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(0, dp(10), 0, 0);
@@ -295,6 +365,7 @@ public class MainActivity extends Activity {
                 .putString("fileId", fileId)
                 .putString("token", token)
                 .apply();
+        if (documentBrowser != null) documentBrowser.stop();
         final int generation = ++downloadGeneration;
         BundleDownloader download = new BundleDownloader(serverUrl, token, fileId,
                 cache.resolve(fileId), text -> runOnUiThread(() -> {
@@ -330,6 +401,9 @@ public class MainActivity extends Activity {
     }
 
     private void setBusy(boolean busy) {
+        this.busy = busy;
+        if (documentsButton != null) documentsButton.setEnabled(!busy);
+        if (documentBrowser != null) documentBrowser.setBusy(busy, activeDownload != null);
         if (onlineButton != null) onlineButton.setEnabled(!busy);
         if (downloadButton != null) downloadButton.setEnabled(!busy);
         if (openButton != null) openButton.setEnabled(!busy);
@@ -386,16 +460,8 @@ public class MainActivity extends Activity {
             Toast.makeText(this, "本地服务启动失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
             return;
         }
-        // Load the preview document directly: the host shell (header + iframe) would add a
-        // second document load and a blank frame before the deck appears.
         String base = "http://127.0.0.1:" + port;
-        String format = "pptx";
-        try { format = store.manifest().getString("format"); } catch (Exception ignored) { }
-        String url = base + "/viewer/preview.html?src=bundle&format=" + Uri.encode(format) + "&name="
-                + Uri.encode(fileId)
-                + "&server=" + Uri.encode(base)
-                + "&fileId=" + Uri.encode(fileId)
-                + "&layout=client&theme=dark";
+        String url = PreviewUrl.build(base + "/viewer/", base, fileId, "", previewTheme());
         loadViewer(url);
     }
 
@@ -412,26 +478,26 @@ public class MainActivity extends Activity {
             String token = tokenInput.getText().toString().trim();
             getSharedPreferences(PREFS, MODE_PRIVATE).edit().putString("viewer", viewer.toString())
                     .putString("server", backend.toString()).putString("fileId", fileId).putString("token", token).apply();
-            Uri.Builder target = viewer.buildUpon().clearQuery().fragment(null)
-                    .appendQueryParameter("parse", fileId.isEmpty() ? "auto" : "server")
-                    .appendQueryParameter("server", backend.toString()).appendQueryParameter("token", token)
-                    .appendQueryParameter("theme", "dark");
-            if (!fileId.isEmpty()) target.appendQueryParameter("fileId", fileId);
-            loadViewer(target.build().toString());
+            String target = fileId.isEmpty()
+                    ? PreviewUrl.home(viewer.toString(), backend.toString(), token, previewTheme())
+                    : PreviewUrl.build(viewer.toString(), backend.toString(), fileId, token, previewTheme());
+            loadViewer(target);
         } catch (Exception failure) {
             Toast.makeText(this, failure.getMessage(), Toast.LENGTH_LONG).show();
         }
     }
 
     private void loadViewer(String url) {
+        if (documentBrowser != null) documentBrowser.stop();
+        systemBars("dark".equals(previewTheme()));
         if (webView == null) webView = createWebView();
         if (webView.getParent() instanceof ViewGroup) ((ViewGroup) webView.getParent()).removeView(webView);
         FrameLayout container = new FrameLayout(this);
-        container.setBackgroundColor(VIEWER_BACKGROUND);
+        container.setBackgroundColor(viewerBackground());
         container.addView(webView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         FrameLayout loading = new FrameLayout(this);
-        loading.setBackgroundColor(VIEWER_BACKGROUND);
+        loading.setBackgroundColor(viewerBackground());
         container.addView(loading, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         ProgressBar spinner = new ProgressBar(this);
@@ -443,9 +509,6 @@ public class MainActivity extends Activity {
         webView.loadUrl(url);
         revealWhenReady(webView, loading);
     }
-
-    /** Viewer page background (dark); the app forces the same theme on the WebView. */
-    private static final int VIEWER_BACKGROUND = 0xFF16181A;
 
     /**
      * Keep the native loading screen up until the viewer has actually rendered its first
@@ -462,7 +525,7 @@ public class MainActivity extends Activity {
                 return;
             }
             view.evaluateJavascript(
-                    "!!document.querySelector('.viewer-slide-stage canvas,.viewer-doc-remote-page,.pdf-page-content canvas')"
+                    "!!document.querySelector('.viewer-slide-stage canvas,.viewer-doc-remote-page,.viewer-doc-reading-unit .doc-page,.pdf-page-content canvas,.viewer-pdf-page canvas')"
                             + " || !!document.querySelector('[role=alert],iframe,input[type=file]')",
                     value -> {
                         if ("true".equals(value)) {
@@ -481,7 +544,7 @@ public class MainActivity extends Activity {
     @SuppressLint("SetJavaScriptEnabled")
     private WebView createWebView() {
         WebView view = new WebView(this);
-        view.setBackgroundColor(VIEWER_BACKGROUND);
+        view.setBackgroundColor(viewerBackground());
         // A foreground presentation must not be interrupted by the screen timeout.
         view.setKeepScreenOn(true);
         WebSettings settings = view.getSettings();
@@ -489,6 +552,7 @@ public class MainActivity extends Activity {
         settings.setDomStorageEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setAllowFileAccess(false);
+        if (android.os.Build.VERSION.SDK_INT >= 29) settings.setForceDark(WebSettings.FORCE_DARK_OFF);
         view.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest request) {
@@ -589,13 +653,22 @@ public class MainActivity extends Activity {
 
     @Override public void onBackPressed() {
         if (fullscreen != null) { hideFullscreen(); return; }
-        if (webView != null) { closeViewer(); setIntent(new Intent()); showSetup(); return; }
+        if (webView != null) {
+            closeViewer(); setIntent(new Intent());
+            if (documentBrowser != null) showServerDocuments(); else showSetup();
+            return;
+        }
+        if (documentBrowser != null) {
+            if (activeDownload != null) { Toast.makeText(this, "请先取消或等待下载完成", Toast.LENGTH_SHORT).show(); return; }
+            openGeneration++; setIntent(new Intent()); showSetup(); return;
+        }
         super.onBackPressed();
     }
 
     @Override
     protected void onDestroy() {
         destroyed = true;
+        if (documentBrowser != null) documentBrowser.close();
         if (activeDownload != null) activeDownload.cancel();
         if (fileCallback != null) {
             fileCallback.onReceiveValue(null);

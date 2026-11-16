@@ -113,9 +113,7 @@ try {
     }
     await route.fulfill({ response, json: body })
   })
-  await page.goto(
-    `${origin}/preview.html?format=pptx&src=remote.pptx&server=${encodeURIComponent(origin)}&fileId=${fileId}&token=${token}`,
-  )
+  await page.goto(`${origin}/preview.html?fileId=${fileId}&token=${token}`)
   await expect(page.getByLabel('开始放映')).toBeVisible({ timeout: 90_000 })
   await page.getByLabel('开始放映').click()
   await expect(page.locator('.slideshow')).toBeVisible({ timeout: 60_000 })
@@ -195,6 +193,8 @@ try {
     sample++
     if ((Date.now() - start) / 1000 >= duration) break
     await page.waitForTimeout(Math.min(30_000, duration * 1000 - (Date.now() - start)))
+    // Duration is checked after recording a sample inside this loop.
+    // eslint-disable-next-line no-constant-condition
   } while (true)
   report.status = 'passed'
   report.elapsedSoakSeconds = (Date.now() - start) / 1000

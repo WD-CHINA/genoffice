@@ -76,10 +76,24 @@ try {
         return false
       }
     })
-    await expect(
-      popup.frameLocator('iframe').locator('.viewer-slide-stage canvas').first(),
-    ).toBeVisible({ timeout: 30_000 })
+    await expect(popup.locator('.viewer-slide-stage canvas').first()).toBeVisible({
+      timeout: 30_000,
+    })
     await ready
+    assert.equal(new URL(popup.url()).pathname, '/viewer/preview.html')
+    assert.equal(await popup.locator('iframe').count(), 0)
+    const params = new URL(popup.url()).searchParams
+    for (const key of [
+      'parse',
+      'src',
+      'format',
+      'contentUrl',
+      'layout',
+      'showHeader',
+      'showToolbar',
+    ])
+      assert.equal(params.has(key), false, `preview URL must omit ${key}`)
+    assert.equal(params.has('server'), false, 'same-origin server must be inferred')
     await popup.close()
   }
   await open()
@@ -226,14 +240,12 @@ try {
   })
   page.on('request', (request) => wordRequests.push(request.url()))
   await page.goto(
-    `${origin}/viewer/?${new URLSearchParams({ parse: 'server', fileId: wordFile.fileId, token, name: 'async-word.docx' })}`,
+    `${origin}/viewer/preview.html?${new URLSearchParams({ fileId: wordFile.fileId, token, name: 'async-word.docx' })}`,
   )
-  await expect(page.frameLocator('iframe').locator('.viewer-doc-reading-unit').first()).toBeVisible(
-    {
-      timeout: 30_000,
-    },
-  )
-  const frame = page.frameLocator('iframe')
+  await expect(page.locator('.viewer-doc-reading-unit').first()).toBeVisible({
+    timeout: 30_000,
+  })
+  const frame = page
   await expect(
     frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
   ).toBeVisible({ timeout: 30_000 })

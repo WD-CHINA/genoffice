@@ -221,8 +221,6 @@ try {
     page.on('pageerror', (error) => sample.errors.push(error.message))
     try {
       const params = new URLSearchParams({
-        format: 'docx',
-        src: 'remote',
         server: base,
         fileId,
         token,

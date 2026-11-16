@@ -42,6 +42,18 @@ PPT 左上角“预览”按钮展开悬浮缩略图面板，选页、点击外�
 
 搜索控件隐藏时，`Ctrl/Cmd+F` 使用浏览器查找；`Ctrl/Cmd+ +/-` 缩放，Word 的 PageUp/PageDown 使用原生连续滚动，PPT/PDF 在非输入区域翻页。Word 直接展示一份可访问正文，页眉页脚及脚注/尾注在连续文档的首尾呈现。
 
+## 统一预览入口
+
+已上传文件直接打开 `preview.html?fileId=<文件ID>`。例如：
+
+```text
+/viewer/preview.html?fileId=<文件ID>
+```
+
+预览页从 `/v1/files/:id` 识别格式；同源时省略 `server`，跨服务才添加 `server`，鉴权才添加非空 `token`。友好文件名可传 `name`，默认客户端排版无需 `layout=client`。PPTX、DOCX、PDF 共用此入口；PDF 访问签名由预览页获取一次，无需在地址里嵌入 `contentUrl`。
+
+上传结果、本机记录与历史库的打开链接直接进入此页。交互首页保留本地文件选择、URL 导入与解析位置切换，内部预览同样使用该入口和最少参数；旧长链接和首页自动打开路径已移除，需重新生成预览链接。完整说明与验证见 [预览入口](../../docs/preview-entry.zh-CN.md)。
+
 ## 链接控制界面与自动打开
 
 主页面支持通过 query 参数控制界面显示，并将选项传递到三格式预览 iframe。没有参数时保持现有界面。`1`/`true` 为显示，`0`/`false` 为隐藏；未识别的值使用默认值。
@@ -68,13 +80,14 @@ PPT 左上角“预览”按钮展开悬浮缩略图面板，选页、点击外�
 通过链接自动打开并隐藏全部宿主控件，请用 `URLSearchParams` 编码文件 URL，确保文件签名中的 `&`、`+`、`?` 等不会被当成 Viewer 参数：
 
 ```js
-const link = new URL('http://127.0.0.1:11001/') // 替换为部署地址
-link.searchParams.set('url', 'https://files.example.com/document.pptx?token=...&signature=...')
+const link = new URL('http://127.0.0.1:11001/preview.html') // 替换为部署地址
+link.searchParams.set('src', 'https://files.example.com/document.pptx?token=...&signature=...')
+link.searchParams.set('format', 'pptx')
 link.searchParams.set('embed', '1')
 console.log(link.href)
 ```
 
-显示开关只控制界面。隐藏错误区时错误仍会被处理。没有 `url` 的隐藏界面不会自动生成文档。预览页通过 `src` 读取父页面创建的本地文件地址，并支持同样的显示开关。参数在页面加载时读取，修改链接后重新加载生效。
+显示开关只控制界面。隐藏错误区时错误仍会被处理。没有 `fileId` 或 `src` 的隐藏界面不会自动生成文档。预览页通过 `src` 读取父页面创建的本地文件地址，并支持同样的显示开关。参数在页面加载时读取，修改链接后重新加载生效。
 
 ## URL 导入
 
@@ -107,6 +120,7 @@ npm run typecheck -w @genoffice/viewer
 npm run test -w @genoffice/viewer
 npm run test:ui -w @genoffice/viewer
 npm run test:standalone -w @genoffice/viewer
+npm run test:preview-entry -w @genoffice/viewer
 ```
 
 `test` 覆盖浏览器布局、解密所需的加密兼容和核心源码一致性。`test:standalone` 确认发布目录是静态站点，且本应用不再包含 Node 服务源码或 PM2 配置。

@@ -250,3 +250,25 @@ Android 最终媒体验收合并了同一新 APK 下 **3 份完整在线/离线�
 - 浏览器资源库脚本同步到当前 DOCX 连续阅读 DOM；重启复用检查等待正式 ready，避免用增量首屏代替完整产物发布。缓存回访、错误重试、取消、字体、尺寸变化与锚点断言保留。
 
 命令、耗时、退出状态和原始失败记录统一保存在 `/tmp/genoffice-api-v1-20261116/`；最终通过项汇总见 API v1 文档末尾。覆盖清单中的接口与用例名称统一按当前 v1 整理，历史断言行号与测量结果保留。
+
+## 2026-11-16：Android 服务端目录与默认浅色
+
+本轮增加 `file-list.test.ts` 两项 HTTP 回归（鉴权、空目录、已保存/未保存文件、同时间游标分页、删除后继续读取、重启），以及 `library-mysql.test.ts` 的真实 SQL 文件目录场景。Android 增加三项 `ServerDocumentsTest`（认证与路径/游标编码、错误/重定向/非法响应、在途取消）和一项主题默认值/系统模式回归，保留既有原生断言。
+
+证据目录 `/tmp/genoffice-android-documents-20261116/` 保存 `*.run.json` 命令、耗时与退出状态，`*.log` 原始输出，`final-ui.json` 及对应页面 JSON/设备截图。`verification-index.json` 汇总 11 个最终阶段、原始未通过尝试及收尾校验，`cleanup.json` 记录已安装 APK 与最终构建哈希一致、连接偏好/网络/USB 映射恢复。结果：
+
+| 检查 | 本轮结果与证据 |
+| --- | --- |
+| 服务端常规套件 | 480 通过、91 依赖测试跳过；`server.*`。跳过不计通过 |
+| 真实 MySQL | 隔离 Compose 项目 `genoffice-android-documents-20261116` 执行 `library-mysql.test.ts`，12 通过、0 跳过；`mysql.*`。只补验相关数据库套件，未重跑全部 Redis/媒体/多实例矩阵 |
+| 静态检查 | parse-server `tsc --noEmit`、修改 TS 文件 ESLint/Prettier、`git diff --check` 通过 |
+| Android 构建/测试 | `android build '<android-demo绝对路径>?:app:assembleDebug' -- :app:assembleDebugAndroidTest`；应用和测试 APK 构建、保留数据安装通过；`native-final.log` 明确 `OK (50 tests)` |
+| 列表与在线预览 | 实机刷新、20 → 25 条分页；课时计划 DOCX、南宁天桃 PPTX、生成 PDF 从列表进入在线顶层预览，无 iframe、主题 light；`final-ui.*` |
+| 下载与离线 | 本轮重新下载 DOCX/PDF；PPTX 使用既有校验缓存。移除两项远程 USB 映射且关闭 Wi-Fi/移动数据，三格式冷启动本地预览成功；页面记录的 API 请求均为本地；`final-*-offline-cold.*` |
+| 主题与空/错误目录 | 深色、跟随系统（设备当前为日间）、浅色选择在进程重启后保留并作用于预览；无效令牌显示 HTTP 401，独立空服务显示暂无文档；`theme-ui.*` |
+
+设备为 HUAWEI AGS5-W00 / Android 12 / WebView 114；服务使用仓库当前源码与独立文件存储目录。PDF 是一页生成样本。此次验证目录、主题及导航，不重跑全部媒体播放、复杂排版或长稳；PPT 首次播放前暂停定位的既有边界仍见[预览入口说明](preview-entry.zh-CN.md)。业务原文件只读。
+
+前两次原生测试因设备残留的系统文件选择窗口未完成 Activity 启动而中止；日志保留，不能用 ADB 返回 0 计为测试通过。关闭该窗口后原生全量通过，最终 APK 又完整复跑 50 项。浅色状态栏和实际正文就绪后移除原生加载遮罩也在最终 APK 实机截图中核对。
+
+主题 UI 首次探针在点击后立即强停进程，未等待选择事件完成；保留 `theme-ui-first.*` 失败。改为确认已选中再强停，三种选择的持久化及预览全部通过。验证结束恢复运行前的连接偏好、网络和 USB 映射，主题留为浅色；只清理本轮私有服务与 Docker 项目，证据和离线缓存保留。此轮未重启日常使用的 8787 服务进程，实际使用新增列表接口需重新加载服务端代码。

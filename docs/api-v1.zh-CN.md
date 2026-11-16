@@ -17,6 +17,24 @@
 | 权威离线包                 | `/v1/sessions/:id/bundle`、`/bundle/resources/...`        | 只允许清单声明的资源                                        |
 | 历史库                     | `/v1/library`                                             | 保存、游标列表和移除引用                                    |
 
+## 已上传文档列表
+
+`GET /v1/files?limit=20&cursor=<next>` 与上传/读取接口使用相同 Bearer 鉴权。limit 为 1–100，默认 20；游标不可自行构造，下一页直接传回响应的 next。响应设置 `Cache-Control: private, no-store`：
+
+```json
+{
+  "items": [{
+    "fileId": "<64位sha256>", "sha256": "<64位sha256>", "format": "docx",
+    "size": 1234, "createdAt": "2026-11-16T00:00:00.000Z", "displayName": "课时计划.docx"
+  }],
+  "next": "<可选游标>"
+}
+```
+
+列表包含全部现存上传文件（包括未入历史库的文件），按 createdAt 倒序、fileId 升序做游标分页。名称优先取有效历史库记录，否则为格式及 ID 前缀。删除历史库引用不会立即删除文件；文件过期或被删除后不再列出。列表读取不触碰正文、创建会话或更新保留时间，翻页不是数据库快照，新上传文件需刷新后查看。非法参数返回 400，鉴权失败返回 401。MySQL 使用有界查询及批量名称读取；文件存储模式扫描元数据文件后分页。
+
+## 异步模式与版本字段
+
 Web 和 Android 仅在异步创建明确返回 404/405 时，移除 Prefer 后同步重试同一个 v1 地址。能力声明 `asyncSessions=false` 时 Web 直接同步创建。429、鉴权失败、解析失败和普通服务错误均不得触发同步重试绕过准入控制。跨域允许 Prefer、Idempotency-Key，并暴露 Location 和版本头。
 
 `API_VERSION=1` 是共享定义，`CONTRACT_VERSION`、`PARSE_DTO_VERSION` 均从其派生。`contractVersion`、`dtoVersion` 与 `X-Genoffice-Dto-Version: 1` 代表同一个 v1 协议。同步创建保留原有响应体。解析器软件版本、离线包 schema、媒体 profile 和缓存 generation 按各自用途管理。

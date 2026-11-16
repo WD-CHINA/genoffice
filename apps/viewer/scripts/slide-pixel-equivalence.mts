@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { previewUrl } from '../src/web/preview-target'
 import { createHash } from 'node:crypto'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -125,17 +126,21 @@ async function capture(
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
   await page.goto(
-    origin +
-      '/viewer/?' +
-      new URLSearchParams({
-        parse: 'server',
-        server: parser.url,
-        fileId,
-        token,
-        name: 'pixel-equivalence.pptx',
-      }),
+    new URL(
+      previewUrl(
+        frontend.config.base,
+        {
+          server: parser.url,
+          fileId,
+          token,
+          name: 'pixel-equivalence.pptx',
+        },
+        origin,
+      ),
+      origin,
+    ).href,
   )
-  const frame = page.frameLocator('iframe')
+  const frame = page
   await frame.locator('canvas').first().waitFor({ timeout: 30_000 })
   // Let fonts/images/layout settle, then take two samples until the canvas is stable.
   let previous = ''

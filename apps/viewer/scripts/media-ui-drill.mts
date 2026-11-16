@@ -54,16 +54,15 @@ try {
   const warm = await browser.newPage()
   await warm.goto(
     viewerOrigin +
-      '/?' +
+      '/preview.html?' +
       new URLSearchParams({
-        parse: 'server',
         server: base,
         fileId,
         name: 'warmup.pptx',
         ...(token ? { token } : {}),
       }),
   )
-  await warm.frameLocator('iframe').locator('canvas').first().waitFor({ timeout: 90_000 })
+  await warm.locator('canvas').first().waitFor({ timeout: 90_000 })
   await warm.waitForTimeout(2000)
   await warm.close()
   if (business) {
@@ -125,9 +124,9 @@ try {
     try {
       await page.goto(
         viewerOrigin +
-          '/?' +
+          (name === 'force-conversion-progress' ? '/preview.html?' : '/?') +
           new URLSearchParams({
-            parse: name === 'force-conversion-progress' ? 'server' : 'auto',
+            ...(name === 'force-conversion-progress' ? {} : { parse: 'auto' }),
             server: base,
             ...(name === 'force-conversion-progress'
               ? { fileId: business.fileId, name: business.name }
@@ -137,7 +136,7 @@ try {
       )
       if (name !== 'force-conversion-progress')
         await page.locator('input[type=file]').first().setInputFiles(path)
-      const frame = page.frameLocator('iframe')
+      const frame = name === 'force-conversion-progress' ? page : page.frameLocator('iframe')
       const play = frame.getByRole('button', { name: '播放视频', exact: true }).first()
       await play.waitFor({ timeout: 90_000 })
       const content = page.frames().find((f) => f.url().includes('preview.html'))!

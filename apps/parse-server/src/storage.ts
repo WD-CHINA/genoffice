@@ -258,6 +258,38 @@ export class ContentStore {
     return files
   }
 
+  /** Stable metadata paging; document bytes are never read for a list request. */
+  async page(
+    limit: number,
+    after?: { createdAt: string; fileId: string },
+  ): Promise<{ items: StoredFile[]; hasMore: boolean }> {
+    if (this.db) {
+      const where = after ? 'WHERE created_at < ? OR (created_at = ? AND file_id > ?)' : ''
+      const [rows] = await this.db.pool.query(
+        `SELECT file_id, sha256, size, format, created_at FROM parse_files ${where} ORDER BY created_at DESC, file_id ASC LIMIT ?`,
+        [...(after ? [after.createdAt, after.createdAt, after.fileId] : []), limit + 1],
+      )
+      const items = (rows as any[]).map((row) => ({
+        fileId: String(row.file_id),
+        sha256: String(row.sha256),
+        size: Number(row.size),
+        format: String(row.format) as DocFormat,
+        createdAt: String(row.created_at),
+      }))
+      return { items: items.slice(0, limit), hasMore: items.length > limit }
+    }
+    let items = (await this.list()).sort(
+      (a, b) => b.createdAt.localeCompare(a.createdAt) || a.fileId.localeCompare(b.fileId),
+    )
+    if (after)
+      items = items.filter(
+        (file) =>
+          file.createdAt < after.createdAt ||
+          (file.createdAt === after.createdAt && file.fileId > after.fileId),
+      )
+    return { items: items.slice(0, limit), hasMore: items.length > limit }
+  }
+
   async totalBytes(): Promise<number> {
     return (await this.list()).reduce((total, file) => total + file.size, 0)
   }

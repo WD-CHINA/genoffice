@@ -11,6 +11,7 @@
     "test": "node --import tsx --test tests/*.test.ts",
     "test:performance": "node scripts/performance-smoke.mjs",
     "test:ui": "node scripts/ui-smoke.mjs",
+    "test:preview-entry": "node --import tsx scripts/preview-entry-smoke.mts",
     "test:library": "node --import tsx scripts/library-smoke.mts",
     "test:pixel": "node --import tsx scripts/slide-pixel-equivalence.mts",
     "test:standalone": "node scripts/standalone-smoke.mjs",

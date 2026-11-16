@@ -121,8 +121,7 @@ export class LibraryStore {
   }
 
   async values(): Promise<LibraryEntry[]> {
-    if (!this.db)
-      return [...this.records.values()].filter((entry) => entry.deletedAt === undefined)
+    if (!this.db) return [...this.records.values()].filter((entry) => entry.deletedAt === undefined)
     const [rows] = await this.db.pool.query(
       'SELECT id, file_id, display_name, created_at, updated_at, deleted_at FROM library_entries WHERE deleted_at IS NULL',
     )
@@ -162,6 +161,22 @@ export class LibraryStore {
         )
     }
     return { items: entries.slice(0, limit), hasMore: entries.length > limit }
+  }
+
+  /** A page-sized name lookup avoids loading the whole saved library from SQL. */
+  async namesForFiles(fileIds: string[]): Promise<Map<string, string>> {
+    if (!fileIds.length) return new Map()
+    if (!this.db)
+      return new Map(
+        [...this.records.values()]
+          .filter((entry) => entry.deletedAt === undefined && fileIds.includes(entry.fileId))
+          .map((entry) => [entry.fileId, entry.displayName]),
+      )
+    const [rows] = await this.db.pool.query(
+      `SELECT file_id, display_name FROM library_entries WHERE deleted_at IS NULL AND file_id IN (${fileIds.map(() => '?').join(',')})`,
+      fileIds,
+    )
+    return new Map((rows as any[]).map((row) => [String(row.file_id), String(row.display_name)]))
   }
 
   async hasFile(fileId: string): Promise<boolean> {
@@ -209,7 +224,12 @@ export class LibraryStore {
       }
       const existing = [...this.records.values()].find((item) => item.fileId === fileId)
       const saved = existing
-        ? { ...existing, displayName, deletedAt: undefined, updatedAt: Math.max(existing.updatedAt, now) }
+        ? {
+            ...existing,
+            displayName,
+            deletedAt: undefined,
+            updatedAt: Math.max(existing.updatedAt, now),
+          }
         : entry
       const next = new Map(this.records)
       next.set(saved.id, saved)

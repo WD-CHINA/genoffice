@@ -82,6 +82,36 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
     return { start, request, post, dataDir }
   }
 
+  it('pages all uploads in SQL and joins saved names without changing file retention', async () => {
+    const h = await setup(),
+      server = await h.start({ contentTtlMs: 24 * 60 * 60_000 })
+    const ids: string[] = []
+    for (let i = 0; i < 3; i++) {
+      const response = await h.request(server, '/v1/files', {
+        method: 'POST',
+        body: Buffer.from(`%PDF-1.7\nfile-list-${i}\n%%EOF\n`),
+      })
+      expect(response.status).toBe(201)
+      ids.push(((await response.json()) as { fileId: string }).fileId)
+    }
+    await h.post(server, '/v1/library', { fileId: ids[0], displayName: '已命名文档.pdf' })
+    let cursor: string | undefined
+    const found: any[] = []
+    do {
+      const response = await h.request(
+        server,
+        '/v1/files?' + new URLSearchParams({ limit: '1', ...(cursor ? { cursor } : {}) }),
+      )
+      expect(response.status).toBe(200)
+      const page = (await response.json()) as { items: any[]; next?: string }
+      expect(page.items).toHaveLength(1)
+      found.push(...page.items)
+      cursor = page.next
+    } while (cursor)
+    expect(new Set(found.map((file) => file.fileId))).toEqual(new Set(ids))
+    expect(found.find((file) => file.fileId === ids[0]).displayName).toBe('已命名文档.pdf')
+  })
+
   it.each(['pptx', 'docx'] as const)(
     'serves catalog-backed %s HTTP sessions and restores without reparsing',
     async (format) => {

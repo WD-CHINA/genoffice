@@ -13,6 +13,38 @@ public class BundleDownloaderTest extends AndroidTestSupport {
         root = temporaryRoot("bundle-download-test");
     }
     @Override protected void tearDown() { delete(root); }
+    public void testPreviewThemeDefaultsToLightAndResolvesSystem() {
+        assertEquals("light", PreviewTheme.normalize(null));
+        assertEquals("light", PreviewTheme.normalize("invalid"));
+        assertEquals("light", PreviewTheme.resolve(null, true));
+        assertEquals("light", PreviewTheme.resolve("light", true));
+        assertEquals("dark", PreviewTheme.resolve("dark", false));
+        assertEquals("light", PreviewTheme.resolve("system", false));
+        assertEquals("dark", PreviewTheme.resolve("system", true));
+    }
+    public void testUnifiedPreviewEntry() throws Exception {
+        android.net.Uri local = android.net.Uri.parse(PreviewUrl.build(
+                "http://127.0.0.1:43271/viewer/", "http://127.0.0.1:43271/", "test-file", "", "dark"));
+        assertEquals("/viewer/preview.html", local.getPath());
+        assertEquals(2, local.getQueryParameterNames().size());
+        assertEquals("test-file", local.getQueryParameter("fileId"));
+        assertEquals("dark", local.getQueryParameter("theme"));
+        for (String entry : new String[]{"/viewer", "/viewer/", "/viewer/index.html", "/viewer/preview.html?unused=1#ignored"}) {
+            android.net.Uri online = android.net.Uri.parse(PreviewUrl.build(
+                    "https://viewer.example" + entry, "https://api.example/prefix/", "file id", "a+b&c", "dark"));
+            assertEquals("/viewer/preview.html", online.getPath());
+            assertEquals("https://api.example/prefix", online.getQueryParameter("server"));
+            assertEquals("file id", online.getQueryParameter("fileId"));
+            assertEquals("a+b&c", online.getQueryParameter("token"));
+            assertNull(online.getQueryParameter("parse"));
+            assertNull(online.getQueryParameter("src"));
+            assertNull(online.getFragment());
+        }
+        assertNull(android.net.Uri.parse(PreviewUrl.build("https://viewer.example/viewer/",
+                "https://viewer.example:443/", "id", "", "dark")).getQueryParameter("server"));
+        assertEquals("auto", android.net.Uri.parse(PreviewUrl.home("https://viewer.example/viewer/",
+                "https://viewer.example/", "", "dark")).getQueryParameter("parse"));
+    }
     public void testOneGiBAndFailedReplacement() throws Exception {
         long bytes = 1024L * 1024 * 1024;
         assertTrue("Need 2 GiB free", root.getUsableSpace() > 2 * bytes);

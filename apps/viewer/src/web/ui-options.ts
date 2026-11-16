@@ -23,7 +23,16 @@ export function readViewerUi(params: URLSearchParams): ViewerUi {
 }
 
 export function viewerUiParams(ui: ViewerUi): Record<string, string> {
-  return Object.fromEntries(Object.entries(ui).map(([key, visible]) => [key, visible ? '1' : '0']))
+  const hidden = Object.values(ui).filter((visible) => !visible).length
+  const embedded = hidden > Object.keys(ui).length / 2
+  return {
+    ...(embedded ? { embed: '1' } : {}),
+    ...Object.fromEntries(
+      Object.entries(ui)
+        .filter(([, visible]) => visible === embedded)
+        .map(([key, visible]) => [key, visible ? '1' : '0']),
+    ),
+  }
 }
 
 export function applyViewerUi(ui: ViewerUi): void {

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { previewUrl } from './preview-target'
 import { createLibraryClient, type SavedResource } from './server-library'
 import '@genoffice/ui/tokens.css'
 import './upload.css'
@@ -28,10 +29,16 @@ function formatBytes(bytes: number): string {
 }
 
 function viewerUrl(item: Pick<Uploaded, 'fileId' | 'name'>): string {
-  const query = new URLSearchParams({ parse: 'server', fileId: item.fileId, name: item.name })
-  if (token) query.set('token', token)
-  if (apiBase) query.set('server', apiBase)
-  return `${import.meta.env.BASE_URL}?${query}`
+  return previewUrl(
+    import.meta.env.BASE_URL,
+    {
+      fileId: item.fileId,
+      name: item.name,
+      server: apiBase || undefined,
+      token: token || undefined,
+    },
+    location.origin,
+  )
 }
 
 function contentUrl(fileId: string): string {
@@ -304,7 +311,9 @@ function UploadPage() {
               <button
                 type="button"
                 onClick={() =>
-                  void navigator.clipboard?.writeText(`${location.origin}${viewerUrl(result)}`)
+                  void navigator.clipboard?.writeText(
+                    new URL(viewerUrl(result), location.origin).href,
+                  )
                 }
               >
                 复制 Viewer 链接

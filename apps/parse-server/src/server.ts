@@ -2353,6 +2353,47 @@ async function handleUpload(
   }
 }
 
+async function handleFileList(res: ServerResponse, ctx: Context, url: URL): Promise<void> {
+  const rawLimit = url.searchParams.get('limit') ?? '20'
+  if (!/^[0-9]+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 100)
+    throw new HttpError(400, 'invalid_request', 'limit must be between 1 and 100')
+  let after: { createdAt: string; fileId: string } | undefined
+  const cursor = url.searchParams.get('cursor')
+  if (cursor !== null) {
+    try {
+      if (!cursor || cursor.length > 256 || !/^[A-Za-z0-9_-]+$/.test(cursor)) throw new Error()
+      const value: unknown = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'))
+      if (
+        !Array.isArray(value) ||
+        value.length !== 2 ||
+        typeof value[0] !== 'string' ||
+        !Number.isFinite(Date.parse(value[0])) ||
+        new Date(value[0]).toISOString() !== value[0] ||
+        typeof value[1] !== 'string' ||
+        !/^[a-f0-9]{64}$/.test(value[1])
+      )
+        throw new Error()
+      after = { createdAt: value[0], fileId: value[1] }
+    } catch {
+      throw new HttpError(400, 'invalid_request', 'invalid files cursor')
+    }
+  }
+  const { items, hasMore } = await ctx.store.page(Number(rawLimit), after)
+  const names = await ctx.library.namesForFiles(items.map((file) => file.fileId))
+  const last = items.at(-1)
+  res.setHeader('Cache-Control', 'private, no-store')
+  sendJson(res, 200, {
+    items: items.map((file) => ({
+      ...file,
+      displayName:
+        names.get(file.fileId) ?? `${file.format.toUpperCase()} 文档 ${file.fileId.slice(0, 12)}`,
+    })),
+    ...(hasMore && last
+      ? { next: Buffer.from(JSON.stringify([last.createdAt, last.fileId])).toString('base64url') }
+      : {}),
+  })
+}
+
 async function handleLibrary(
   req: IncomingMessage,
   res: ServerResponse,
@@ -2715,6 +2756,10 @@ async function route(
   }
   if (segments[0] === 'v1' && segments[1] === 'sessions' && segments[2]) {
     await handleAsyncSession(req, res, ctx, url, decodeURIComponent(segments[2]), requestId)
+    return
+  }
+  if (req.method === 'GET' && url.pathname === '/v1/files') {
+    await handleFileList(res, ctx, url)
     return
   }
   if (req.method === 'POST' && url.pathname === '/v1/files') {

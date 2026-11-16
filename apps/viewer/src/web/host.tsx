@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import JSZip from 'jszip'
+import { previewUrl } from './preview-target'
 import { ToolbarIcon } from './toolbar-icon'
 import { ViewerBar } from './viewer-bar'
 import { applyViewerUi, readViewerUi, viewerUiParams } from './ui-options'
@@ -13,22 +14,20 @@ import './viewer.css'
 
 type Format = 'pptx' | 'pdf' | 'docx'
 type Source = { kind: 'file'; file: File } | { kind: 'url'; url: string }
-type RemoteTarget = { server: string; fileId: string; token?: string; contentUrl?: string }
+type RemoteTarget = { server: string; fileId: string; token?: string }
 type ParseMode = 'local' | 'server' | 'auto'
 type Opened = { id: string; name: string; format: Format; src: string; remote?: RemoteTarget }
 const linkParams = new URLSearchParams(location.search)
 const ui = readViewerUi(linkParams)
-const initialUrl = linkParams.get('url')?.trim() || ''
+const retiredPreviewLink = ['fileId', 'url', 'src', 'format', 'contentUrl'].some((key) =>
+  linkParams.has(key),
+)
 // Explicit fidelity fallback; manual server mode otherwise streams the remote model.
 const docxLocalFallback = linkParams.get('docxLocalFallback') === '1'
-const initialFileId = linkParams.get('fileId')?.trim() || ''
-const initialName = linkParams.get('name')?.trim() || ''
 const parseParam = linkParams.get('parse')
 const serverUrl = (
   linkParams.get('server') ||
-  (parseParam === 'server' || parseParam === 'auto' || linkParams.get('fileId')
-    ? location.origin
-    : '')
+  (parseParam === 'server' || parseParam === 'auto' ? location.origin : '')
 )
   .trim()
   .replace(/\/+$/, '')
@@ -50,7 +49,6 @@ function initialParseMode(): ParseMode {
   return serverUrl ? 'auto' : 'local'
 }
 applyViewerUi(ui)
-
 
 function extensionOf(name: string): Format | null {
   const ext = name.split('.').pop()?.toLowerCase()
@@ -95,60 +93,11 @@ function Host() {
     [error, setError] = useState(''),
     [busy, setBusy] = useState(false),
     [parseMode, setParseMode] = useState<ParseMode>(initialParseMode),
-    [importUrl, setImportUrl] = useState(initialUrl)
+    [importUrl, setImportUrl] = useState('')
   const lastSource = useRef<Source | null>(null)
   const opening = useRef(false)
   const currentUrl = useRef<string | null>(null)
-  async function openRemote(fileId: string) {
-    if (!serverUrl) {
-      setError('缺少解析服务地址（?server=http://…）')
-      return
-    }
-    opening.current = true
-    setBusy(true)
-    setError('')
-    setOpened(null)
-    try {
-      const auth: Record<string, string> = serverToken
-        ? { Authorization: `Bearer ${serverToken}` }
-        : {}
-      const response = await fetch(`${serverUrl}/v1/files/${encodeURIComponent(fileId)}`, {
-        headers: auth,
-      })
-      if (!response.ok) throw new Error(`读取文件信息失败（HTTP ${response.status}）`)
-      const meta = (await response.json()) as { format: Format }
-      let contentUrl = `${serverUrl}/v1/files/${encodeURIComponent(fileId)}/content`
-      if (serverToken && meta.format === 'pdf') {
-        const signed = await fetch(
-          `${serverUrl}/v1/files/${encodeURIComponent(fileId)}/content-url`,
-          { headers: auth },
-        )
-        if (!signed.ok) throw new Error(`获取 PDF 访问 URL 失败（HTTP ${signed.status}）`)
-        contentUrl = ((await signed.json()) as { url: string }).url
-      }
-      setParseMode('server')
-      setOpened({
-        id: fileId,
-        name: initialName || fileId.slice(0, 8),
-        format: meta.format,
-        src: contentUrl,
-        remote: {
-          server: serverUrl,
-          fileId,
-          token: serverToken || undefined,
-          contentUrl: meta.format === 'pdf' ? contentUrl : undefined,
-        },
-      })
-    } catch (error) {
-      setError(error instanceof Error ? error.message : String(error))
-    } finally {
-      opening.current = false
-      setBusy(false)
-    }
-  }
   useEffect(() => {
-    if (initialFileId) void openRemote(initialFileId)
-    else if (initialUrl) void open({ kind: 'url', url: initialUrl })
     return () => {
       if (currentUrl.current) URL.revokeObjectURL(currentUrl.current)
     }
@@ -163,9 +112,7 @@ function Host() {
     try {
       // Probe capabilities before reading anything so an impossible local route
       // (large DOCX without a server) fails before the file is buffered.
-      const capabilities = serverUrl
-        ? await fetchCapabilities({ baseUrl: serverUrl })
-        : undefined
+      const capabilities = serverUrl ? await fetchCapabilities({ baseUrl: serverUrl }) : undefined
       if (source.kind === 'file' && extensionOf(source.file.name))
         precheckLocalFile({
           name: source.file.name,
@@ -216,9 +163,14 @@ function Host() {
         size: file.size,
         ...(capabilities ? { capabilities } : {}),
       })
-      const resolvedMode: ParseMode = route.mode === 'local' && mode === 'auto' &&
-        format === 'pptx' && capabilities?.features?.mediaTranscoding === true && await pptxHasMedia(file)
-        ? 'server' : route.mode
+      const resolvedMode: ParseMode =
+        route.mode === 'local' &&
+        mode === 'auto' &&
+        format === 'pptx' &&
+        capabilities?.features?.mediaTranscoding === true &&
+        (await pptxHasMedia(file))
+          ? 'server'
+          : route.mode
       let remote: RemoteTarget | undefined
       if (resolvedMode === 'server') {
         if (!serverUrl) throw new Error('没有配置解析服务地址（?server=http://…）')
@@ -242,13 +194,6 @@ function Host() {
         }
         const uploaded = (await response.json()) as { fileId: string }
         remote = { server: serverUrl, fileId: uploaded.fileId, token: serverToken || undefined }
-        if (format === 'pdf' && serverToken) {
-          const signed = await fetch(`${serverUrl}/v1/files/${uploaded.fileId}/content-url`, {
-            headers: auth,
-          })
-          if (!signed.ok) throw new Error(`获取 PDF 访问 URL 失败（HTTP ${signed.status}）`)
-          remote.contentUrl = ((await signed.json()) as { url: string }).url
-        }
       }
       if (currentUrl.current) URL.revokeObjectURL(currentUrl.current)
       const src = URL.createObjectURL(file)
@@ -362,22 +307,24 @@ function Host() {
         <iframe
           key={opened.id}
           title={opened.name}
-          src={`${import.meta.env.BASE_URL}preview.html?${new URLSearchParams({
-            src: opened.src,
-            format: opened.format,
-            name: opened.name,
-            ...(opened.remote
-              ? {
-                  server: opened.remote.server,
-                  fileId: opened.remote.fileId,
-                  ...(layoutParam ? { layout: layoutParam } : {}),
-                  ...(opened.remote.token ? { token: opened.remote.token } : {}),
-                  ...(opened.remote.contentUrl ? { contentUrl: opened.remote.contentUrl } : {}),
-                  ...(opened.format === 'docx' && docxLocalFallback ? { docxLocalFallback: '1' } : {}),
-                }
-              : {}),
-            ...viewerUiParams(ui),
-          })}`}
+          src={previewUrl(
+            import.meta.env.BASE_URL,
+            {
+              src: opened.src,
+              format: opened.format,
+              name: opened.name,
+              ...(opened.remote
+                ? {
+                    ...opened.remote,
+                    layout: layoutParam,
+                    docxLocalFallback: opened.format === 'docx' && docxLocalFallback,
+                  }
+                : {}),
+              ui: viewerUiParams(ui),
+              theme: linkParams.get('theme') || undefined,
+            },
+            location.origin,
+          )}
           allow="fullscreen"
         />
       ) : (
@@ -391,4 +338,13 @@ function Host() {
     </main>
   )
 }
-createRoot(document.getElementById('root')!).render(<Host />)
+createRoot(document.getElementById('root')!).render(
+  retiredPreviewLink ? (
+    <p className="viewer-status" role="alert">
+      不再支持首页自动预览链接，请使用 preview.html?fileId=… 重新生成链接。{' '}
+      <a href={import.meta.env.BASE_URL}>返回首页</a>
+    </p>
+  ) : (
+    <Host />
+  ),
+)

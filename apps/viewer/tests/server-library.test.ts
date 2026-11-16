@@ -13,7 +13,7 @@ test('history client preserves server/auth settings and rejects failed saves bef
   })
   const client = createLibraryClient('https://parse.example/base/', 'test-token')
   await assert.rejects(client.save('file', 'deck.pptx'), /storage full/)
-  assert.equal(requests[0].url, 'https://parse.example/base/v2/library')
+  assert.equal(requests[0].url, 'https://parse.example/base/v1/library')
   assert.equal(new Headers(requests[0].init.headers).get('Authorization'), 'Bearer test-token')
   assert.deepEqual(JSON.parse(requests[0].init.body as string), {
     fileId: 'file',
@@ -26,9 +26,9 @@ test('history client preserves server/auth settings and rejects failed saves bef
   })
   assert.equal(
     requests[1].url,
-    'https://parse.example/base/v2/library?limit=50&cursor=cursor+with+spaces',
+    'https://parse.example/base/v1/library?limit=50&cursor=cursor+with+spaces',
   )
   assert.equal(requests[1].init.signal, controller.signal)
   await client.remove('entry/id')
-  assert.equal(requests[2].url, 'https://parse.example/base/v2/library/entry%2Fid')
+  assert.equal(requests[2].url, 'https://parse.example/base/v1/library/entry%2Fid')
 })

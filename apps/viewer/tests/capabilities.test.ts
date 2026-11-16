@@ -25,7 +25,7 @@ test('parses a capabilities response and filters non-boolean features', async ()
       })
     }) as typeof fetch,
   })
-  assert.equal(url, 'http://parse/v2/capabilities')
+  assert.equal(url, 'http://parse/v1/capabilities')
   assert.deepEqual(capabilities, {
     contractVersion: '1',
     parserVersion: '0.1.0',

@@ -35,20 +35,22 @@ test('async opening follows queued/building/ready with one creation and preserve
   assert.equal(result.model.unitCount, 10)
   assert.deepEqual(
     calls.map((call) => call.url),
-    ['http://parse/v2/sessions', 'http://parse/v2/sessions/one', 'http://parse/v2/sessions/one'],
+    ['http://parse/v1/sessions', 'http://parse/v1/sessions/one', 'http://parse/v1/sessions/one'],
   )
   for (const call of calls) {
     assert.equal(new Headers(call.init.headers).get('Authorization'), 'Bearer secret')
     assert.equal(call.init.signal, controller.signal)
   }
+  assert.equal(new Headers(calls[0].init.headers).get('Prefer'), 'respond-async')
+  assert.equal(new Headers(calls[1].init.headers).get('Prefer'), null)
   assert.deepEqual(JSON.parse(calls[0].init.body as string), { fileId: 'file', width: 1200 })
 })
 
-test('older and offline servers fall back to v1 only when v2 is unsupported', async (context) => {
+test('older and offline servers retry synchronously only when async mode is unsupported', async (context) => {
   const paths: string[] = []
-  context.mock.method(globalThis, 'fetch', async (url: string) => {
+  context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
     paths.push(url)
-    return url.endsWith('/v2/sessions')
+    return new Headers(init.headers).get('Prefer') === 'respond-async'
       ? json({ message: 'not found' }, 404)
       : json({ sessionId: 'offline', model: { unitCount: 1 } }, 201)
   })
@@ -58,10 +60,10 @@ test('older and offline servers fall back to v1 only when v2 is unsupported', as
     skipCapabilities: true,
   })
   assert.equal(result.sessionId, 'offline')
-  assert.deepEqual(paths, ['http://local/v2/sessions', 'http://local/v1/sessions'])
+  assert.deepEqual(paths, ['http://local/v1/sessions', 'http://local/v1/sessions'])
 })
 
-test('queue saturation does not retry through v1 and bypass admission', async (context) => {
+test('queue saturation does not retry synchronously and bypass admission', async (context) => {
   const paths: string[] = []
   context.mock.method(globalThis, 'fetch', async (url: string) => {
     paths.push(url)
@@ -71,7 +73,7 @@ test('queue saturation does not retry through v1 and bypass admission', async (c
     openServerSession({ server: 'http://parse', fileId: 'file', skipCapabilities: true }),
     /queue full/,
   )
-  assert.deepEqual(paths, ['http://parse/v2/sessions'])
+  assert.deepEqual(paths, ['http://parse/v1/sessions'])
 })
 
 test('cancelling during a polling delay deletes only this waiter using a fresh request', async (context) => {
@@ -94,7 +96,7 @@ test('cancelling during a polling delay deletes only this waiter using a fresh r
     { name: 'AbortError' },
   )
   assert.equal(calls.length, 2)
-  assert.equal(calls[1].url, 'http://parse/v2/sessions/cancelled')
+  assert.equal(calls[1].url, 'http://parse/v1/sessions/cancelled')
   assert.equal(calls[1].init.method, 'DELETE')
   assert.equal(calls[1].init.signal, undefined)
 })
@@ -117,9 +119,9 @@ test('failed jobs report their error, clean up the waiter, and never poll foreve
     /memory limit/,
   )
   assert.deepEqual(calls, [
-    'POST http://parse/v2/sessions',
-    'GET http://parse/v2/sessions/failed',
-    'DELETE http://parse/v2/sessions/failed',
+    'POST http://parse/v1/sessions',
+    'GET http://parse/v1/sessions/failed',
+    'DELETE http://parse/v1/sessions/failed',
   ])
 })
 
@@ -146,8 +148,8 @@ test('closing a remote deck at the ready boundary does not resurrect heartbeat t
   try {
     await assert.rejects(session.open(new ArrayBuffer(0)), /Presentation closed/)
     assert.deepEqual(calls, [
-      'GET http://parse/v2/capabilities',
-      'POST http://parse/v2/sessions',
+      'GET http://parse/v1/capabilities',
+      'POST http://parse/v1/sessions',
       'DELETE http://parse/v1/sessions/ready-boundary',
     ])
     context.mock.timers.tick(60 * 60_000)
@@ -202,7 +204,7 @@ test('previewable is a building capability, notified once, and never ends the wa
   assert.equal(notices.length, 1)
   assert.deepEqual(notices[0], {
     sessionId: 'preview',
-    endpoint: '/v2/sessions',
+    endpoint: '/v1/sessions',
     unitsProduced: 1,
     unitCount: 3,
     availableUnits: { from: 0, to: 1 },
@@ -251,7 +253,7 @@ test('remote sessions fetch and expose the committed first frame while still bui
         unitCount: 3,
       })
     if (url.endsWith('/units/0')) return json(firstUnit)
-    if (url.endsWith('/v2/sessions/frame'))
+    if (url.endsWith('/v1/sessions/frame'))
       return json(
         ++polls === 1
           ? {
@@ -285,8 +287,8 @@ test('remote sessions fetch and expose the committed first frame while still bui
       undefined,
       'uncommitted pages must not trigger lazy unit requests',
     )
-    assert.ok(urls.includes('GET http://parse/v2/sessions/frame/document'))
-    assert.ok(urls.includes('GET http://parse/v2/sessions/frame/units/0'))
+    assert.ok(urls.includes('GET http://parse/v1/sessions/frame/document'))
+    assert.ok(urls.includes('GET http://parse/v1/sessions/frame/units/0'))
     assert.ok(
       urls.includes('GET http://parse/v1/sessions/frame/units/0'),
       'the ready path keeps its original v1 contract',
@@ -317,7 +319,7 @@ test('a failed first-frame prefetch never fails the authoritative ready path', a
         202,
       )
     if (url.endsWith('/document')) return json({ message: 'preview unavailable' }, 503)
-    if (url.endsWith('/v2/sessions/fragile'))
+    if (url.endsWith('/v1/sessions/fragile'))
       return json(
         ++polls === 1
           ? {

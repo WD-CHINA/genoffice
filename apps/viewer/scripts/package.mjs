@@ -54,7 +54,7 @@ await writeFile(
 
 \`/assets/\` 里的脚本、样式和字体文件名带内容 hash。在 nginx 中按同目录的 \`nginx.conf\` 开启 gzip，并为 \`/assets/\` 设置一年缓存；\`index.html\` 与 \`preview.html\` 不要长期缓存。woff2 已压缩，配置里不再对它 gzip。
 
-本地预览不需要后端服务。服务端解析和历史资源功能需要独立 parse-server，请把 /v1/ 和 /v2/ 同源代理到后端；示例见 nginx.conf。站点本身仍是纯静态发布目录，不包含 Node 或 PM2 进程。本地文件可直接选择；URL 导入需要文件服务器允许跨域访问。
+本地预览不需要后端服务。服务端解析和历史资源功能需要独立 parse-server，请把 /v1/ 同源代理到后端；示例见 nginx.conf。站点本身仍是纯静态发布目录，不包含 Node 或 PM2 进程。本地文件可直接选择；URL 导入需要文件服务器允许跨域访问。
 
 支持只读 PPTX、PDF、DOCX 预览和 PPT 放映。字体包中没有的字体会在界面标出回退。含 HTML/MHT 的 Word altChunk 会提示无法在纯前端转换。
 `,

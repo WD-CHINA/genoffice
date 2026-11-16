@@ -1,10 +1,10 @@
 import { featureEnabled, fetchCapabilities } from './capabilities'
 
 export type OpeningState = 'queued' | 'building' | 'previewable'
-/** First-frame capability reported while a v2 job is still building. */
+/** First-frame capability reported while an async job is still building. */
 export interface PreviewNotice {
   sessionId: string
-  /** Endpoint actually in use; v1 fallbacks never report a preview. */
+  /** Endpoint actually in use; Blocking fallbacks never report a preview. */
   endpoint: string
   unitsProduced: number
   unitCount: number
@@ -21,7 +21,7 @@ export interface ServerSessionTarget {
   onPreview?: (preview: PreviewNotice) => void
   /** Tests/offline embeddings: skip the best-effort capabilities probe. */
   skipCapabilities?: boolean
-  /** Reading position handed to the v2 contract (plan §4.1). */
+  /** Reading position handed to the session contract (plan §4.1). */
   layoutPrefs?: unknown
 }
 interface Status {
@@ -61,7 +61,7 @@ async function responseError(response: Response): Promise<Error> {
   }
 }
 
-/** v2 async readiness with v1 fallback for older servers and Android's local replay server. */
+/** Async readiness with synchronous fallback for older servers and Android's local replay server. */
 /** Incremental reading-position update on the heartbeat channel (plan §4.1). */
 export async function updateSessionLayoutPrefs(
   server: string,
@@ -71,7 +71,7 @@ export async function updateSessionLayoutPrefs(
   signal?: AbortSignal,
 ): Promise<void> {
   const response = await fetch(
-    `${server.replace(/\/+$/, '')}/v2/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
+    `${server.replace(/\/+$/, '')}/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
     {
       method: 'POST',
       headers: {
@@ -91,21 +91,18 @@ export async function openServerSession<T extends { sessionId: string }>(
   const base = target.server.replace(/\/+$/, '')
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
   if (target.token) headers.Authorization = `Bearer ${target.token}`
-  // Match behaviour against the server's declared capabilities (plan §8.1).
-  // A missing probe keeps the legacy v2-first behaviour; only an explicit
-  // `asyncSessions: false` forces the v1 contract.
   const capabilities = target.skipCapabilities
     ? undefined
     : await fetchCapabilities({ baseUrl: base, signal: target.signal })
   const allowPreview = featureEnabled(capabilities, 'incrementalPreview') !== false
-  let endpoint =
-    featureEnabled(capabilities, 'asyncSessions') === false ? '/v1/sessions' : '/v2/sessions'
+  const endpoint = '/v1/sessions'
+  let respondAsync = featureEnabled(capabilities, 'asyncSessions') !== false
   let id: string | undefined
   try {
     aborted(target.signal)
     const init: RequestInit = {
       method: 'POST',
-      headers,
+      headers: { ...headers, ...(respondAsync ? { Prefer: 'respond-async' } : {}) },
       body: JSON.stringify({
         fileId: target.fileId,
         ...(target.width !== undefined ? { width: target.width } : {}),
@@ -114,9 +111,9 @@ export async function openServerSession<T extends { sessionId: string }>(
       signal: target.signal,
     }
     let response = await fetch(`${base}${endpoint}`, init)
-    if (response.status === 404 || response.status === 405) {
-      endpoint = '/v1/sessions'
-      response = await fetch(`${base}${endpoint}`, init)
+    if (respondAsync && (response.status === 404 || response.status === 405)) {
+      respondAsync = false
+      response = await fetch(`${base}${endpoint}`, { ...init, headers })
     }
     if (!response.ok) throw await responseError(response)
     let body = (await response.json()) as Status & T
@@ -133,7 +130,7 @@ export async function openServerSession<T extends { sessionId: string }>(
       // `previewable` describes a building job, not a new terminal state: keep
       // polling until the full manifest makes the session ready.
       target.onState?.(body.previewable && allowPreview ? 'previewable' : body.state)
-      if (body.previewable && allowPreview && !previewNotified && endpoint === '/v2/sessions') {
+      if (body.previewable && allowPreview && !previewNotified && respondAsync) {
         previewNotified = true
         target.onPreview?.({
           sessionId: id,

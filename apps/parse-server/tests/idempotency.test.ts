@@ -20,7 +20,10 @@ function testKey(n: number): string {
   return 'idem-key-' + n.toString().padStart(4, '0')
 }
 
-function testEntry(status = 200, body: unknown = { ok: true }): {
+function testEntry(
+  status = 200,
+  body: unknown = { ok: true },
+): {
   status: number
   body: unknown
   headers: Record<string, string>
@@ -43,7 +46,7 @@ it('replays a stored JSON response with its status, body and headers', () => {
   const clock = fakeClock(1234)
   const store = new IdempotencyStore({ now: clock.now })
   const headers = {
-    Location: '/v2/sessions/s-1',
+    Location: '/v1/sessions/s-1',
     'Retry-After': '1',
     'content-type': 'application/json',
   }
@@ -70,7 +73,7 @@ it('replays a stored JSON response with its status, body and headers', () => {
     sessionId: 's-1',
     state: 'pending',
   })
-  expect(store.get('v2:sessions', testKey(1))?.headers.Location).toBe('/v2/sessions/s-1')
+  expect(store.get('v2:sessions', testKey(1))?.headers.Location).toBe('/v1/sessions/s-1')
 })
 
 it('expires entries after the default ten minute TTL without refreshing on reads', () => {
@@ -144,8 +147,8 @@ it('rejects header values that could inject response lines', () => {
   const clock = fakeClock()
   const store = new IdempotencyStore({ now: clock.now })
   const unsafe: Record<string, string>[] = [
-    { Location: '/v2/sessions/1\r\nX-Injected: 1' },
-    { Location: '/v2/sessions/1\nX-Injected: 1' },
+    { Location: '/v1/sessions/1\r\nX-Injected: 1' },
+    { Location: '/v1/sessions/1\nX-Injected: 1' },
     { 'Retry-After': '1\r' },
   ]
   for (const headers of unsafe) {
@@ -173,7 +176,7 @@ it('rejects header values that could inject response lines', () => {
     store.remember('v2:sessions', testKey(2), {
       status: 200,
       body: {},
-      headers: { Location: '/v2/sessions/2', 'Retry-After': '1' },
+      headers: { Location: '/v1/sessions/2', 'Retry-After': '1' },
     }),
   ).toBe(true)
 })
@@ -296,9 +299,9 @@ it('validates constructor options', () => {
     'invalid idempotency configuration',
   )
   expect(new IdempotencyStore()).toBeInstanceOf(IdempotencyStore)
-  expect(
-    new IdempotencyStore({ ttlMs: 1, maxEntries: 99_999, now: () => 5 }),
-  ).toBeInstanceOf(IdempotencyStore)
+  expect(new IdempotencyStore({ ttlMs: 1, maxEntries: 99_999, now: () => 5 })).toBeInstanceOf(
+    IdempotencyStore,
+  )
 })
 
 it('reads the Idempotency-Key header', () => {

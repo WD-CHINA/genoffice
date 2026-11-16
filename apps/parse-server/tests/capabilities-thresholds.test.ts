@@ -22,8 +22,12 @@ it('advertises deployment routing thresholds and rejects invalid values', async 
     docxFullRenderBytes: 7 * 1024 * 1024,
   })
   servers.push(server)
-  const capabilities = await (await fetch(server.url + '/v2/capabilities')).json() as {
-    thresholds: { docxAutoRemoteBytes: number; pptxAutoRemoteBytes: number; docxFullRenderBytes: number }
+  const capabilities = (await (await fetch(server.url + '/v1/capabilities')).json()) as {
+    thresholds: {
+      docxAutoRemoteBytes: number
+      pptxAutoRemoteBytes: number
+      docxFullRenderBytes: number
+    }
   }
   expect(capabilities.thresholds).toEqual({
     docxAutoRemoteBytes: 3 * 1024 * 1024,
@@ -35,8 +39,12 @@ it('advertises deployment routing thresholds and rejects invalid values', async 
   dirs.push(defaultsDir)
   const defaults = await createParseServer({ dataDir: defaultsDir })
   servers.push(defaults)
-  const defaultCaps = await (await fetch(defaults.url + '/v2/capabilities')).json() as {
-    thresholds: { docxAutoRemoteBytes: number; pptxAutoRemoteBytes: number; docxFullRenderBytes: number }
+  const defaultCaps = (await (await fetch(defaults.url + '/v1/capabilities')).json()) as {
+    thresholds: {
+      docxAutoRemoteBytes: number
+      pptxAutoRemoteBytes: number
+      docxFullRenderBytes: number
+    }
   }
   expect(defaultCaps.thresholds).toEqual({
     docxAutoRemoteBytes: 32 * 1024 * 1024,
@@ -44,8 +52,11 @@ it('advertises deployment routing thresholds and rejects invalid values', async 
     docxFullRenderBytes: 64 * 1024 * 1024,
   })
   for (const value of [0, -1, 1.5, Number.NaN]) {
-    expect(() => validateRuntimeOptions({
-      dataDir: '/unused', docxAutoRemoteBytes: value,
-    })).toThrow(/docxAutoRemoteBytes/)
+    expect(() =>
+      validateRuntimeOptions({
+        dataDir: '/unused',
+        docxAutoRemoteBytes: value,
+      }),
+    ).toThrow(/docxAutoRemoteBytes/)
   }
 })

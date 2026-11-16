@@ -3,19 +3,26 @@ import type { MysqlDatabase } from './mysql'
 
 /**
  * Durable `Idempotency-Key` ledger (plan §7): the in-process map is a fast replay
- * cache, this table is the cross-instance/restart truth for v2 session creation.
+ * cache, this table is the cross-instance/restart truth for async session creation.
  * A pending row has `body = NULL`; the winner fills it, waiters replay it.
  */
 export class SharedIdempotencyStore {
-  constructor(private readonly db: MysqlDatabase, private readonly maxTtlMs = 24 * 60 * 60_000) {}
+  constructor(
+    private readonly db: MysqlDatabase,
+    private readonly maxTtlMs = 24 * 60 * 60_000,
+  ) {}
 
   private validate(scope: string, key: string): void {
     if (!/^[a-z0-9:_-]{1,32}$/.test(scope)) throw new Error('invalid idempotency scope')
-    if (typeof key !== 'string' || key.length < 8 || key.length > 128 ||
+    if (
+      typeof key !== 'string' ||
+      key.length < 8 ||
+      key.length > 128 ||
       [...key].some((character) => {
         const code = character.charCodeAt(0)
         return code < 0x20 || code === 0x7f
-      }))
+      })
+    )
       throw new Error('invalid idempotency key')
   }
 
@@ -36,7 +43,10 @@ export class SharedIdempotencyStore {
     if (!row) return undefined
     if (row.body === null || row.body === undefined) return { pending: true }
     try {
-      return { pending: false, body: typeof row.body === 'string' ? JSON.parse(row.body) : row.body }
+      return {
+        pending: false,
+        body: typeof row.body === 'string' ? JSON.parse(row.body) : row.body,
+      }
     } catch {
       return { pending: true }
     }
@@ -86,5 +96,7 @@ export class SharedIdempotencyStore {
     )
   }
 
-  async close(): Promise<void> { /* row ownership stays with the database */ }
+  async close(): Promise<void> {
+    /* row ownership stays with the database */
+  }
 }

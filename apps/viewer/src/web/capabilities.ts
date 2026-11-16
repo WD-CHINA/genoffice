@@ -1,6 +1,6 @@
 /**
  * Server capability probe (plan §8.1: match behaviour against
- * `/v2/capabilities` instead of hardcoded assumptions).
+ * `/v1/capabilities` instead of hardcoded assumptions).
  *
  * The probe is best-effort: older servers, reverse proxies and offline servers
  * may not expose the route, and a failed probe must never block opening a
@@ -50,18 +50,31 @@ function parseCapabilities(value: unknown): ServerCapabilities | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
   const record = value as Record<string, unknown>
   const capabilities: ServerCapabilities = {}
-  if (typeof record.contractVersion === 'string') capabilities.contractVersion = record.contractVersion
+  if (typeof record.contractVersion === 'string')
+    capabilities.contractVersion = record.contractVersion
   if (typeof record.parserVersion === 'string') capabilities.parserVersion = record.parserVersion
   if (Array.isArray(record.formats)) {
     const formats = record.formats.filter((entry): entry is string => typeof entry === 'string')
     if (formats.length > 0) capabilities.formats = formats
   }
-  if (typeof record.maxBytes === 'number' && Number.isFinite(record.maxBytes) && record.maxBytes > 0)
+  if (
+    typeof record.maxBytes === 'number' &&
+    Number.isFinite(record.maxBytes) &&
+    record.maxBytes > 0
+  )
     capabilities.maxBytes = record.maxBytes
-  if (record.thresholds && typeof record.thresholds === 'object' && !Array.isArray(record.thresholds)) {
+  if (
+    record.thresholds &&
+    typeof record.thresholds === 'object' &&
+    !Array.isArray(record.thresholds)
+  ) {
     const raw = record.thresholds as Record<string, unknown>
     const thresholds: NonNullable<ServerCapabilities['thresholds']> = {}
-    for (const name of ['docxAutoRemoteBytes', 'pptxAutoRemoteBytes', 'docxFullRenderBytes'] as const)
+    for (const name of [
+      'docxAutoRemoteBytes',
+      'pptxAutoRemoteBytes',
+      'docxFullRenderBytes',
+    ] as const)
       if (typeof raw[name] === 'number' && Number.isSafeInteger(raw[name]) && raw[name] > 0)
         thresholds[name] = raw[name] as number
     if (Object.keys(thresholds).length > 0) capabilities.thresholds = thresholds
@@ -89,10 +102,12 @@ export async function fetchCapabilities(
   const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   const timeout = new AbortController()
   const timer = setTimeout(() => timeout.abort(), timeoutMs)
-  const combined = combineAbortSignals(options.signal ? [options.signal, timeout.signal] : [timeout.signal])
+  const combined = combineAbortSignals(
+    options.signal ? [options.signal, timeout.signal] : [timeout.signal],
+  )
   const signal = combined.signal
   try {
-    const response = await fetchImpl(base + '/v2/capabilities', {
+    const response = await fetchImpl(base + '/v1/capabilities', {
       method: 'GET',
       headers: { Accept: 'application/json' },
       signal,

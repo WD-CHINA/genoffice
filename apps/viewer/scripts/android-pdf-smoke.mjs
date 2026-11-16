@@ -193,7 +193,7 @@ try {
       assert.equal(offlineResult.count, onlineResult.count)
       // Probe reachability after recording resources, so the deliberate failed request is excluded.
       const unavailable = await offline.c.evaluate(
-        `(async()=>{try{await fetch(${JSON.stringify(backend + '/v2/capabilities')},{signal:AbortSignal.timeout(2000)});return false}catch{return true}})()`,
+        `(async()=>{try{await fetch(${JSON.stringify(backend + '/v1/capabilities')},{signal:AbortSignal.timeout(2000)});return false}catch{return true}})()`,
         offline.id,
       )
       assert.ok(unavailable, 'Remote backend remains reachable')

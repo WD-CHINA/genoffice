@@ -7,7 +7,8 @@
  */
 
 /** Bumped whenever a breaking wire change lands. Mixed versions must not share a session. */
-export const CONTRACT_VERSION = 1
+export const API_VERSION = 1
+export const CONTRACT_VERSION = API_VERSION
 
 /** Formats the Viewer can display locally or through the parse service. */
 export type DocFormat = 'pptx' | 'pdf' | 'docx'
@@ -43,8 +44,8 @@ export interface ByteSource {
 /** Stages a parser can complete. Stage 4 (DOM measure/pagination) always stays in the browser. */
 export type ParseStage = 'index' | 'model' | 'layout' | 'measure' | 'pagination'
 
-/** Independent version tag for the v2 HTTP DTO envelope (plan §4). */
-export const PARSE_DTO_VERSION = 1
+/** Compatibility marker for the same v1 HTTP contract. */
+export const PARSE_DTO_VERSION = API_VERSION
 
 export interface Capabilities {
   contractVersion: number

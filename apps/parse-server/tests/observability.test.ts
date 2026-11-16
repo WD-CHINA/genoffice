@@ -40,30 +40,30 @@ it('exposes unit-read latency, queue age, signing, artifact and bundle counters'
   const uploaded = await call('/v1/files', { method: 'POST', body: docx })
   expect(uploaded.status).toBe(201)
   const { fileId } = (await uploaded.json()) as { fileId: string }
-  // v2 cold open exercises the artifact-miss counter and the async path.
-  const opened = await call('/v2/sessions', {
+  // v1 asynchronous cold open exercises the artifact-miss counter and the async path.
+  const opened = await call('/v1/sessions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
     body: JSON.stringify({ fileId }),
   })
   expect([201, 202]).toContain(opened.status)
   const { sessionId } = (await opened.json()) as { sessionId: string }
   const deadline = Date.now() + 20_000
   for (;;) {
-    const status = await call(`/v2/sessions/${sessionId}`)
+    const status = await call(`/v1/sessions/${sessionId}`)
     const body = (await status.json()) as { state: string }
     if (body.state === 'ready') break
     if (body.state === 'failed') throw new Error('session failed')
     if (Date.now() > deadline) throw new Error('session did not become ready')
     await new Promise((resolve) => setTimeout(resolve, 20))
   }
-  const unit = await call(`/v2/sessions/${sessionId}/units/0`)
+  const unit = await call(`/v1/sessions/${sessionId}/units/0?representation=model`)
   expect(unit.status).toBe(200)
   // DOCX export succeeds; an unknown bundle resource still records a failure.
-  const bundle = await call(`/v2/sessions/${sessionId}/bundle`)
+  const bundle = await call(`/v1/sessions/${sessionId}/bundle`)
   expect(bundle.status).toBe(200)
   await bundle.arrayBuffer()
-  const missing = await call(`/v2/sessions/${sessionId}/bundle/resources/missing.json`)
+  const missing = await call(`/v1/sessions/${sessionId}/bundle/resources/missing.json`)
   expect(missing.status).toBe(404)
 
   const text = await metrics(server)

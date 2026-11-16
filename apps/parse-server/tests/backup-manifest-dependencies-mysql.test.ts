@@ -52,22 +52,22 @@ describe.skipIf(!socketPath)('backup dependency graph over real MySQL', () => {
       body: Buffer.from(await createBlankPptx()),
     })
     const { fileId } = (await uploaded.json()) as { fileId: string }
-    const opened = await request('/v2/sessions', {
+    const opened = await request('/v1/sessions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
       body: JSON.stringify({ fileId }),
     })
     const { sessionId } = (await opened.json()) as { sessionId: string }
     const deadline = Date.now() + 20_000
     for (;;) {
-      const status = await request(`/v2/sessions/${sessionId}`)
+      const status = await request(`/v1/sessions/${sessionId}`)
       const body = (await status.json()) as { state: string }
       if (body.state === 'ready') break
       if (body.state === 'failed') throw new Error('session failed')
       if (Date.now() > deadline) throw new Error('session did not become ready')
       await new Promise((resolve) => setTimeout(resolve, 25))
     }
-    const bundle = await request(`/v2/sessions/${sessionId}/bundle`)
+    const bundle = await request(`/v1/sessions/${sessionId}/bundle`)
     expect(bundle.status, await bundle.clone().text()).toBe(200)
     const modelKey = artifactKey(
       ArtifactSession.identity({

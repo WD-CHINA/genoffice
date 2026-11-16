@@ -1,10 +1,13 @@
 import { readingLayoutPrefs } from './reading-position'
 import {
-  openServerSession, openingStateText, updateSessionLayoutPrefs, type PreviewNotice,
+  openServerSession,
+  openingStateText,
+  updateSessionLayoutPrefs,
+  type PreviewNotice,
 } from './server-session'
 import type { PptxDeck } from './pptx-session'
 
-/** A first frame published while the v2 job is still building; never a complete deck. */
+/** A first frame published while the v1 asynchronous job is still building; never a complete deck. */
 export interface PreviewFrame {
   deck: PptxDeck & { preview: true }
   unitsProduced: number
@@ -303,8 +306,7 @@ export function createRemotePptxSession(target: RemoteTarget) {
       const now = Date.now()
       if (now - lastPrefAt < 750) return
       lastPrefAt = now
-      void updateSessionLayoutPrefs(base, sessionId, { page }, target.token)
-        .catch(() => undefined)
+      void updateSessionLayoutPrefs(base, sessionId, { page }, target.token).catch(() => undefined)
     },
     close(): void {
       closed = true

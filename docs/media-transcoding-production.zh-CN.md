@@ -76,7 +76,7 @@ docker compose -f apps/parse-server/deploy/validation/compose.yml \
 
 ## 接口与前端
 
-服务器通过 `/v2/capabilities` 的 `features.mediaTranscoding=true` 宣告能力。旧服务或关闭功能时，Viewer 保留原有播放路径。
+服务器通过 `/v1/capabilities` 的 `features.mediaTranscoding=true` 宣告能力。旧服务或关闭功能时，Viewer 保留原有播放路径。
 
 - `POST /v1/files/:fileId/media`：JSON `{ "partPath": "ppt/media/media1.wmv", "kind": "video", "retry": false }`。幂等准备，排队/运行返回 202，已完成返回 200。
 - `GET /v1/files/:fileId/media/:jobId`：查询 `queued/processing/ready/failed`、处理阶段和百分比；ready 时返回临时签名 URL、MIME、字节数、处理策略及命中信息。

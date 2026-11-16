@@ -24,7 +24,8 @@ function arg(name: string, fallback: number): number {
 }
 const slides = arg('slides', 60)
 const outIndex = process.argv.indexOf('--out')
-const output = outIndex >= 0 ? process.argv[outIndex + 1] : join(tmpdir(), 'genoffice-load-profile.json')
+const output =
+  outIndex >= 0 ? process.argv[outIndex + 1] : join(tmpdir(), 'genoffice-load-profile.json')
 const token = 'load-profile'
 const COLD = 22
 const QUEUED = 20
@@ -34,7 +35,11 @@ const corpusIndex = process.argv.indexOf('--corpus-file')
 const corpusPath = corpusIndex >= 0 ? process.argv[corpusIndex + 1] : undefined
 const corpusBytes = corpusPath ? await readFile(corpusPath) : undefined
 const sourceSlides = corpusBytes
-  ? ((await (await JSZip.loadAsync(corpusBytes)).file('ppt/presentation.xml')!.async('string')).match(/<p:sldId\b/g) ?? []).length
+  ? (
+      (
+        await (await JSZip.loadAsync(corpusBytes)).file('ppt/presentation.xml')!.async('string')
+      ).match(/<p:sldId\b/g) ?? []
+    ).length
   : slides
 
 async function multiSlidePptx(count: number, marker: string): Promise<Buffer> {
@@ -62,11 +67,20 @@ async function multiSlidePptx(count: number, marker: string): Promise<Buffer> {
     ids += `<p:sldId id="${255 + index}" r:id="rId${index + 1}"/>`
     relationships += `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide${index}.xml"/>`
     overrides += `<Override PartName="/ppt/slides/slide${index}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>`
-    zip.file(`ppt/slides/slide${index}.xml`, slide.replace('</p:sld>', `<p:notes><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld></p:notes></p:sld>`))
+    zip.file(
+      `ppt/slides/slide${index}.xml`,
+      slide.replace(
+        '</p:sld>',
+        `<p:notes><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld></p:notes></p:sld>`,
+      ),
+    )
     zip.file(`ppt/slides/_rels/slide${index}.xml.rels`, slideRels)
   }
   zip.file('ppt/presentation.xml', presentation.replace('</p:sldIdLst>', `${ids}</p:sldIdLst>`))
-  zip.file('ppt/_rels/presentation.xml.rels', rels.replace('</Relationships>', `${relationships}</Relationships>`))
+  zip.file(
+    'ppt/_rels/presentation.xml.rels',
+    rels.replace('</Relationships>', `${relationships}</Relationships>`),
+  )
   zip.file('[Content_Types].xml', types.replace('</Types>', `${overrides}</Types>`))
   zip.file('load-marker.txt', marker)
   return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
@@ -94,8 +108,9 @@ const sample = (async () => {
   while (sampling) {
     const started = performance.now()
     try {
-      const health = await (await request('/v1/health')).json() as {
-        memory: { rss: number }; childProcesses?: { rssBytes?: number }
+      const health = (await (await request('/v1/health')).json()) as {
+        memory: { rss: number }
+        childProcesses?: { rssBytes?: number }
       }
       healthLatencies.push(performance.now() - started)
       const child = Number(health.childProcesses?.rssBytes ?? 0)
@@ -117,43 +132,66 @@ function percentile(values: number[], p: number): number {
 
 try {
   const warm = await multiSlidePptx(slides, 'warm')
-  const uploadedWarm = await (await request('/v1/files', { method: 'POST', body: warm })).json() as { fileId: string }
-  const warmOpened = await (await request('/v2/sessions', {
-    method: 'POST', headers: jsonHeaders, body: JSON.stringify({ fileId: uploadedWarm.fileId }),
-  })).json() as { sessionId: string }
+  const uploadedWarm = (await (
+    await request('/v1/files', { method: 'POST', body: warm })
+  ).json()) as { fileId: string }
+  const warmOpened = (await (
+    await request('/v1/sessions', {
+      method: 'POST',
+      headers: { ...jsonHeaders, Prefer: 'respond-async' },
+      body: JSON.stringify({ fileId: uploadedWarm.fileId }),
+    })
+  ).json()) as { sessionId: string }
   // Warm the artifact fully so later reads are cache hits.
   const warmReady = Date.now()
   while (true) {
-    const status = await (await request(`/v2/sessions/${warmOpened.sessionId}`)).json() as { state: string }
+    const status = (await (await request(`/v1/sessions/${warmOpened.sessionId}`)).json()) as {
+      state: string
+    }
     if (status.state === 'ready') break
     if (Date.now() - warmReady > 30_000) throw new Error('warm artifact did not become ready')
     await delay(50)
   }
 
   // Warm-cache reads in isolation: must not start any parse at all.
-  const warmParseBefore = Number(((await (await request('/v1/health')).json()) as any).artifacts?.sourceParsesStarted ?? 0)
+  const warmParseBefore = Number(
+    ((await (await request('/v1/health')).json()) as any).artifacts?.sourceParsesStarted ?? 0,
+  )
   const warmReadLatencies: number[] = []
-  await Promise.all(Array.from({ length: CACHE_READERS }, async () => {
-    const started = performance.now()
-    const response = await request(`/v1/sessions/${warmOpened.sessionId}/layout/slides/0`)
-    warmReadLatencies.push(performance.now() - started)
-    if (response.status !== 200) throw new Error(`warm cache read failed: ${response.status}`)
-    await response.arrayBuffer()
-  }))
-  const warmParseAfter = Number(((await (await request('/v1/health')).json()) as any).artifacts?.sourceParsesStarted ?? 0)
+  await Promise.all(
+    Array.from({ length: CACHE_READERS }, async () => {
+      const started = performance.now()
+      const response = await request(`/v1/sessions/${warmOpened.sessionId}/layout/slides/0`)
+      warmReadLatencies.push(performance.now() - started)
+      if (response.status !== 200) throw new Error(`warm cache read failed: ${response.status}`)
+      await response.arrayBuffer()
+    }),
+  )
+  const warmParseAfter = Number(
+    ((await (await request('/v1/health')).json()) as any).artifacts?.sourceParsesStarted ?? 0,
+  )
 
   const coldFiles: string[] = []
   for (let index = 0; index < COLD; index++) {
     const deck = await multiSlidePptx(slides, `cold-${index}`)
-    const uploaded = await (await request('/v1/files', { method: 'POST', body: deck })).json() as { fileId: string }
+    const uploaded = (await (
+      await request('/v1/files', { method: 'POST', body: deck })
+    ).json()) as { fileId: string }
     coldFiles.push(uploaded.fileId)
   }
 
   // 50 cached reads concurrently with the cold parse/queue phase.
-  const parseBefore = Number(((await (await request('/v1/health')).json()) as any).artifacts?.sourceParsesStarted ?? 0)
+  const parseBefore = Number(
+    ((await (await request('/v1/health')).json()) as any).artifacts?.sourceParsesStarted ?? 0,
+  )
   const coldStarted = performance.now()
   const coldRequests = coldFiles.map((fileId) =>
-    request('/v2/sessions', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ fileId }) }))
+    request('/v1/sessions', {
+      method: 'POST',
+      headers: { ...jsonHeaders, Prefer: 'respond-async' },
+      body: JSON.stringify({ fileId }),
+    }),
+  )
   const readLatencies: number[] = []
   const reads = Array.from({ length: CACHE_READERS }, async () => {
     const started = performance.now()
@@ -163,14 +201,18 @@ try {
     await response.arrayBuffer()
   })
   const coldResponses = await Promise.all(coldRequests)
-  const opened = await Promise.all(coldResponses.map(async (response) => {
-    if (response.status !== 202 && response.status !== 201)
-      throw new Error(`cold open failed: ${response.status} ${await response.text()}`)
-    return (await response.json()) as { sessionId: string }
-  }))
+  const opened = await Promise.all(
+    coldResponses.map(async (response) => {
+      if (response.status !== 202 && response.status !== 201)
+        throw new Error(`cold open failed: ${response.status} ${await response.text()}`)
+      return (await response.json()) as { sessionId: string }
+    }),
+  )
   await Promise.all(reads)
   const readPhaseMs = performance.now() - coldStarted
-  const parseAfterReads = Number(((await (await request('/v1/health')).json()) as any).artifacts?.sourceParsesStarted ?? 0)
+  const parseAfterReads = Number(
+    ((await (await request('/v1/health')).json()) as any).artifacts?.sourceParsesStarted ?? 0,
+  )
 
   // Poll every cold session concurrently while queue depth is sampled, so the
   // per-session wait includes real queue admission rather than a post-drain probe.
@@ -182,25 +224,33 @@ try {
     while (!coldDone) {
       try {
         const state = ((await (await request('/v1/health')).json()) as any).parseQueue as {
-          running: number; queued: number }
+          running: number
+          queued: number
+        }
         peakRunning = Math.max(peakRunning, state.running)
         peakQueued = Math.max(peakQueued, state.queued)
-      } catch { /* a failed probe is measured by the health sampler */ }
+      } catch {
+        /* a failed probe is measured by the health sampler */
+      }
       await delay(50)
     }
   })()
-  const readyTimes = await Promise.all(opened.map(async (session) => {
-    const started = performance.now()
-    while (true) {
-      const status = (await (await request(`/v2/sessions/${session.sessionId}`)).json()) as {
-        state: string; progress?: { units?: number } }
-      if (status.state === 'ready') return performance.now() - started
-      if (status.state === 'failed' || status.state === 'cancelled')
-        throw new Error(`cold session ended as ${status.state}`)
-      if (Date.now() > coldReadyDeadline) throw new Error('cold session did not become ready')
-      await delay(50)
-    }
-  }))
+  const readyTimes = await Promise.all(
+    opened.map(async (session) => {
+      const started = performance.now()
+      while (true) {
+        const status = (await (await request(`/v1/sessions/${session.sessionId}`)).json()) as {
+          state: string
+          progress?: { units?: number }
+        }
+        if (status.state === 'ready') return performance.now() - started
+        if (status.state === 'failed' || status.state === 'cancelled')
+          throw new Error(`cold session ended as ${status.state}`)
+        if (Date.now() > coldReadyDeadline) throw new Error('cold session did not become ready')
+        await delay(50)
+      }
+    }),
+  )
   coldDone = true
   await queueSampler
   const coldPhaseMs = performance.now() - coldStarted
@@ -210,8 +260,10 @@ try {
   const lightIds: string[] = []
   for (let index = 0; index < LIGHT_SESSIONS; index++) {
     const started = performance.now()
-    const response = await request('/v2/sessions', {
-      method: 'POST', headers: jsonHeaders, body: JSON.stringify({ fileId: uploadedWarm.fileId }),
+    const response = await request('/v1/sessions', {
+      method: 'POST',
+      headers: { ...jsonHeaders, Prefer: 'respond-async' },
+      body: JSON.stringify({ fileId: uploadedWarm.fileId }),
     })
     if (response.status !== 201) throw new Error(`light session failed: ${response.status}`)
     const body = (await response.json()) as { sessionId: string }
@@ -227,13 +279,29 @@ try {
       cores: (await import('node:os')).cpus().length,
       totalMemoryGb: Number(((await import('node:os')).totalmem() / 1024 ** 3).toFixed(1)),
       node: process.version,
-      cgroup: process.platform === 'linux' ? Object.fromEntries(await Promise.all(
-        ['cpu.max', 'memory.max', 'memory.peak', 'memory.swap.max'].map(async (name) =>
-          [name, (await readFile(`/sys/fs/cgroup/${name}`, 'utf8').catch(() => 'unavailable')).trim()]),
-      )) : undefined,
+      cgroup:
+        process.platform === 'linux'
+          ? Object.fromEntries(
+              await Promise.all(
+                ['cpu.max', 'memory.max', 'memory.peak', 'memory.swap.max'].map(async (name) => [
+                  name,
+                  (
+                    await readFile(`/sys/fs/cgroup/${name}`, 'utf8').catch(() => 'unavailable')
+                  ).trim(),
+                ]),
+              ),
+            )
+          : undefined,
     },
-    scenario: { slidesPerDeck: sourceSlides, source: corpusPath ? 'business-corpus' : 'synthetic', sourceBytes: corpusBytes?.length,
-      coldTasks: COLD, queuedTasks: QUEUED, cacheReaders: CACHE_READERS, lightSessions: LIGHT_SESSIONS },
+    scenario: {
+      slidesPerDeck: sourceSlides,
+      source: corpusPath ? 'business-corpus' : 'synthetic',
+      sourceBytes: corpusBytes?.length,
+      coldTasks: COLD,
+      queuedTasks: QUEUED,
+      cacheReaders: CACHE_READERS,
+      lightSessions: LIGHT_SESSIONS,
+    },
     cold: {
       wallMs: Math.round(coldPhaseMs),
       medianReadyMs: Math.round(percentile(readyTimes, 0.5)),
@@ -267,12 +335,21 @@ try {
       active: healthAfter.sessions,
     },
     memory: {
-      peakTotalGb: Number((Math.max(...rssSamples.map((item) => item.total)) / 1024 ** 3).toFixed(3)),
-      peakParentGb: Number((Math.max(...rssSamples.map((item) => item.parent)) / 1024 ** 3).toFixed(3)),
-      peakChildGb: Number((Math.max(...rssSamples.map((item) => item.child)) / 1024 ** 3).toFixed(3)),
+      peakTotalGb: Number(
+        (Math.max(...rssSamples.map((item) => item.total)) / 1024 ** 3).toFixed(3),
+      ),
+      peakParentGb: Number(
+        (Math.max(...rssSamples.map((item) => item.parent)) / 1024 ** 3).toFixed(3),
+      ),
+      peakChildGb: Number(
+        (Math.max(...rssSamples.map((item) => item.child)) / 1024 ** 3).toFixed(3),
+      ),
       samples: rssSamples.length,
     },
-    cpu: { userSeconds: process.cpuUsage().user / 1e6, systemSeconds: process.cpuUsage().system / 1e6 },
+    cpu: {
+      userSeconds: process.cpuUsage().user / 1e6,
+      systemSeconds: process.cpuUsage().system / 1e6,
+    },
     storage: {
       sourceBytes: healthAfter.storageBytes,
       artifactBytes: healthAfter.artifacts?.bytes ?? null,

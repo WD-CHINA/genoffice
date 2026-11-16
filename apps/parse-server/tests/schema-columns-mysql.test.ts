@@ -61,7 +61,7 @@ describe.skipIf(!socketPath)('plan §5 library/source columns over real MySQL', 
     expect(Number(source[0].verified_at)).toBeGreaterThan(0)
 
     const save = async () => {
-      const response = await request(first)('/v2/library', {
+      const response = await request(first)('/v1/library', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ fileId, displayName: 'plan5-saved.pptx' }),
@@ -81,13 +81,13 @@ describe.skipIf(!socketPath)('plan §5 library/source columns over real MySQL', 
     expect((await row())[0].retention).toBe('saved')
     expect((await row())[0].deleted_at).toBeNull()
 
-    const removed = await request(first)(`/v2/library/${entry.id}`, { method: 'DELETE' })
+    const removed = await request(first)(`/v1/library/${entry.id}`, { method: 'DELETE' })
     expect(removed.status).toBe(204)
     // Soft delete keeps the row for audit/reconciliation but hides it and stops
     // protecting the source from GC.
     const tombstone = await row()
     expect(tombstone[0].deleted_at).not.toBeNull()
-    const listed = (await (await request(first)('/v2/library')).json()) as { items: unknown[] }
+    const listed = (await (await request(first)('/v1/library')).json()) as { items: unknown[] }
     expect(listed.items).toHaveLength(0)
 
     const resurrected = await save()
@@ -99,13 +99,13 @@ describe.skipIf(!socketPath)('plan §5 library/source columns over real MySQL', 
     )[0]
     expect(active).toHaveLength(1)
     expect(active[0].deleted_at).toBeNull()
-    const relisted = (await (await request(first)('/v2/library')).json()) as { items: unknown[] }
+    const relisted = (await (await request(first)('/v1/library')).json()) as { items: unknown[] }
     expect(relisted.items).toHaveLength(1)
     // The tombstone cleared its file_id reference, so re-saving creates a fresh row.
     expect(resurrected.id).not.toBe(entry.id)
 
     // Tombstones are purged after the retention window on the next startup.
-    await request(first)(`/v2/library/${entry.id}`, { method: 'DELETE' })
+    await request(first)(`/v1/library/${entry.id}`, { method: 'DELETE' })
     await first.db!.pool.query('UPDATE library_entries SET deleted_at = ? WHERE id = ?', [
       Date.now() - 31 * 24 * 60 * 60_000,
       entry.id,

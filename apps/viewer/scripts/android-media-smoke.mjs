@@ -106,7 +106,7 @@ try {
     await writeFile(join(output, `${x.fileId}-manifest.json`), JSON.stringify(manifest, null, 2))
     device.disconnect()
     const unavailable = await c.evaluate(
-      `(async()=>{try{await fetch(${JSON.stringify(base + '/v2/capabilities')},{signal:AbortSignal.timeout(2000)});return false}catch{return true}})()`,
+      `(async()=>{try{await fetch(${JSON.stringify(base + '/v1/capabilities')},{signal:AbortSignal.timeout(2000)});return false}catch{return true}})()`,
       ctxId,
     )
     if (!unavailable) throw Error('Backend is reachable during offline test')

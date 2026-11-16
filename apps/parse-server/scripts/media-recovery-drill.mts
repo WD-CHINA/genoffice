@@ -146,7 +146,7 @@ try {
   const header = Buffer.from(bytes.subarray(0, end + 22)),
     comment = Buffer.from('media-dedupe-' + randomUUID())
   header.writeUInt16LE(comment.length, end + 20)
-  const duplicate = await request(a, '/v2/files', Buffer.concat([header, comment]))
+  const duplicate = await request(a, '/v1/files', Buffer.concat([header, comment]))
   const firstMedia = original.media.find((m: any) => m.part.endsWith('media1.mp4'))
   const shared = await ready(
     duplicate.fileId,
@@ -186,7 +186,7 @@ try {
   zip.file(part, Buffer.concat([video, free]))
   const upload = await request(
     a,
-    '/v2/files',
+    '/v1/files',
     await zip.generateAsync({ type: 'nodebuffer', compression: 'STORE' }),
   )
   let state = await request(a, `/v1/files/${upload.fileId}/media`, {

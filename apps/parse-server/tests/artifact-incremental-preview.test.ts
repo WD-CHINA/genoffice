@@ -18,7 +18,9 @@ afterEach(async () => {
 
 function gate() {
   let resolve!: () => void
-  const promise = new Promise<void>((done) => { resolve = done })
+  const promise = new Promise<void>((done) => {
+    resolve = done
+  })
   return { promise, resolve }
 }
 
@@ -42,8 +44,10 @@ async function multiSlidePptx(count: number, marker: string): Promise<Uint8Array
     zip.file(`ppt/slides/_rels/slide${index}.xml.rels`, slideRels)
   }
   zip.file('ppt/presentation.xml', presentation.replace('</p:sldIdLst>', `${ids}</p:sldIdLst>`))
-  zip.file('ppt/_rels/presentation.xml.rels',
-    rels.replace('</Relationships>', `${relationships}</Relationships>`))
+  zip.file(
+    'ppt/_rels/presentation.xml.rels',
+    rels.replace('</Relationships>', `${relationships}</Relationships>`),
+  )
   zip.file('[Content_Types].xml', types.replace('</Types>', `${overrides}</Types>`))
   return zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' })
 }
@@ -74,15 +78,15 @@ async function setup(options: Partial<ParseServerOptions> = {}) {
     return ((await response.json()) as { fileId: string }).fileId
   }
   const open = (fileId: string) =>
-    request('/v2/sessions', {
+    request('/v1/sessions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
       body: JSON.stringify({ fileId }),
     })
   const ready = async (id: string) => {
     const deadline = Date.now() + 10_000
     while (Date.now() < deadline) {
-      const response = await request(`/v2/sessions/${id}`)
+      const response = await request(`/v1/sessions/${id}`)
       expect(response.status).toBe(200)
       const status = (await response.json()) as { state: string; error?: unknown }
       if (status.state === 'ready') return status
@@ -100,16 +104,18 @@ function pauseAfterFirstUnit() {
   const blocked = gate()
   const original = ArtifactWriter.prototype.append
   let paused = false
-  vi.spyOn(ArtifactWriter.prototype, 'append').mockImplementation(
-    async function (this: ArtifactWriter, id: string, value: JsonValue | Uint8Array) {
-      if (id === 'unit:1' && !paused) {
-        paused = true
-        entered.resolve()
-        await blocked.promise
-      }
-      return original.call(this, id, value)
-    },
-  )
+  vi.spyOn(ArtifactWriter.prototype, 'append').mockImplementation(async function (
+    this: ArtifactWriter,
+    id: string,
+    value: JsonValue | Uint8Array,
+  ) {
+    if (id === 'unit:1' && !paused) {
+      paused = true
+      entered.resolve()
+      await blocked.promise
+    }
+    return original.call(this, id, value)
+  })
   return { entered, blocked }
 }
 
@@ -188,17 +194,28 @@ describe('PreviewRegistry', () => {
   it('rejects malformed documents, invalid options and never throws into a build', () => {
     expect(() => new PreviewRegistry({ maxUnits: 0 })).toThrow(/invalid preview/)
     const registry = new PreviewRegistry()
-    registry.report('bad', { type: 'document', format: 'pptx', unitCount: 3, document: { fonts: [] } })
-    registry.report('bad2', { type: 'document', format: 'pptx', unitCount: -1,
-      document: { model: { format: 'pptx' }, fonts: [] } })
+    registry.report('bad', {
+      type: 'document',
+      format: 'pptx',
+      unitCount: 3,
+      document: { fonts: [] },
+    })
+    registry.report('bad2', {
+      type: 'document',
+      format: 'pptx',
+      unitCount: -1,
+      document: { model: { format: 'pptx' }, fonts: [] },
+    })
     expect(registry.get('bad')).toBeUndefined()
     expect(registry.get('bad2')).toBeUndefined()
     const cyclic: Record<string, unknown> = {}
     cyclic.self = cyclic
-    expect(() => registry.report('cyclic', { type: 'unit', index: 0, unit: cyclic, unitsProduced: 1 }))
-      .not.toThrow()
-    expect(() => registry.report('key', { type: 'unit', index: 0, unit: {}, unitsProduced: 1 }))
-      .not.toThrow()
+    expect(() =>
+      registry.report('cyclic', { type: 'unit', index: 0, unit: cyclic, unitsProduced: 1 }),
+    ).not.toThrow()
+    expect(() =>
+      registry.report('key', { type: 'unit', index: 0, unit: {}, unitsProduced: 1 }),
+    ).not.toThrow()
   })
 
   it('returns a read-only copy so a preview consumer cannot mutate committed records', () => {
@@ -213,7 +230,7 @@ describe('PreviewRegistry', () => {
   })
 })
 
-describe('v2 incremental first frame', () => {
+describe('v1 incremental first frame', () => {
   it('exposes previewable building state, never ready, and keeps offline bundles closed', async () => {
     const harness = await setup()
     const fileId = await harness.upload()
@@ -223,7 +240,10 @@ describe('v2 incremental first frame', () => {
     const { sessionId } = (await created.json()) as { sessionId: string }
     try {
       await paused.entered.promise
-      const status = (await (await harness.request(`/v2/sessions/${sessionId}`)).json()) as Record<string, unknown>
+      const status = (await (await harness.request(`/v1/sessions/${sessionId}`)).json()) as Record<
+        string,
+        unknown
+      >
       expect(status).toMatchObject({
         state: 'building',
         previewable: true,
@@ -232,12 +252,14 @@ describe('v2 incremental first frame', () => {
       })
       expect(status.progress).toMatchObject({ unitsProduced: 1, unitCount: 3 })
       expect(status.state).not.toBe('ready')
-      expect((await harness.request(`/v2/sessions/${sessionId}/bundle`)).status).toBe(409)
-      const capabilities = (await (await harness.request('/v2/capabilities')).json()) as
-        { features: { incrementalPreview?: boolean } }
+      expect((await harness.request(`/v1/sessions/${sessionId}/bundle`)).status).toBe(409)
+      const capabilities = (await (await harness.request('/v1/capabilities')).json()) as {
+        features: { incrementalPreview?: boolean }
+      }
       expect(capabilities.features.incrementalPreview).toBe(true)
-      const health = (await (await harness.request('/v1/health')).json()) as
-        { maintenance: { incrementalPreview: { cachedUnits: number } } }
+      const health = (await (await harness.request('/v1/health')).json()) as {
+        maintenance: { incrementalPreview: { cachedUnits: number } }
+      }
       expect(health.maintenance.incrementalPreview.cachedUnits).toBeGreaterThan(0)
     } finally {
       paused.blocked.resolve()
@@ -253,23 +275,41 @@ describe('v2 incremental first frame', () => {
     const { sessionId } = (await created.json()) as { sessionId: string }
     try {
       await paused.entered.promise
-      const doc = (await (await harness.request(`/v2/sessions/${sessionId}/document`)).json()) as
-        Record<string, unknown>
-      expect(doc).toMatchObject({ state: 'building', complete: false, unitCount: 3, unitsProduced: 1 })
+      const doc = (await (
+        await harness.request(`/v1/sessions/${sessionId}/document`)
+      ).json()) as Record<string, unknown>
+      expect(doc).toMatchObject({
+        state: 'building',
+        complete: false,
+        unitCount: 3,
+        unitsProduced: 1,
+      })
       expect((doc.model as { unitCount: number }).unitCount).toBe(3)
       expect(doc.layout).toBeDefined()
 
-      const listing = (await (await harness.request(`/v2/sessions/${sessionId}/units`)).json()) as
-        Record<string, unknown>
-      expect(listing).toMatchObject({ state: 'building', complete: false,
-        unitsProduced: 1, unitCount: 3, availableUnits: { from: 0, to: 1 } })
+      const listing = (await (
+        await harness.request(`/v1/sessions/${sessionId}/units`)
+      ).json()) as Record<string, unknown>
+      expect(listing).toMatchObject({
+        state: 'building',
+        complete: false,
+        unitsProduced: 1,
+        unitCount: 3,
+        availableUnits: { from: 0, to: 1 },
+      })
       expect(listing.items).toHaveLength(1)
-      expect(listing.pending).toMatchObject({ from: 1, to: 3, code: 'unit_pending', retryAfterMs: 500 })
-      const beyond = (await (await harness.request(`/v2/sessions/${sessionId}/units?cursor=1`)).json()) as
-        { items: unknown[]; pending: { from: number } }
+      expect(listing.pending).toMatchObject({
+        from: 1,
+        to: 3,
+        code: 'unit_pending',
+        retryAfterMs: 500,
+      })
+      const beyond = (await (
+        await harness.request(`/v1/sessions/${sessionId}/units?cursor=1`)
+      ).json()) as { items: unknown[]; pending: { from: number } }
       expect(beyond.items).toHaveLength(0)
       expect(beyond.pending.from).toBe(1)
-      expect((await harness.request(`/v2/sessions/${sessionId}/units?cursor=99`)).status).toBe(400)
+      expect((await harness.request(`/v1/sessions/${sessionId}/units?cursor=99`)).status).toBe(400)
     } finally {
       paused.blocked.resolve()
     }
@@ -285,27 +325,42 @@ describe('v2 incremental first frame', () => {
     let previewUnit: unknown
     try {
       await paused.entered.promise
-      const first = await harness.request(`/v2/sessions/${sessionId}/units/0`)
+      const first = await harness.request(`/v1/sessions/${sessionId}/units/0?representation=model`)
       expect(first.status).toBe(200)
       previewUnit = await first.json()
       expect(previewUnit).toBeTruthy()
-      const pending = await harness.request(`/v2/sessions/${sessionId}/units/1`)
+      const pending = await harness.request(
+        `/v1/sessions/${sessionId}/units/1?representation=model`,
+      )
       expect(pending.status).toBe(202)
       expect(pending.headers.get('Retry-After')).toBe('1')
       expect(await pending.json()).toMatchObject({
-        state: 'pending', code: 'unit_pending', complete: false,
-        availableUnits: { from: 0, to: 1 }, retryAfterMs: 500,
+        state: 'pending',
+        code: 'unit_pending',
+        complete: false,
+        availableUnits: { from: 0, to: 1 },
+        retryAfterMs: 500,
       })
-      expect((await harness.request(`/v2/sessions/${sessionId}/units/3`)).status).toBe(400)
-      expect((await harness.request(`/v2/sessions/${sessionId}/units/not-a-unit`)).status).toBe(400)
+      expect(
+        (await harness.request(`/v1/sessions/${sessionId}/units/3?representation=model`)).status,
+      ).toBe(400)
+      expect(
+        (await harness.request(`/v1/sessions/${sessionId}/units/not-a-unit?representation=model`))
+          .status,
+      ).toBe(400)
     } finally {
       paused.blocked.resolve()
     }
     await harness.ready(sessionId)
-    const finalUnit = await (await harness.request(`/v2/sessions/${sessionId}/units/0`)).json()
+    const finalUnit = await (
+      await harness.request(`/v1/sessions/${sessionId}/units/0?representation=model`)
+    ).json()
     expect(finalUnit).toEqual(previewUnit)
-    const listing = (await (await harness.request(`/v2/sessions/${sessionId}/units`)).json()) as
-      { items: unknown[]; complete?: boolean; pending?: unknown }
+    const listing = (await (await harness.request(`/v1/sessions/${sessionId}/units`)).json()) as {
+      items: unknown[]
+      complete?: boolean
+      pending?: unknown
+    }
     expect(listing.items).toHaveLength(3)
     expect(listing.complete).toBeUndefined()
     expect(listing.pending).toBeUndefined()
@@ -315,26 +370,33 @@ describe('v2 incremental first frame', () => {
     const harness = await setup()
     const fileId = await harness.upload('failing')
     const original = ArtifactWriter.prototype.append
-    vi.spyOn(ArtifactWriter.prototype, 'append').mockImplementation(
-      async function (this: ArtifactWriter, id: string, value: JsonValue | Uint8Array) {
-        if (id === 'unit:1') throw new Error('injected mid-build failure')
-        return original.call(this, id, value)
-      },
-    )
+    vi.spyOn(ArtifactWriter.prototype, 'append').mockImplementation(async function (
+      this: ArtifactWriter,
+      id: string,
+      value: JsonValue | Uint8Array,
+    ) {
+      if (id === 'unit:1') throw new Error('injected mid-build failure')
+      return original.call(this, id, value)
+    })
     const created = await harness.open(fileId)
     const { sessionId } = (await created.json()) as { sessionId: string }
     const deadline = Date.now() + 10_000
     let status: Record<string, unknown> = {}
     while (Date.now() < deadline) {
-      status = (await (await harness.request(`/v2/sessions/${sessionId}`)).json()) as Record<string, unknown>
+      status = (await (await harness.request(`/v1/sessions/${sessionId}`)).json()) as Record<
+        string,
+        unknown
+      >
       if (status.state === 'failed') break
       await new Promise((resolve) => setTimeout(resolve, 10))
     }
     expect(status.state).toBe('failed')
     expect(status.previewable).toBeUndefined()
     expect(status.complete).toBeUndefined()
-    expect((await harness.request(`/v2/sessions/${sessionId}/units/0`)).status).toBe(409)
-    expect((await harness.request(`/v2/sessions/${sessionId}/document`)).status).toBe(409)
+    expect(
+      (await harness.request(`/v1/sessions/${sessionId}/units/0?representation=model`)).status,
+    ).toBe(409)
+    expect((await harness.request(`/v1/sessions/${sessionId}/document`)).status).toBe(409)
   })
 
   it('a cached hit has no previewable state and configuration is validated', async () => {
@@ -352,9 +414,11 @@ describe('v2 incremental first frame', () => {
 
     const dir = await mkdtemp(join(tmpdir(), 'preview-invalid-'))
     directories.push(dir)
-    await expect(createParseServer({ dataDir: dir, previewMaxUnits: 0 }))
-      .rejects.toThrow(/invalid previewMaxUnits/)
-    await expect(createParseServer({ dataDir: dir, previewTtlMs: 1 }))
-      .rejects.toThrow(/invalid previewTtlMs/)
+    await expect(createParseServer({ dataDir: dir, previewMaxUnits: 0 })).rejects.toThrow(
+      /invalid previewMaxUnits/,
+    )
+    await expect(createParseServer({ dataDir: dir, previewTtlMs: 1 })).rejects.toThrow(
+      /invalid previewTtlMs/,
+    )
   })
 })

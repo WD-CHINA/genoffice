@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   artifactBackendFromEnv,
-  asyncSessionsV2FromEnv,
+  asyncSessionsFromEnv,
   deploymentOptionsFromEnv,
   restoreCheckFromEnv,
   storageAdmissionFromEnv,
@@ -47,9 +47,7 @@ describe('storageAdmissionFromEnv', () => {
     expect(storageAdmissionFromEnv({})).toBeUndefined()
     expect(storageAdmissionFromEnv({ PARSE_SERVER_STORAGE_ADMISSION: '' })).toBeUndefined()
     expect(storageAdmissionFromEnv({ PARSE_SERVER_STORAGE_ADMISSION: '  ' })).toBeUndefined()
-    expect(storageAdmissionFromEnv({ PARSE_SERVER_STORAGE_ADMISSION: 'instance' })).toBe(
-      'instance',
-    )
+    expect(storageAdmissionFromEnv({ PARSE_SERVER_STORAGE_ADMISSION: 'instance' })).toBe('instance')
     expect(storageAdmissionFromEnv({ PARSE_SERVER_STORAGE_ADMISSION: ' Shared ' })).toBe('shared')
   })
 
@@ -111,9 +109,9 @@ describe('restoreCheckFromEnv', () => {
 
   it('rejects unreadable, corrupted and non-object manifests with the path', async () => {
     const corrupted = await writeManifest('{"schemaVersion":1,')
-    await expect(
-      restoreCheckFromEnv({ PARSE_SERVER_RESTORE_MANIFEST: corrupted }),
-    ).rejects.toThrow(new Error(`invalid restore manifest: ${corrupted}`))
+    await expect(restoreCheckFromEnv({ PARSE_SERVER_RESTORE_MANIFEST: corrupted })).rejects.toThrow(
+      new Error(`invalid restore manifest: ${corrupted}`),
+    )
     const missing = join(tmpdir(), 'parse-restore-manifest-that-does-not-exist.json')
     await expect(restoreCheckFromEnv({ PARSE_SERVER_RESTORE_MANIFEST: missing })).rejects.toThrow(
       `invalid restore manifest: ${missing}`,
@@ -155,7 +153,10 @@ describe('restoreCheckFromEnv', () => {
     })
     // Read-only wins even when invalidation was explicitly requested.
     expect(
-      await resolve({ PARSE_SERVER_RESTORE_READ_ONLY: 'yes', PARSE_SERVER_RESTORE_INVALIDATE: '1' }),
+      await resolve({
+        PARSE_SERVER_RESTORE_READ_ONLY: 'yes',
+        PARSE_SERVER_RESTORE_INVALIDATE: '1',
+      }),
     ).toEqual({ deep: false, invalidate: false })
     expect(
       await resolve({ PARSE_SERVER_RESTORE_READ_ONLY: '0', PARSE_SERVER_RESTORE_INVALIDATE: 'ON' }),
@@ -185,9 +186,9 @@ describe('deploymentOptionsFromEnv', () => {
     expect(await deploymentOptionsFromEnv({ PARSE_SERVER_ARTIFACT_BACKEND: 'catalog' })).toEqual({
       artifactBackend: 'catalog',
     })
-    expect(
-      await deploymentOptionsFromEnv({ PARSE_SERVER_STORAGE_ADMISSION: 'shared' }),
-    ).toEqual({ storageAdmission: 'shared' })
+    expect(await deploymentOptionsFromEnv({ PARSE_SERVER_STORAGE_ADMISSION: 'shared' })).toEqual({
+      storageAdmission: 'shared',
+    })
 
     const path = await writeManifest('{"schemaVersion":1}')
     const bundle = await deploymentOptionsFromEnv({
@@ -208,19 +209,44 @@ describe('deploymentOptionsFromEnv', () => {
   })
 
   it('propagates a half-configured restore drill', async () => {
-    await expect(
-      deploymentOptionsFromEnv({ PARSE_SERVER_RESTORE_DEEP: '1' }),
-    ).rejects.toThrow('restore manifest path is required')
+    await expect(deploymentOptionsFromEnv({ PARSE_SERVER_RESTORE_DEEP: '1' })).rejects.toThrow(
+      'restore manifest path is required',
+    )
   })
 })
 
 it('parses the staged async-session rollback switch', async () => {
-  expect(asyncSessionsV2FromEnv({})).toBeUndefined()
-  expect(asyncSessionsV2FromEnv({ PARSE_SERVER_ASYNC_SESSIONS_V2: '1' })).toBe(true)
-  expect(asyncSessionsV2FromEnv({ PARSE_SERVER_ASYNC_SESSIONS_V2: 'off' })).toBe(false)
+  expect(asyncSessionsFromEnv({})).toBeUndefined()
+  expect(asyncSessionsFromEnv({ PARSE_SERVER_ASYNC_SESSIONS: '1' })).toBe(true)
+  expect(asyncSessionsFromEnv({ PARSE_SERVER_ASYNC_SESSIONS: 'off' })).toBe(false)
+  expect(() => asyncSessionsFromEnv({ PARSE_SERVER_ASYNC_SESSIONS: 'maybe' })).toThrow(
+    /PARSE_SERVER_ASYNC_SESSIONS/,
+  )
+  const options = await deploymentOptionsFromEnv({ PARSE_SERVER_ASYNC_SESSIONS: 'false' })
+  expect(options.asyncSessions).toBe(false)
+})
+
+it('normalizes legacy deployment aliases and rejects conflicts without enabling async jobs', async () => {
+  expect(asyncSessionsFromEnv({ PARSE_SERVER_ASYNC_SESSIONS_V2: 'off' })).toBe(false)
   expect(() =>
-    asyncSessionsV2FromEnv({ PARSE_SERVER_ASYNC_SESSIONS_V2: 'maybe' }),
-  ).toThrow(/PARSE_SERVER_ASYNC_SESSIONS_V2/)
-  const options = await deploymentOptionsFromEnv({ PARSE_SERVER_ASYNC_SESSIONS_V2: 'false' })
-  expect(options.asyncSessionsV2).toBe(false)
+    asyncSessionsFromEnv({
+      PARSE_SERVER_ASYNC_SESSIONS: 'on',
+      PARSE_SERVER_ASYNC_SESSIONS_V2: 'off',
+    }),
+  ).toThrow(/conflicting/)
+  expect(
+    await deploymentOptionsFromEnv({
+      PARSE_SERVER_V2_ROLLOUT_PERCENT: '0',
+      PARSE_SERVER_V2_ROLLOUT_HEADER: 'x-tenant-id',
+    }),
+  ).toMatchObject({ asyncRolloutPercent: 0, asyncRolloutHeader: 'x-tenant-id' })
+  await expect(
+    deploymentOptionsFromEnv({
+      PARSE_SERVER_ASYNC_ROLLOUT_PERCENT: '50',
+      PARSE_SERVER_V2_ROLLOUT_PERCENT: '0',
+    }),
+  ).rejects.toThrow(/conflicting/)
+  await expect(
+    deploymentOptionsFromEnv({ PARSE_SERVER_ASYNC_ROLLOUT_PERCENT: '101' }),
+  ).rejects.toThrow(/0 and 100/)
 })

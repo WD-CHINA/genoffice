@@ -1,7 +1,7 @@
 /**
  * Observability-driven canary guard (plan §10/P4): the time ramp is
- * deterministic, this guard is the emergency brake. It watches recent v2
- * session-creation outcomes and pauses the v2 route for a cooldown when the
+ * deterministic, this guard is the emergency brake. It watches recent asynchronous
+ * session-creation outcomes and pauses asynchronous creation for a cooldown when the
  * server-error ratio crosses a threshold. Client errors (4xx) are not failures.
  *
  * A paused route answers 404 so existing clients fall back to v1, exactly like
@@ -57,7 +57,7 @@ export class CanaryGuard {
     this.now = options.now ?? Date.now
   }
 
-  /** Record one v2 create outcome; only server errors count as failures. */
+  /** Record one asynchronous create outcome; only server errors count as failures. */
   record(ok: boolean): void {
     if (this.threshold === 0) return
     const now = this.now()
@@ -88,7 +88,8 @@ export class CanaryGuard {
       samples: this.samples.length,
       failures,
       errorRatePercent: this.samples.length
-        ? Math.round((failures / this.samples.length) * 1000) / 10 : 0,
+        ? Math.round((failures / this.samples.length) * 1000) / 10
+        : 0,
       thresholdPercent: this.threshold,
       tripped: this.tripped,
     }

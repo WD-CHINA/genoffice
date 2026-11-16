@@ -56,15 +56,15 @@ describe.skipIf(!socketPath)('cross-instance backup over a shared dataDir + MySQ
       body: Buffer.from(await createBlankPptx()),
     })
     const { fileId } = (await uploaded.json()) as { fileId: string }
-    const opened = await request(a)('/v2/sessions', {
+    const opened = await request(a)('/v1/sessions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
       body: JSON.stringify({ fileId }),
     })
     const { sessionId } = (await opened.json()) as { sessionId: string }
     const deadline = Date.now() + 20_000
     for (;;) {
-      const state = (await (await request(a)(`/v2/sessions/${sessionId}`)).json()) as {
+      const state = (await (await request(a)(`/v1/sessions/${sessionId}`)).json()) as {
         state: string
       }
       if (state.state === 'ready') break

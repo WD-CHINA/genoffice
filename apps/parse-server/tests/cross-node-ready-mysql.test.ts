@@ -64,16 +64,16 @@ describe.skipIf(!socketPath)('cross-node ready attach over a shared dataDir + ca
       body: Buffer.from(await createBlankPptx()),
     })
     const { fileId } = (await uploaded.json()) as { fileId: string }
-    const opened = await request(a)('/v2/sessions', {
+    const opened = await request(a)('/v1/sessions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
       body: JSON.stringify({ fileId }),
     })
     expect([201, 202]).toContain(opened.status)
     const { sessionId } = (await opened.json()) as { sessionId: string }
     const deadline = Date.now() + 25_000
     for (;;) {
-      const status = await request(a)(`/v2/sessions/${sessionId}`)
+      const status = await request(a)(`/v1/sessions/${sessionId}`)
       const body = (await status.json()) as { state: string; artifactKey?: string }
       if (body.state === 'ready') {
         expect(body.artifactKey).toMatch(/^[a-f0-9]{64}$/)
@@ -88,13 +88,13 @@ describe.skipIf(!socketPath)('cross-node ready attach over a shared dataDir + ca
 
     // B finds the persisted session, opens the ready generation through the
     // catalog and serves a unit without building anything.
-    const seenResponse = await request(b)(`/v2/sessions/${sessionId}`)
+    const seenResponse = await request(b)(`/v1/sessions/${sessionId}`)
     expect(seenResponse.status).toBe(200)
     const seen = (await seenResponse.json()) as { state?: string; artifactKey?: string }
     expect(seen.state).toBe('ready')
     expect(seen.artifactKey).toMatch(/^[a-f0-9]{64}$/)
-    const unitA = await request(a)(`/v2/sessions/${sessionId}/units/0`)
-    const unitB = await request(b)(`/v2/sessions/${sessionId}/units/0`)
+    const unitA = await request(a)(`/v1/sessions/${sessionId}/units/0?representation=model`)
+    const unitB = await request(b)(`/v1/sessions/${sessionId}/units/0?representation=model`)
     expect(unitA.status).toBe(200)
     expect(unitB.status, await unitB.clone().text()).toBe(200)
     expect(await unitB.json()).toEqual(await unitA.json())
@@ -102,7 +102,7 @@ describe.skipIf(!socketPath)('cross-node ready attach over a shared dataDir + ca
 
     // B could also build its own derived offline bundle, but that is a new
     // derived generation, not a model rebuild.
-    const bundle = await request(b)(`/v2/sessions/${sessionId}/bundle`)
+    const bundle = await request(b)(`/v1/sessions/${sessionId}/bundle`)
     expect(bundle.status, await bundle.clone().text()).toBe(200)
     expect(await buildsStarted(b)).toBe(1)
     const rows = (

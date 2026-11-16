@@ -1,5 +1,5 @@
 /**
- * Time-based auto ramp for the v2 canary (plan §10 gray rollout). Operators set
+ * Time-based auto ramp for the async canary (plan §10 gray rollout). Operators set
  * a target percentage and a per-hour ramp; the effective percentage starts near
  * zero and increases with process uptime, capped by the target. This is a
  * deterministic traffic ramp, not an observability-driven controller.

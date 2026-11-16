@@ -57,7 +57,7 @@ function valid(record: PendingSession): boolean {
   )
 }
 
-/** Durable v2 waiters. This journal is single-instance; it is not a distributed job lease. */
+/** Durable async waiters. This journal is single-instance; it is not a distributed job lease. */
 export class PendingSessionStore {
   private records = new Map<string, PendingSession>()
   private tail = Promise.resolve()
@@ -155,7 +155,8 @@ export class PendingSessionStore {
   async sharedExists(id: string): Promise<boolean> {
     if (!this.db) return this.records.has(id)
     const [rows] = await this.db.pool.query<RowDataPacket[]>(
-      'SELECT 1 FROM parse_pending_sessions WHERE id = ? LIMIT 1', [id],
+      'SELECT 1 FROM parse_pending_sessions WHERE id = ? LIMIT 1',
+      [id],
     )
     return rows.length > 0
   }
@@ -185,7 +186,8 @@ export class PendingSessionStore {
       [id, readerId, now + ttlMs],
     )
     // Opportunistic cleanup keeps the table bounded without a separate timer.
-    await this.db.pool.query('DELETE FROM parse_pending_readers WHERE expires_at < ?', [now])
+    await this.db.pool
+      .query('DELETE FROM parse_pending_readers WHERE expires_at < ?', [now])
       .catch(() => undefined)
   }
 
@@ -270,7 +272,7 @@ export class PendingSessionStore {
   }
   /**
    * Create a durable waiter. The job id prefers the catalog's in-flight build
-   * lease (same artifact, another instance) so `GET /v2/sessions/:id` and the
+   * lease (same artifact, another instance) so `GET /v1/sessions/:id` and the
    * shared progress projection agree; otherwise an existing local waiter for the
    * same artifact is reused before falling back to a fresh id.
    */
@@ -280,7 +282,10 @@ export class PendingSessionStore {
         (item) => item.artifactKey === input.artifactKey && !item.error,
       )
       const candidate = preferredJobId ?? shared?.jobId
-      const record = { ...input, jobId: candidate && uuid.test(candidate) ? candidate : randomUUID() }
+      const record = {
+        ...input,
+        jobId: candidate && uuid.test(candidate) ? candidate : randomUUID(),
+      }
       await this.put(record)
       return record
     })

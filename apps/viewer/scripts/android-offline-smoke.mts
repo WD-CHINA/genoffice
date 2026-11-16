@@ -121,14 +121,10 @@ try {
       replaySessions++
     if (status < 400) return
     const key = `${method} ${url.pathname} ${status}`
-    // The local v1 replay server intentionally rejects v2 discovery and heartbeat.
+    // The local v1 replay server may lack optional discovery and heartbeat.
     if (
       url.origin === localOrigin &&
-      [
-        'GET /v2/capabilities 404',
-        'POST /v2/sessions 405',
-        'POST /v2/sessions/local/heartbeat 405',
-      ].includes(key)
+      ['GET /v1/capabilities 404', 'POST /v1/sessions/local/heartbeat 405'].includes(key)
     )
       compatibilityResponses[key] = (compatibilityResponses[key] ?? 0) + 1
     else faults.push(`${status} ${response.url()}`)

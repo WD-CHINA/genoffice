@@ -44,7 +44,7 @@ const business = option('business-report')
 try {
   // Warm Vite's lazy dependency optimizer before a file-input case. A dev-only
   // optimizer reload would otherwise discard the in-memory selected File.
-  const upload = await fetch(base + '/v2/files', {
+  const upload = await fetch(base + '/v1/files', {
     method: 'POST',
     body: await readFile(option('input')),
     headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -81,7 +81,7 @@ try {
     free.write('free', 4)
     free.write(randomUUID(), 8)
     variant.file(part, Buffer.concat([video, free]))
-    const uploaded = await fetch(base + '/v2/files', {
+    const uploaded = await fetch(base + '/v1/files', {
       method: 'POST',
       body: await variant.generateAsync({ type: 'arraybuffer', compression: 'STORE' }),
       headers: token ? { Authorization: `Bearer ${token}` } : {},

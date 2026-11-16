@@ -54,16 +54,16 @@ describe.skipIf(!socketPath)('layout preferences persistence over real MySQL', (
       body: Buffer.from(await createBlankPptx()),
     })
     const { fileId } = (await uploaded.json()) as { fileId: string }
-    const opened = await request(first)('/v2/sessions', {
+    const opened = await request(first)('/v1/sessions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
       body: JSON.stringify({ fileId, layoutPrefs: prefs }),
     })
     expect([201, 202]).toContain(opened.status)
     const { sessionId } = (await opened.json()) as { sessionId: string }
     const deadline = Date.now() + 20_000
     for (;;) {
-      const status = await request(first)(`/v2/sessions/${sessionId}`)
+      const status = await request(first)(`/v1/sessions/${sessionId}`)
       const body = (await status.json()) as { state: string }
       if (body.state === 'ready') break
       if (body.state === 'failed') throw new Error('session failed')
@@ -82,7 +82,7 @@ describe.skipIf(!socketPath)('layout preferences persistence over real MySQL', (
 
     await first.close()
     const second = await start()
-    const restored = (await (await request(second)(`/v2/sessions/${sessionId}`)).json()) as {
+    const restored = (await (await request(second)(`/v1/sessions/${sessionId}`)).json()) as {
       state: string
       layoutPrefs?: unknown
     }

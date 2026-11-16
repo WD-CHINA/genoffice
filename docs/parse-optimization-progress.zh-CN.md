@@ -1,5 +1,9 @@
 # 解析优化实施进度
 
+> 文中异步创建均指 `POST /v1/sessions` 携带 `Prefer: respond-async`；省略该请求头时同步创建。模型单元通过 `?representation=model` 读取；默认完整单元接口返回渲染树。
+
+> 本文接口名称与配置按 [API v1](./api-v1.zh-CN.md) 统一整理；历史测量结果保留，不代表新一轮验收。
+
 > 本文保留原设计或当时验证条件；当前三端职责、已知边界与测试入口请参阅[架构主文档](runtime-workflows.zh-CN.md)、[运行边界](runtime-boundaries.zh-CN.md)和[测试指南](testing-guide.zh-CN.md)。历史数字不自动代表当前结果。
 
 更新：2026-11-11。当前功能修复见 [DOCX / PPT 修复验收](parse-viewer-fixes-validation.zh-CN.md)，容量及恢复边界见 [Docker 验证记录](parse-docker-validation.zh-CN.md)。对应方案：`parse-persistence-optimization.zh-CN.md`。持久化、可选 Redis 热缓存、业务课件重启复用、Linux 内核 OOM、GB 正文与独立数据库冷恢复均有实测；脚注编号与格式、远程分节 / 页眉页脚和最大 PPT 的 EMF 首页图片已修复并复验。下文保留实施历史，不再引用旧“七成 / Redis 未开始”等过时百分比作为当前状态。
@@ -25,15 +29,15 @@
 - P2：提供 Linux cgroup v2 配置入口，父进程在允许解析前设置 memory.max/swap/oom.group 并分配子进程；配置失败不降级为无防护执行。开发机为 macOS，内核硬限制尚未实测，默认 RSS 看门狗存在采样间隔内的超限窗口。
 - 观测：health 暴露队列、内存预留、隔离子进程的外部采样 RSS 和内存错误次数；Prometheus 增加对应 gauges，失败日志记录 PID/taskId/峰值 RSS，不输出子进程 stderr。
 - P0：CLI 数字环境变量统一校验，支持明确允许的零值，拒绝空串/NaN/负数/小数与溢出定时器；服务启动前检查 heap < RSS <= 总预算，避免先创建数据库资源后才发现配置错误。
-- 历史库：新增 `/v2/library` 保存、游标列表和移除引用接口；文件模式原子持久化 library.json，损坏时拒绝启动，避免误删历史。MySQL 模式新增 library_entries 唯一文件引用及外键保护。
+- 历史库：新增 `/v1/library` 保存、游标列表和移除引用接口；文件模式原子持久化 library.json，损坏时拒绝启动，避免误删历史。MySQL 模式新增 library_entries 唯一文件引用及外键保护。
 - 历史库：显式保存的原文件跨重启保留，不被 TTL/容量 GC 删除；直接删除已保存或活跃读取的文件返回 409。移除历史引用后恢复临时回收策略。
 - 生命周期：文件级锁与读租约覆盖保存、原文件/模型/字体读取和会话创建；GC 删除前重新检查引用，保护在建 DOCX chunk。上传入库串行检查原文件及产物大小；重复上传不刷新创建时间，容量失败不误删已保存的旧文件。
-- Web：上传页新增历史资源保存/列表/打开/移除，与本机最近上传分开；服务地址、token 和 /viewer/ base 在导航中保留，Vite/nginx 均补充 v2 转发。
+- Web：上传页新增历史资源保存/列表/打开/移除，与本机最近上传分开；服务地址、token 和 /viewer/ base 在导航中保留，Vite/nginx 均补充 v1 转发。
 - 运行验证发现并修复：独立 worker TS 入口不能稳定依赖父进程 --import tsx；新增 JS bootstrap，显式注册 tsx 后加载解析入口。
 
-- v2 异步会话：冷访问返回 202，客户端轮询 queued/building/ready/failed；缓存命中返回 201。队列溢出返回 429，同产物共享构建，取消一个阅读会话不会中止其他请求共享的构建。
-- v2 等待会话使用文件原子日志或 MySQL parse_pending_sessions 持久化，重启恢复；这是单实例等待日志，尚不是分布式任务租约。支持 v2 文件、document 和原始 units 接口，v1 保留兼容。
-- Web 和 Android 接入异步等待，仅在 404/405 时回退 v1；失败与取消清理会话。Web 修复就绪时关闭页面的竞争，避免重新启动心跳。
+- v1 异步会话：冷访问返回 202，客户端轮询 queued/building/ready/failed；缓存命中返回 201。队列溢出返回 429，同产物共享构建，取消一个阅读会话不会中止其他请求共享的构建。
+- v1 等待会话使用文件原子日志或 MySQL parse_pending_sessions 持久化，重启恢复；这是单实例等待日志，尚不是分布式任务租约。支持 v1 文件、document 和模型 units 接口（`?representation=model`），默认 units 保留渲染树表示。
+- Web 和 Android 接入异步等待，仅在 404/405 时在同一 v1 地址移除 Prefer 后同步重试；失败与取消清理会话。Web 修复就绪时关闭页面的竞争，避免重新启动心跳。
 - 打包修复 pnpm 嵌套依赖根目录识别，按包版本收集许可证。
 
 - 损坏恢复：区分内容损坏与权限/I/O 故障，只有确定损坏的派生产物可重建；不删除原文件。重建复用既有 single-flight 与队列，旧的已检测损坏 reader 失效，避免继续输出。
@@ -95,7 +99,7 @@
 
 - 本轮磁盘预留验证：服务端 88 项通过、3 项可选 MySQL 测试跳过；覆盖并发预算竞争、关闭配额仍检查物理空间、manifest 超额清理，以及真实 507 后原文件保留、扩容重启可成功重试。类型检查与本轮改动 ESLint 通过。
 
-- 本轮损坏恢复验证：84 项通过，3 项 MySQL 集成测试因未启动实例而跳过；新增 4 项覆盖损坏索引/缺失数据、并发重建、同长度坏帧、元数据准入校验和真实 v2 API 重建。类型检查和本轮改动 ESLint 通过。
+- 本轮损坏恢复验证：84 项通过，3 项 MySQL 集成测试因未启动实例而跳过；新增 4 项覆盖损坏索引/缺失数据、并发重建、同长度坏帧、元数据准入校验和真实 v1 API 重建。类型检查和本轮改动 ESLint 通过。
 
 - 上轮 parse-server：83 项测试通过，包含隔离 MySQL 实例上的 3 项集成测试；除 P0/产物存储外，覆盖真实 PPTX/DOCX 在全部会话关闭、服务重启后的缓存复用、字体字节一致、图片鉴权、版本隔离、会话字宽隔离、队列 FIFO/溢出/关闭。
 - 实际接口测试：一个冷解析占满队列时，10 个缓存阅读会话均可成功建立；另一个冷任务返回 429，缓存打开不重复调用解析入口。
@@ -107,13 +111,13 @@
 - 新增子进程故障注入：不同 PID 和二进制 IPC、CPU 阻塞时 RSS 杀进程、总生命周期、异常退出、非法 cgroup 拒绝执行、PPTX/DOCX 内存失败后 HTTP 仍健康并可重试、队列内存归还均通过。
 - 未进行 Linux 真实 cgroup OOM、Windows 内存采样、Android 真机、MySQL 产物/任务租约或 8 核 16 GiB 压测。
 
-- Chrome 增补 65 MiB DOCX 容器远程分流验证：实际文档可见、使用 v2 且未下载原文件；在首次读取列表前真实删除会话，自动重开成功，解析产物构建数仅增加 1，确认恢复不重解析。截图已检查。这不代表大正文流式解析已完成。
+- Chrome 增补 65 MiB DOCX 容器远程分流验证：实际文档可见、使用 v1 且未下载原文件；在首次读取列表前真实删除会话，自动重开成功，解析产物构建数仅增加 1，确认恢复不重解析。截图已检查。这不代表大正文流式解析已完成。
 - Android 主应用与 instrumentation APK 构建通过；异步就绪、兼容回退、429 与失败保留旧包，以及新增完整性用例已在 Android 36.1 只读模拟器执行。本轮不包含真机。
 
 ## 下一步（保持完整方案范围）
 
 P0/P1 与大部分 P2 已落地：并发预占、配置校验、DOCX 游标/心跳/签名、产物落盘与重启复用、
-有界队列、独立子进程与 RSS 看门狗、v2 异步会话、历史库、generation 目录/SQL 目录表/租约/退休回收、
+有界队列、独立子进程与 RSS 看门狗、v1 异步会话、历史库、generation 目录/SQL 目录表/租约/退休回收、
 共享 staging 对账、HTTP catalog 入口、单条记录损坏自动恢复、旧扁平产物迁移均已接入并各有回归。
 本节替代早期「下一步」清单，剩余按可实施性分组：
 
@@ -715,15 +719,15 @@ ready 缓存主动淘汰、目录最终归档与备份恢复仍待完成。GC �
 ### HTTP 主模型入口的可选 catalog 接线（2026-11-07）
 
 - createParseServer 增加 artifactBackend: 'local' | 'catalog'，默认 local；catalog 必须配置 MySQL。该程序化选项用于分阶段接线验证，尚未增加 CLI 环境开关或默认启用。
-- 三处会话打开（v1 创建、历史懒恢复、v2 后台任务）统一 openDocument。catalog 分支经 ArtifactSession.openShared，完整任务由 runOwned 追踪，通过 coordinator 构建 generation，再 pin/openPinned。冷构建通过队列准入通知返回，已有共享任务/SQL busy 也通知异步等待者。
-- v2 缓存探测改为原子 SQL pin→校验 document→释放，命中维持 201，冷解析维持 202。服务关闭先取消 coordinator，再关闭队列、等待 coordinator 与存储任务，最后释放会话/数据库。catalog 完成后清理内存 phase/admission 状态，记录真正开始的构建次数。
-- 新增真实 MySQL HTTP 测试：冷 v2 返回 202，轮询 ready、v1 unit 真实渲染；再次打开返回 201；重启后原 session unit 正常且 ArtifactSession.build 总共只调用一次；目录表 ready_generation=1。
+- 三处会话打开（同步创建、历史懒恢复、异步后台任务）统一 openDocument。catalog 分支经 ArtifactSession.openShared，完整任务由 runOwned 追踪，通过 coordinator 构建 generation，再 pin/openPinned。冷构建通过队列准入通知返回，已有共享任务/SQL busy 也通知异步等待者。
+- v1 缓存探测改为原子 SQL pin→校验 document→释放，命中维持 201，冷解析维持 202。服务关闭先取消 coordinator，再关闭队列、等待 coordinator 与存储任务，最后释放会话/数据库。catalog 完成后清理内存 phase/admission 状态，记录真正开始的构建次数。
+- 新增真实 MySQL HTTP 测试：v1 异步冷创建返回 202，轮询 ready、v1 unit 真实渲染；再次打开返回 201；重启后原 session unit 正常且 ArtifactSession.build 总共只调用一次；目录表 ready_generation=1。
 - 最终真实 MySQL 全量 203 项通过、32 文件通过、无跳过；类型检查、定向 ESLint 与 diff 检查通过。日志 `/tmp/genoffice-http-catalog-suite.log`。测试库清空，隔离 MySQL 已停止并清理。
 - 这已是可选 HTTP 主模型接线，旧的“所有 HTTP 都未接入”描述被本节取代。但默认后端仍 local，辅助 bundle 仍旧存储布局，SQL ready 损坏恢复/旧缓存迁移、跨节点任务状态与全局配额尚未完成；不能把此选项视为共享目录多实例生产支持。DOCX HTTP catalog 专项、并发/故障/恢复及硬件验收继续推进。
 
 ### DOCX catalog HTTP 与启动约束验证（2026-11-07）
 
-- catalog HTTP 会话测试扩展为 PPTX/DOCX 两种真实文件。DOCX 冷 v2 返回 202，正文与 styles 可读；缓存打开返回 201；重启恢复后正文 JSON、样式 JSON 与此前一致，源构建总计只执行一次，SQL ready_generation 保持 1。
+- catalog HTTP 会话测试扩展为 PPTX/DOCX 两种真实文件。DOCX v1 异步冷创建返回 202，正文与 styles 可读；缓存打开返回 201；重启恢复后正文 JSON、样式 JSON 与此前一致，源构建总计只执行一次，SQL ready_generation 保持 1。
 - 新增启动校验测试：未知 artifactBackend、catalog 缺少 MySQL 均在创建服务资源前拒绝。
 - 隔离真实 MySQL 全量服务端 205 项通过、32 文件通过、无跳过；类型检查、定向 ESLint、diff 检查通过。日志 `/tmp/genoffice-docx-http-suite.log`。测试数据库全部删除，专用 MySQL 已正常停止并清理。
 - 该测试覆盖小型 DOCX 的持久化/历史复用，不代表 GB 文件或 8 核 16GB 容量验收。catalog 尚为可选程序化入口，损坏 ready 修复、旧缓存迁移、辅助包 generation 和多实例资源/任务协调仍需完成。
@@ -770,7 +774,7 @@ ready 缓存主动淘汰、目录最终归档与备份恢复仍待完成。GC �
 - 校验通过时直接把旧记录复制为 generation 1，不重新解析源文件，不删除旧扁平文件（由既有 TTL/回收裁决）；
   目录表损坏、缺记录、schema 不符、单帧损坏或 generation-only 目录一律回退真实源解析。
   `ArtifactStore.stats.legacyImports` 与 health 暴露迁移次数，`sourceParsesStarted` 不增长。
-- 与 coordinator 的 single-flight 一致：多个并发视图只发生一次导入/构建；导入路径同样通知 v2 等待者。
+- 与 coordinator 的 single-flight 一致：多个并发视图只发生一次导入/构建；导入路径同样通知 v1 等待者。
 - 新增 `artifact-legacy-import.test.ts` 6 项：无源解析导入且内容一致、并发只导入一次、单帧损坏回退、
   损坏 manifest 与错误 schema 回退、generation-only 目录不误判、身份不匹配不导入。
 - 完整服务端**串行**回归 195 项通过、30 项可选 MySQL 跳过、0 失败（日志 `/tmp/genoffice-legacy-serial.log`）。
@@ -846,7 +850,7 @@ Android 续传/版本目录与目标硬件压测仍未完成，整体目标保�
   产物（含 STORE/DEFLATE 与非 ASCII 媒体路径）逐帧一致、并发只导入一次、单帧损坏、清单与派生记录
   不一致、多余/缺失派生记录、损坏 manifest/过期 schema/错误 key、generation-only 目录、identity 不匹配。
   `offline-bundle-catalog-mysql.test.ts` 新增 1 项真实 SQL HTTP 集成：生成模型后注入历史 flat 包，
-  经 `/v2/.../bundle` 导入为 SQL generation 1，health 计数为 1，layout.json 的 ETag 与清单哈希一致。
+  经 `/v1/.../bundle` 导入为 SQL generation 1，health 计数为 1，layout.json 的 ETag 与清单哈希一致。
 - 不带隔离 MySQL 的**串行全量** 219 项通过 / 38 项可选跳过 / 0 失败
   （`/tmp/genoffice-legacy-bundle-local-full.log`）；带隔离真实 MySQL 的串行全量
   **258 项 / 39 文件全部通过、无跳过**（`exit=0`，`/tmp/genoffice-legacy-bundle-mysql-full.log`）。
@@ -1020,7 +1024,7 @@ rangeResponses=1 / sourceParses=1`（`/tmp/genoffice-android-versioned-backend-f
   缺失与同长度篡改、目录行↔文件清单交叉校验、可重建产物告警、注入 catalog 快照下的
   撤下/只读失败闭合/并发清空/撤下后被重新广告、深校验帧损坏、依赖与墓碑丢失）；
   真实 MySQL `backup-manifest-mysql.test.ts` **6 项通过**（一致清单 + 启动门禁 health、
-  撤下坏 ready 后 v2 重建到 g-2 并读 unit、源丢失拒绝启动、并发写入者使快照失败、
+  撤下坏 ready 后 v1 重建到 g-2 并读 unit、源丢失拒绝启动、并发写入者使快照失败、
   墓碑丢失与摘要篡改、深校验撤下真实 SQL ready）。CLI 在临时 file 模式目录实测
   `snapshot`→`verify` 均返回 ok/readyAllowed=true。带隔离真实 MySQL 的**串行全量
   309 项 / 45 文件通过、无跳过**（`/tmp/genoffice-backup-mysql-full-final.log`）；
@@ -1083,7 +1087,7 @@ rangeResponses=1 / sourceParses=1`（`/tmp/genoffice-android-versioned-backend-f
   `done` 只表示所有帧写完（manifest 尚未发布），`failed` 立即丢弃快照。观察者挂在父进程
   `ArtifactStore.previewObserver` 上，**不进入 `ArtifactSessionInput`**：输入会被结构化克隆到
   独立解析子进程，函数无法跨 IPC（本轮实测发现并修正了 `could not be cloned`）。
-- **HTTP 契约**：`GET /v2/sessions/:id` 在 building 时新增 `previewable / complete:false /
+- **HTTP 契约**：`GET /v1/sessions/:id` 在 building 时新增 `previewable / complete:false /
 progress(unitsProduced,unitCount,percent) / availableUnits`，**state 仍是 building 而非 ready**。
   `GET .../document` 返回 model/fonts/layout 或 styles；`GET .../units?cursor` 只列已提交范围并
   附 `pending{from,to,code:'unit_pending',retryAfterMs,pollAfterMs}`；`GET .../units/:unitId`
@@ -1163,22 +1167,22 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 
 - **范围**：只做方案 5.1 允许的两条通道——跨实例**预览帧**与**构建进度投影**；默认 `cacheMode: 'memory'`，未配置 Redis 时不创建客户端、不发起任何命令。`redis` 模式要求 MySQL + `artifactBackend: 'catalog'`（共享 `parse_jobs` 行是另一个实例定位 jobId 的前提）。ready 指针、generation、构建/读取/下载租约、配额与压力账本、原文件/产物索引仍只在 MySQL 与磁盘，缓存只提供"否定"证据。
 - **契约与实现**：新增 `cache-contract.ts`（键命名 `genoffice:{dbScope}:pv:{artifactKey}:{jobId}` / `job:{jobId}`、TTL、256 KiB 单字段上限、统计结构）、`redis-cache-client.ts`（最小 RESP2 客户端：socket/TCP/TLS、可选 ACL 用户名/密码与 SELECT、命令预算默认 80 ms 且整条请求路径只尝试一次不重试、连续 3 次失败熔断 5 s 后单次半开探测、懒连接、超时销毁连接）、`hot-cache.ts`（本地 `PreviewRegistry` 始终优先；document/unit 仅在帧已提交且本地实际保留时 best-effort 镜像；document 超 256 KiB 则整次构建不提供跨节点首屏，单 unit 超限或超出 `previewMaxUnits` 窗口即停止后续镜像、读取端返回 pending；进度按进程全局 200 ms 节流合并写入，`done` 强制末次，`failed` 立即删除 pv 与 job 两个 key；读路径严格校验 format/document/unitCount/unitsProduced/count/unit:i，坏值、超时、熔断、连接失败一律视为 miss 并只计数）。
-- **接线**：构建 `jobId` 由 catalog lease 经 `ArtifactCoordinator.buildOwned` → `ArtifactSession.build` → `previewObserver(key, event, jobId)` 传入；v2 pending 响应本地预览优先，miss 时用新增的 `MysqlArtifactCatalog.activeJob(artifactKey)`（SQL 时钟校验 building 租约）定位共享 job 再读投影，`progress` 在无本地预览时给出投影值；`/v1/health.cache`（mode/enabled/hits/misses/hitRate/errors/timeouts/breaker/lastErrorAt/latency）与 `genoffice_cache_*`（hit/miss/error/timeout/hit_rate/latency histogram/breaker）已暴露；`PARSE_SERVER_CACHE_MODE`、`REDIS_*`、超时/熔断/TTL/节流/字段上限均已纳入启动校验，README 增加配置与边界说明。
+- **接线**：构建 `jobId` 由 catalog lease 经 `ArtifactCoordinator.buildOwned` → `ArtifactSession.build` → `previewObserver(key, event, jobId)` 传入；v1 pending 响应本地预览优先，miss 时用新增的 `MysqlArtifactCatalog.activeJob(artifactKey)`（SQL 时钟校验 building 租约）定位共享 job 再读投影，`progress` 在无本地预览时给出投影值；`/v1/health.cache`（mode/enabled/hits/misses/hitRate/errors/timeouts/breaker/lastErrorAt/latency）与 `genoffice_cache_*`（hit/miss/error/timeout/hit_rate/latency histogram/breaker）已暴露；`PARSE_SERVER_CACHE_MODE`、`REDIS_*`、超时/熔断/TTL/节流/字段上限均已纳入启动校验，README 增加配置与边界说明。
 - **验证**：新增 `cache-contract.test.ts` 5 项、`hot-cache.test.ts` 20 项、`redis-cache-client.test.ts` 23 项（含真实 Redis socket 用例）、`cache-mode.test.ts` 3 项、`cache-redis-mysql.test.ts` 3 项。真实 MySQL 9.7.1 + Redis 8.8 联合用例覆盖：①A 实例真实构建暂停在 `unit:1` 之前，B 实例读到首屏 `previewable`、`progress 1/2`、`units/0` 200、`units/1` 202，释放后由 catalog 正常 ready；②外部持有构建租约时跨实例读帧与进度；③删除/清空缓存后会话仍 200 且不伪装 ready；④Redis socket 不可达时仅降级（正常 pending→ready、errors>0、无 5xx）。默认全量 46 文件通过 / 10 跳过、**345 项通过 / 67 跳过**（共 412）；带真实 MySQL+Redis 的**串行全量 56 文件 / 412 项全部通过、无跳过**（69.6 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：单 Redis 实例、无 Sentinel/Cluster，主从切换未演练；SLO（命中率 ≥80%、附加 p95 ≤5 ms、错误率 ≤0.1%）只暴露指标，尚未在目标负载下实测；`maxmemory`/TLS/ACL 为部署配置，未做容量演练；跨节点**会话日志**仍是单实例（读者需已知 session 才能附着）；响应缓存、会话状态投影与分布式限流按方案仍"待评估"，未实现。整体方案保持未完成。
 
-### v2 契约补齐与部署开关（2026-11-10）
+### v1 契约补齐与部署开关（2026-11-10）
 
 - **部署开关可编程化**：新增 `deployment-options.ts`，`bin.ts` 按启动前严格解析 `PARSE_SERVER_ARTIFACT_BACKEND=local|catalog`、`PARSE_SERVER_STORAGE_ADMISSION=instance|shared` 与恢复门禁 `PARSE_SERVER_RESTORE_MANIFEST`/`_DEEP`/`_READ_ONLY`/`_INVALIDATE`。未知枚举、恢复开关缺 manifest 路径、manifest 缺失/损坏都在创建任何服务资源前失败；read-only 优先于 invalidate；不设置 backend 时仍保持 local 代码默认。catalog 主链路因此可只靠环境变量启用。
-- **v2 端点补齐**：`POST /v2/sessions/:id/heartbeat` 只续期轻量阅读会话（200 `state`/`pollAfterMs`，未知 id 404），不触碰构建租约/ready 指针；`GET /v2/sessions/:id` 的 ready 响应新增 `artifactKey`、终态 `progress`、`pollAfterMs: 0`、`complete: true`（v1 body 保持不变）；`GET /v2/sessions/:id/bundle-manifest` 成为 `/bundle` 的正式别名（别名不提供子资源）。同一 artifact 已有 catalog 构建时，新 waiter 通过 `catalog.activeJob` 复用该 jobId，使 v2 `jobId` 与 Redis 进度投影一致。
-- **Idempotency-Key**：`POST /v2/sessions` 支持 8–128 字符键；`idempotency.ts` 提供有界进程内缓存（TTL 默认 10 min、256 条、最老淘汰、只缓存 2xx JSON ≤64 KiB、拒绝 CRLF/重复 header/非法字符）。重放返回同一 `sessionId` 的当前状态（201 ready 或 202 building），不会新建 durable waiter；非法键 400；/v1/health 暴露 `idempotency` 统计。文件上传按内容寻址、`/v2/library` 按唯一文件引用天然去重。边界：单进程内存，重启/其他实例会重新执行，并发同键不合并。
-- **验证**：新增 `deployment-options.test.ts` 13 项、`idempotency.test.ts` 16 项、`v2-contract.test.ts` 4 项（ready 字段/v1 不变、heartbeat、bundle 别名、Idempotency-Key 重放与非法键）。默认全量 **49 文件通过 / 10 跳过、378 项通过 / 67 跳过（共 445）**；带真实 MySQL+Redis 串行全量 **59 文件 / 445 项全部通过、无跳过**（79.7 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
+- **v1 端点补齐**：`POST /v1/sessions/:id/heartbeat` 只续期轻量阅读会话（200 `state`/`pollAfterMs`，未知 id 404），不触碰构建租约/ready 指针；`GET /v1/sessions/:id` 的 ready 响应新增 `artifactKey`、终态 `progress`、`pollAfterMs: 0`、`complete: true`（同步创建保留原有响应体）；`GET /v1/sessions/:id/bundle-manifest` 成为 `/bundle` 的正式别名（别名不提供子资源）。同一 artifact 已有 catalog 构建时，新 waiter 通过 `catalog.activeJob` 复用该 jobId，使 v1 `jobId` 与 Redis 进度投影一致。
+- **Idempotency-Key**：`POST /v1/sessions` 支持 8–128 字符键；`idempotency.ts` 提供有界进程内缓存（TTL 默认 10 min、256 条、最老淘汰、只缓存 2xx JSON ≤64 KiB、拒绝 CRLF/重复 header/非法字符）。重放返回同一 `sessionId` 的当前状态（201 ready 或 202 building），不会新建 durable waiter；非法键 400；/v1/health 暴露 `idempotency` 统计。文件上传按内容寻址、`/v1/library` 按唯一文件引用天然去重。边界：单进程内存，重启/其他实例会重新执行，并发同键不合并。
+- **验证**：新增 `deployment-options.test.ts` 13 项、`idempotency.test.ts` 16 项、`async-contract.test.ts` 4 项（ready 字段/同步创建响应体、heartbeat、bundle 别名、Idempotency-Key 重放与非法键）。默认全量 **49 文件通过 / 10 跳过、378 项通过 / 67 跳过（共 445）**；带真实 MySQL+Redis 串行全量 **59 文件 / 445 项全部通过、无跳过**（79.7 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：catalog 仍未在真实 MySQL 上做「仅环境变量启动」的部署验收；幂等不由共享存储承载；跨节点会话日志、最后等待者取消、SLO/主从切换/容量演练与目标环境压测仍未完成。整体方案保持未完成。
 
 ### 跨实例等待会话只读附着与 parse_sessions 列迁移（2026-11-10）
 
-- **跨实例等待会话**：`PendingSessionStore` 新增 `load(id)`，在 MySQL 模式下按 sessionId 从 `parse_pending_sessions` 惰性解析其他实例创建的 waiter，并标记为 remote。v2 会话路由对 remote waiter 只读：返回当前 queued/building 状态、共享预览帧与进度，**不启动本实例的竞争构建、不写失败状态**；heartbeat 只续期共享行；DELETE 只清理本实例缓存、不删除构建方的行。新增真实 MySQL 用例：A 构建暂停、B 实例从未创建该 session 也能按 id 读取 200 状态、health `buildsStarted/sourceParsesStarted` 均为 0、heartbeat 200、DELETE 204 后 A 仍可继续并最终 ready。边界：ready generation 附着仍要求实例持有同一 dataDir（多实例共享本地目录未支持），因此这是状态/首屏视图而非完整会话迁移；所有权接管与最后等待者取消仍未做。
-- **parse_sessions 列迁移（方案 §5/§10 先加列）**：MySQL init 幂等新增 `artifact_key`、`expires_at` 两列（information_schema 检查后 ALTER，兼容旧版本建的表）；`SessionRecord` 与文件索引同步这两个字段，v1/v2 ready 会话写入共享 artifactKey 与空闲截止时间，GET/heartbeat 触碰刷新 `expires_at`，v2 ready 响应新增 `expiresAt`。旧的 `base_url`/`model`/`fonts` 列保留，供 v1 完整模型兼容路径，未在本轮移除。真实 MySQL 用例覆盖：旧表结构启动后自动加列、写入值正确、touch 推进截止时间、重启后从 MySQL 恢复且列值一致。
+- **跨实例等待会话**：`PendingSessionStore` 新增 `load(id)`，在 MySQL 模式下按 sessionId 从 `parse_pending_sessions` 惰性解析其他实例创建的 waiter，并标记为 remote。v1 会话路由对 remote waiter 只读：返回当前 queued/building 状态、共享预览帧与进度，**不启动本实例的竞争构建、不写失败状态**；heartbeat 只续期共享行；DELETE 只清理本实例缓存、不删除构建方的行。新增真实 MySQL 用例：A 构建暂停、B 实例从未创建该 session 也能按 id 读取 200 状态、health `buildsStarted/sourceParsesStarted` 均为 0、heartbeat 200、DELETE 204 后 A 仍可继续并最终 ready。边界：ready generation 附着仍要求实例持有同一 dataDir（多实例共享本地目录未支持），因此这是状态/首屏视图而非完整会话迁移；所有权接管与最后等待者取消仍未做。
+- **parse_sessions 列迁移（方案 §5/§10 先加列）**：MySQL init 幂等新增 `artifact_key`、`expires_at` 两列（information_schema 检查后 ALTER，兼容旧版本建的表）；`SessionRecord` 与文件索引同步这两个字段，v1 ready 会话写入共享 artifactKey 与空闲截止时间，GET/heartbeat 触碰刷新 `expires_at`，v1 ready 响应新增 `expiresAt`。旧的 `base_url`/`model`/`fonts` 列保留，供 v1 完整模型兼容路径，未在本轮移除。真实 MySQL 用例覆盖：旧表结构启动后自动加列、写入值正确、touch 推进截止时间、重启后从 MySQL 恢复且列值一致。
 - **部署端到端**：新增 `deployment-e2e.test.ts`（真实子进程 `node --import tsx src/bin.ts`，只给环境变量）：设置 `PARSE_SERVER_ARTIFACT_BACKEND=catalog`+MySQL 后冷启动、上传/解析/读单元、SIGTERM 正常退出；同 dataDir/MySQL 二次启动后原 sessionId ready 且 `buildsStarted/sourceParsesStarted=0`、unit 仍可读；另验证 restore 缺 manifest 与 catalog 缺 MySQL 均在监听前非 0 退出。
 - **验证**：新增 `cross-instance-journal-mysql.test.ts` 1 项、`session-record-mysql.test.ts` 1 项、`deployment-e2e.test.ts` 2 项。默认全量 **49 文件通过 / 13 跳过、378 项通过 / 71 跳过（共 449）**；带真实 MySQL+Redis 串行全量 **62 文件 / 449 项全部通过、无跳过**（78.9 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：remote 附着没有租约/所有权，构建实例崩溃后的接管仍靠 TTL 与下一次访问；ready 产物跨节点读取依赖共享目录（当前不支持）；会话仍携带完整 model/fonts；SLO/主从切换/容量演练与目标环境压测仍未完成。整体方案保持未完成。
@@ -1186,13 +1190,13 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 ### 会话轻量化：只引用产物、不再持久化 model/fonts（2026-11-10）
 
 - **记录结构**：`SessionRecord` 新增 `format`，`base_url`/`model`/`fonts` 改为可选 legacy 字段；新记录的持久化内容只有 `id/fileId/width/parserVersion/format/artifactKey/expiresAt/createdAt/lastUsed`。MySQL `parse_sessions` 的旧列在 init 中幂等放宽为 NULL（`ensureNullableColumn`），新记录写 NULL；旧版本写入的行仍可读取作为回退。文件索引模式同样只写轻量字段。
-- **读取路径**：新增 `sessionDocument(entry, req, ctx)`，从已发布产物读取 `document` 记录（本地 `ArtifactStore.find` 或 catalog `ArtifactReadHandle` pin，**不启动解析 worker**），惰性缓存到内存 entry；v1 `GET /sessions/:id`、v1 units 列表、v2 `GET /sessions/:id`、幂等重放的 201 响应均改用它。仅在产物缺失/损坏时回退到 `ensureSession`（重开并从源重建）。`openRestoredSession` 不再把 model/fonts/baseUrl 写回记录，只补 `format`/`artifactKey` 与内存 document 缓存。
-- **验证**：默认全量 **49 文件通过 / 13 跳过、378 项通过 / 71 跳过（共 449）**；带真实 MySQL+Redis 串行全量 **62 文件 / 449 项全部通过、无跳过**；其中 `tests/session-record-mysql.test.ts` 断言旧表自动加列、新行 `model/fonts/base_url` 为 NULL、v1/v2 仍返回 model/fonts、touch 推进 expiresAt、重启后从 MySQL 恢复；`pptx-session.test.ts` 的重启用例仍验证 `PptxSession.open` 未被调用（读取来自产物）。类型检查、改动文件 ESLint、`git diff --check` 通过。
+- **读取路径**：新增 `sessionDocument(entry, req, ctx)`，从已发布产物读取 `document` 记录（本地 `ArtifactStore.find` 或 catalog `ArtifactReadHandle` pin，**不启动解析 worker**），惰性缓存到内存 entry；v1 `GET /sessions/:id`、units 列表、幂等重放的 201 响应均改用它。仅在产物缺失/损坏时回退到 `ensureSession`（重开并从源重建）。`openRestoredSession` 不再把 model/fonts/baseUrl 写回记录，只补 `format`/`artifactKey` 与内存 document 缓存。
+- **验证**：默认全量 **49 文件通过 / 13 跳过、378 项通过 / 71 跳过（共 449）**；带真实 MySQL+Redis 串行全量 **62 文件 / 449 项全部通过、无跳过**；其中 `tests/session-record-mysql.test.ts` 断言旧表自动加列、新行 `model/fonts/base_url` 为 NULL、v1 仍返回 model/fonts、touch 推进 expiresAt、重启后从 MySQL 恢复；`pptx-session.test.ts` 的重启用例仍验证 `PptxSession.open` 未被调用（读取来自产物）。类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：布局/阅读位置偏好尚未持久化（仍由客户端持有）；旧列保留一个回滚窗口，回滚到旧版本无法恢复新行会话（产物与源仍在，可重建）；ready 产物跨节点读取仍要求共享 dataDir。整体方案保持未完成。
 
 ### Web 消费 capabilities 与签名刷新（2026-11-10）
 
-- **能力探测**：新增 `apps/viewer/src/web/capabilities.ts`，请求 `/v2/capabilities`（1.5 s 超时、按 baseUrl 缓存 5 分钟、失败/畸形/404 不缓存并返回 undefined、只保留 boolean feature）。`server-session.ts` 在打开会话前探测：只有服务端显式声明 `features.asyncSessions === false` 时才强制走 v1；`incrementalPreview === false` 时不再上报 previewable 状态与 onPreview 通知；探测缺失/失败保持原有 v2 优先行为（短超时、不阻塞打开）。
+- **能力探测**：新增 `apps/viewer/src/web/capabilities.ts`，请求 `/v1/capabilities`（1.5 s 超时、按 baseUrl 缓存 5 分钟、失败/畸形/404 不缓存并返回 undefined、只保留 boolean feature）。`server-session.ts` 在打开会话前探测：只有服务端显式声明 `features.asyncSessions === false` 时才直接使用同步模式；`incrementalPreview === false` 时不再上报 previewable 状态与 onPreview 通知；探测缺失/失败保持原有 优先请求异步模式的行为（短超时、不阻塞打开）。
 - **签名刷新（验收 6 部分）**：新增 `apps/viewer/src/web/signed-url.ts`，解析 part URL 的 `exp`/`sig`，提前 60 s 判定过期、识别部署 origin 变化，并递归扫描 unit/描述中的嵌套引用。DOCX `docx-remote-session` 的随机访问与顺序加载命中带过期签名/旧 origin 的缓存 chunk 时，自动重取该 chunk 描述（服务端每次响应重签）；PPTX `pptx-model-session` 的音视频 mediaRef 同样按需重取 unit。缓存本身不失效，只刷新资源描述。
 - **验证**：viewer 全套 **80/80 通过**（新增 `capabilities.test.ts` 8 项、`signed-url.test.ts` 2 项、`server-capabilities.test.ts` 3 项、`docx-signed-refresh.test.ts` 2 项；既有 server-session 用例显式 `skipCapabilities` 保持聚焦）。viewer 类型检查、改动文件 ESLint、`git diff --check` 通过。parse-server 本轮无改动，沿用上一轮默认 449 / 真实 MySQL+Redis 449 全通过结果。
 - **边界**：格式阈值仍未由 capabilities 驱动（仍硬编码 32/64 MiB），URL 导入仍未流式计数；PPTX 图片/字体引用与 token 轮换的刷新、真实浏览器 403/换域名端到端验收仍未完成。整体方案保持未完成。
@@ -1230,10 +1234,10 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 - **验证**：默认全量 **52 文件通过 / 15 跳过、385 通过 / 73 跳过（共 458）**；带真实 MySQL+Redis 串行全量 **67 文件 / 458 项全部通过、无跳过**（76.4 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：真实告警路由/on-call 轮值、灰度开关、回滚版本对新 generation 的读取（当前由受保护源重建）、目标实例容量与跨机器恢复仍需部署环境；本地演练不代表生产验收。整体方案保持未完成。
 
-### 分阶段回滚开关：asyncSessionsV2（方案 §10，2026-11-10）
+### 分阶段回滚开关：asyncSessions（方案 §10，2026-11-10）
 
-- **开关**：新增 `PARSE_SERVER_ASYNC_SESSIONS_V2=1|0`（`asyncSessionsV2` option，默认 true）。关闭时 `/v2/sessions` 及其子路径返回 404、capabilities 的 `features.asyncSessions=false`，v1 同步接口完全保持可用；现有客户端在 404/405 时回退 v1，因此这是无需数据迁移的第一步回滚。删除会话/产物/文件均不受影响。
-- **解析与校验**：`deployment-options.ts` 复用布尔解析（1/0/true/false/yes/no/on/off），未知值启动前失败；`runtime-options` 拒绝非布尔值；`bin.ts` 通过 deployment 选项接线；README 与 P4 runbook 把该开关列为回滚顺序第 0 步（v2→v1 → catalog→local → redis→memory）。
+- **开关**：新增 `PARSE_SERVER_ASYNC_SESSIONS=1|0`（`asyncSessions` option，默认 true）。关闭时携带 `Prefer: respond-async` 的会话创建返回 404，已有会话读取与清理继续可用、capabilities 的 `features.asyncSessions=false`，v1 同步接口完全保持可用；现有客户端在 404/405 时在同一 v1 地址移除 Prefer 后同步重试，因此这是无需数据迁移的第一步回滚。删除会话/产物/文件均不受影响。
+- **解析与校验**：`deployment-options.ts` 复用布尔解析（1/0/true/false/yes/no/on/off），未知值启动前失败；`runtime-options` 拒绝非布尔值；`bin.ts` 通过 deployment 选项接线；README 与 P4 runbook 把该开关列为回滚顺序第 0 步（异步模式→同步模式 → catalog→local → redis→memory）。
 - **验证**：新增 `async-sessions-switch.test.ts` 2 项（关闭后 capabilities/404/v1 全流程；默认开启 + 非布尔拒绝），`deployment-options.test.ts` 扩到 14 项（含 env 解析）；默认全量 **53 文件通过 / 15 跳过、388 通过 / 73 跳过（共 461）**，带真实 MySQL+Redis 串行全量 **68 文件 / 461 项全部通过、无跳过**（76.0 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：`processWorkers` 开关未保留（迁移后始终使用独立子进程，旧 worker_threads 入口已移除并在文档说明）；灰度开关只提供进程级启停，不是按租户/流量比例灰度。整体方案保持未完成。
 
@@ -1256,9 +1260,9 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 ### 会话布局偏好持久化（方案 §4.1/§5，2026-11-10）
 
 - **显式 DTO**：新增 `layout-prefs.ts`：只接受 `zoom`（0.25–4）、`page`（非负整数）、`anchor { unitId(1–64，无换行/NUL), blockIndex?, offsetPx? }`，未知键拒绝，序列化上限 2 KiB；空对象视为未提供。
-- **接线**：`POST /v2/sessions` 可选 `layoutPrefs`，非法值 400；偏好随 durable waiter 持久化（`parse_pending_sessions.record`），提升为 ready 时写入 `parse_sessions.layout_prefs`（幂等新增 JSON 列），pending 与 ready 的 `GET /v2/sessions/:id` 均回显；重启后从 MySQL 恢复。v1 body 保持不变，偏好不进入共享模型或产物缓存。
-- **验证**：新增 `layout-prefs.test.ts` 2 项（DTO 规范化/拒绝任意 JSON、v2 全流程回显与 v1 不暴露）、`layout-prefs-mysql.test.ts` 1 项（真实 MySQL：`layout_prefs` 列写入、重启后 v2 恢复一致）。默认全量 **54 文件 / 390 通过 + 76 跳过（466）**；真实 MySQL+Redis 串行全量 **72 文件 / 466 项全部通过、无跳过**；类型检查、改动文件 ESLint、`git diff --check` 通过。
-- **边界**：客户端尚未上报/恢复阅读位置（服务端契约与持久化已就绪）；布局偏好不参与共享产物身份，也不跨会话共享；V2 会话响应只回显本会话的偏好。整体方案保持未完成。
+- **接线**：`POST /v1/sessions` 可选 `layoutPrefs`，非法值 400；偏好随 durable waiter 持久化（`parse_pending_sessions.record`），提升为 ready 时写入 `parse_sessions.layout_prefs`（幂等新增 JSON 列），pending 与 ready 的 `GET /v1/sessions/:id` 均回显；重启后从 MySQL 恢复。同步创建保留原有响应体，偏好不进入共享模型或产物缓存。
+- **验证**：新增 `layout-prefs.test.ts` 2 项（DTO 规范化/拒绝任意 JSON、v1 pending/ready 全流程回显布局偏好）、`layout-prefs-mysql.test.ts` 1 项（真实 MySQL：`layout_prefs` 列写入、重启后 v1 恢复一致）。默认全量 **54 文件 / 390 通过 + 76 跳过（466）**；真实 MySQL+Redis 串行全量 **72 文件 / 466 项全部通过、无跳过**；类型检查、改动文件 ESLint、`git diff --check` 通过。
+- **边界**：客户端尚未上报/恢复阅读位置（服务端契约与持久化已就绪）；布局偏好不参与共享产物身份，也不跨会话共享；v1 会话响应只回显本会话的偏好。整体方案保持未完成。
 
 ### 启动对账：清理未登记 generation（方案 §5/§10，2026-11-10）
 
@@ -1278,7 +1282,7 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 ### 阈值由 capabilities 下发与读取前预检（方案 §8.1，2026-11-10）
 
 - **契约**：`@genoffice/parse-contract` 的 `Capabilities` 新增可选 `thresholds { docxAutoRemoteBytes, pptxAutoRemoteBytes, docxFullRenderBytes }`；旧服务端/旧客户端缺省时各自回退到 32/64/64 MiB。
-- **服务端**：新增 options/env `docxAutoRemoteBytes`/`pptxAutoRemoteBytes`/`docxFullRenderBytes`（`PARSE_SERVER_DOCX_AUTO_REMOTE_BYTES` 等），启动前校验正整数；`/v2/capabilities.thresholds` 原样下发部署值，默认 32/64/64 MiB。
+- **服务端**：新增 options/env `docxAutoRemoteBytes`/`pptxAutoRemoteBytes`/`docxFullRenderBytes`（`PARSE_SERVER_DOCX_AUTO_REMOTE_BYTES` 等），启动前校验正整数；`/v1/capabilities.thresholds` 原样下发部署值，默认 32/64/64 MiB。
 - **Web**：`capabilities.ts` 解析并按安全规则过滤 thresholds；`format-policy.ts` 的 `thresholdsOf()` 合并 capabilities 与默认值，`decideRoute`/`chooseDocxServerRoute` 全部改用下发值；新增 `precheckLocalFile()`，host 在读取文件前先探测 capabilities 并对「无服务端的大 DOCX / 超大文件」提前提示；DocsServer 的显式本地回退也使用下发阈值。
 - **验证**：新增服务端 `capabilities-thresholds.test.ts` 1 项（自定义阈值下发、默认值、非法值拒绝）；viewer `format-policy` 扩到 6 项、`capabilities` 扩到 9 项；viewer 全套 **91/91 通过**，类型检查通过（仅既有 host exhaustive-deps warning）。服务端默认全量 **56 文件 / 394 通过 + 77 跳过（471）**；真实 MySQL+Redis 串行全量 **75 文件 / 471 项全部通过、无跳过**；`git diff --check` 通过。
 - **边界**：Android 端尚未消费 thresholds；URL 导入的预检发生在下载后（已知扩展名的本地 File 才在读取前提示）；阈值只能由部署方通过服务端配置改变，客户端仍保留同一份缺省常量用于旧服务端。整体方案保持未完成。
@@ -1300,16 +1304,16 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 
 ### ready 产物跨节点附着（方案 §5，2026-11-10）
 
-- **行为**：两个实例共享同一 `dataDir` + 同一 catalog 时，实例 B 通过 `GET /v2/sessions/:id`、`/units/:id`、heartbeat 懒加载实例 A 创建的 durable ready 会话记录：`SessionStore.load()` 按 id 读取 `parse_sessions`，`attachReadySession()` 只读缓存记录，`ensureSession()` 经 catalog 打开 ready generation 并 pin 源文件。B 不重建模型、不接管 A 的 build lease；`DELETE` 仍由创建实例持有。
+- **行为**：两个实例共享同一 `dataDir` + 同一 catalog 时，实例 B 通过 `GET /v1/sessions/:id`、`/units/:id`、heartbeat 懒加载实例 A 创建的 durable ready 会话记录：`SessionStore.load()` 按 id 读取 `parse_sessions`，`attachReadySession()` 只读缓存记录，`ensureSession()` 经 catalog 打开 ready generation 并 pin 源文件。B 不重建模型、不接管 A 的 build lease；`DELETE` 仍由创建实例持有。
 - **验证**：新增 `cross-node-ready-mysql.test.ts`（真实 MySQL + 双实例共享 dataDir）：A 构建后 `buildsStarted=1`，B 读到 ready、unit 内容与 A 完全一致且 `buildsStarted=0`；B 请求离线包只新增派生 bundle 构建（`buildsStarted=1`），read lease 正常写入；B 对未知会话仍 404；无共享 dataDir 时读到 404（不返回半可用 503）。默认 **56 文件 / 398 通过 + 79 跳过（477）**；真实 MySQL+Redis 串行 **77 文件 / 477 项全部通过、无跳过**（84.3 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：仍要求共享 `dataDir`/文件系统（对象存储或跨机无共享盘未实现）；ready 所有权转移、跨实例 DELETE/GC 协调、失联实例的 lease 接管未做；懒加载在未知 id 上多一次 DB 查询，未做负缓存。整体方案保持未完成。
 
-### v2 契约按文件灰度开关（P4 灰度，2026-11-10）
+### v1 契约按文件灰度开关（P4 灰度，2026-11-10）
 
-- **开关**：新增 `PARSE_SERVER_V2_ROLLOUT_PERCENT=0..100`（`v2RolloutPercent`，默认 100）。`POST /v2/sessions` 用 `parseInt(fileId[0..4],16) % 100` 得到稳定桶：桶值 < 百分比才进入 v2，否则 404 `not_found`，客户端按既有 404/405 回退 v1。
-- **性质**：按文件确定性灰度（同一文件永远同一结果，不会中途翻转），0 等价于 v2 路由关闭、100 全量；与 `asyncSessionsV2` 进程级 kill switch 互补，不需要数据迁移，也不影响已存在的会话读取。
-- **校验**：`runtime-options` 只接受 0–100 整数，越界/非整数启动前拒绝；`bin.ts` 通过 `PARSE_SERVER_V2_ROLLOUT_PERCENT` 接线；README 与 P4 runbook 把 canary 回滚列为第 0 步的前半段。
-- **验证**：新增 `v2-rollout.test.ts` 2 项：0% 全部 404；50% 下 40 个文件按桶值稳定分流（接受者到“缺内容”检查、拒绝者为 canary 文案），两类都出现；100% 正常创建；越界值启动前拒绝。默认 **57 文件 / 400 通过 + 79 跳过（479）**；真实 MySQL+Redis 串行 **78 文件 / 479 项全部通过、无跳过**（85.0 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
+- **开关**：新增 `PARSE_SERVER_ASYNC_ROLLOUT_PERCENT=0..100`（`asyncRolloutPercent`，默认 100）。`POST /v1/sessions` 用 `parseInt(fileId[0..4],16) % 100` 得到稳定桶：桶值 < 百分比才进入异步模式，否则 404 `not_found`，客户端按既有 404/405 在同一 v1 地址移除 Prefer 后同步重试。
+- **性质**：按文件确定性灰度（同一文件永远同一结果，不会中途翻转），0 等价于 v1 路由关闭、100 全量；与 `asyncSessions` 进程级 kill switch 互补，不需要数据迁移，也不影响已存在的会话读取。
+- **校验**：`runtime-options` 只接受 0–100 整数，越界/非整数启动前拒绝；`bin.ts` 通过 `PARSE_SERVER_ASYNC_ROLLOUT_PERCENT` 接线；README 与 P4 runbook 把 canary 回滚列为第 0 步的前半段。
+- **验证**：新增 `async-rollout.test.ts` 2 项：0% 全部 404；50% 下 40 个文件按桶值稳定分流（接受者到“缺内容”检查、拒绝者为 canary 文案），两类都出现；100% 正常创建；越界值启动前拒绝。默认 **57 文件 / 400 通过 + 79 跳过（479）**；真实 MySQL+Redis 串行 **78 文件 / 479 项全部通过、无跳过**（85.0 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：按文件而非用户/租户/流量比例，不能对同一文件做部分节点灰度；没有自动放量与观测驱动的暂停，仍是人工改 env + 重启。整体方案保持未完成。
 
 ### Web 幻灯片阅读位置恢复（§4.1 客户端，2026-11-10）
@@ -1327,7 +1331,7 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 
 ### 阅读位置增量同步（§4.1，2026-11-10）
 
-- **服务端**：`POST /v2/sessions/:id/heartbeat` 现在可带可选 `layoutPrefs`（复用有界 DTO 校验）：ready 会话写入 `entry.record.layoutPrefs` 后随 touch 持久化到 `parse_sessions`，本地自有 pending waiter 写入 journal，远程 pending waiter 保持只读；非法值 400。
+- **服务端**：`POST /v1/sessions/:id/heartbeat` 现在可带可选 `layoutPrefs`（复用有界 DTO 校验）：ready 会话写入 `entry.record.layoutPrefs` 后随 touch 持久化到 `parse_sessions`，本地自有 pending waiter 写入 journal，远程 pending waiter 保持只读；非法值 400。
 - **客户端**：`updateSessionLayoutPrefs()` 向 heartbeat POST 偏好；PPTX 远程/模型会话暴露 `updateReadingPosition(page)`，750 ms 节流、失败静默；Slides 在页码变化时调用（本地会话为 no-op）。这样不只是创建时快照，翻页也会持续更新服务端记录。
 - **验证**：`layout-prefs.test.ts` 扩展现有流程：ready 后 heartbeat 更新 `{page:5}` 再 GET 回显一致，非法 heartbeat 偏好 400；`server-capabilities.test.ts` 新增 heartbeat 路由/body 断言；viewer 全套 **97/97**，类型检查通过。服务端默认 **57 文件 / 400 通过 + 79 跳过（479）**；真实 MySQL+Redis 串行 **78 文件 / 479 项全部通过、无跳过**（95.5 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：DOCX 锚点仍未上报；pending 远程 waiter 的偏好不更新（避免与 builder journal 竞争）；节流窗口内最后一页可能未落库；服务端仍不消费偏好做首屏定位。整体方案保持未完成。
@@ -1335,7 +1339,7 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 ### DOCX 源锚点阅读位置（§4.1，2026-11-10）
 
 - **存储**：`reading-position.ts` 的 `ReadingPosition` 扩展可选 `anchor {unitId, blockIndex, offset, row?, paragraph?}`，新增 `saveDocxReadingAnchor()`；`readingLayoutPrefs()` 优先回传 `page`，否则把锚点映射为服务端 DTO 的 `{anchor:{unitId, blockIndex, offsetPx}}`；校验单位 ID/块号/偏移/行号，损坏值忽略。
-- **客户端**：`DocsRemote` 首次布局时读取保存锚点并用 `restoreDocxAnchor()` 恢复滚动位置（锚点 unit 未加载则本次不跳，避免错误回到顶部）；滚动停止 600 ms 后 `captureDocxAnchor()` 保存源锚点（不是页码，重排后仍稳定）。`docx-remote-session` 创建 v2 会话时带上该 `layoutPrefs.anchor`。
+- **客户端**：`DocsRemote` 首次布局时读取保存锚点并用 `restoreDocxAnchor()` 恢复滚动位置（锚点 unit 未加载则本次不跳，避免错误回到顶部）；滚动停止 600 ms 后 `captureDocxAnchor()` 保存源锚点（不是页码，重排后仍稳定）。`docx-remote-session` 创建 v1 会话时带上该 `layoutPrefs.anchor`。
 - **验证**：`reading-position.test.ts` 新增 DOCX 锚点存取与 layoutPrefs 映射/非法锚点忽略；viewer 全套 **98/98 通过**，类型检查通过；服务端未改动（既有 DTO 已接受 anchor 字段）。
 - **边界**：锚点只在首个窗口的 blocks 内可解析时恢复，跨窗口滚动位置不追、服务端不用偏好做首屏定位；DOCX 会话创建后增量更新未接 heartbeat（仅创建时上报）；`row/paragraph` 仅本地保存未上传。整体方案保持未完成。
 
@@ -1348,7 +1352,7 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 
 ### 跨实例 pending waiter 崩溃接管（§5，2026-11-10）
 
-- **行为**：实例 B 读到另一实例 A 的远程 pending waiter 时，若 `parse_jobs` 中该 artifactKey 没有未过期的 building lease（A 已退出/租约释放/过期），且 waiter 的 parserVersion/fingerprint 与本实例一致、无错误，则在下一次 `GET /v2/sessions/:id` 时由 B 调 `startAsyncWork` 接管构建；SQL claim 租约仍保证只有一个构建胜出，A 的迟到发布会被 fence。
+- **行为**：实例 B 读到另一实例 A 的远程 pending waiter 时，若 `parse_jobs` 中该 artifactKey 没有未过期的 building lease（A 已退出/租约释放/过期），且 waiter 的 parserVersion/fingerprint 与本实例一致、无错误，则在下一次 `GET /v1/sessions/:id` 时由 B 调 `startAsyncWork` 接管构建；SQL claim 租约仍保证只有一个构建胜出，A 的迟到发布会被 fence。
 - **实现**：`maybeTakeoverPending()` 只在远程 pending + GET + 无本地 flight 时触发，先查 `catalog.activeJob()`，有活跃构建则继续只读；接管后 B 写入 ready 记录并删除共享 waiter，成为新的 owner。
 - **验证**：新增 `pending-takeover-mysql.test.ts`（真实 MySQL + 共享 dataDir）：A 构建暂停时 B 只读看到 queued/building 且 `buildsStarted=0`；A 关闭（未发布）后 B 的下一次 GET 接管并构建到 ready，`buildsStarted=1`，unit 可读。默认 **57 文件 / 400 通过 + 80 跳过（480）**；真实 MySQL+Redis 串行 **79 文件 / 480 项全部通过、无跳过**（83.7 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：仅共享 dataDir + catalog 部署；要求 parser 版本/指纹一致（滚动升级混合版本不接管）；无 last-waiter 取消（客户端全关后构建仍会跑完或失败）；对象存储/无共享盘未支持。整体方案保持未完成。
@@ -1368,7 +1372,7 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 
 ### 500 会话本地轻量基线（§2/§9，2026-11-10）
 
-- **脚本**：新增 `scripts/session-load.mts` / `npm run sessions:load`：启动真实 parse server，上传一个 PPTX 并预热共享产物，再打开 N 个 v2 会话（默认 500，并发 16），轮询到全部 ready，采样 create/status 延迟与进程 RSS，输出 `/tmp/genoffice-session-load.json`。
+- **脚本**：新增 `scripts/session-load.mts` / `npm run sessions:load`：启动真实 parse server，上传一个 PPTX 并预热共享产物，再打开 N 个 v1 会话（默认 500，并发 16），轮询到全部 ready，采样 create/status 延迟与进程 RSS，输出 `/tmp/genoffice-session-load.json`。
 - **结果**（本机、`--strict` 通过）：500/500 ready、failed 0、`buildsStarted=1`（共享产物未重建）、status p95 0.5 ms、create p95 0.9 s、RSS 128.8 → 231.8 MiB（+103 MiB，约 211 KiB/会话）、serverSessions 501。
 - **验证**：脚本 strict 跑通；服务端测试仍为默认 **58 文件 / 402 通过 + 82 跳过（484）**、真实 MySQL+Redis **81 文件 / 484 项全部通过**（本轮未改服务端产品代码）。
 - **边界**：本机文件模式（sessions.json 每次落盘使 create 偏慢），不是 8C/16G 目标机、GB 正文或 MySQL 多实例压测；500 会话是同一共享产物，不代表 500 个不同文档的解析负载；status 延迟未覆盖弱网。整体方案保持未完成。
@@ -1387,33 +1391,33 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 - **验证**：新增 `shared-idempotency-mysql.test.ts`（真实 MySQL）：两个实例并发同 key 合并为同一 sessionId；第三实例重试 hit；重启后同 key 仍映射同一 session 且账本 body 落库。默认 **59 文件 / 405 通过 + 83 跳过（488）**；真实 MySQL+Redis 串行 **83 文件 / 488 项全部通过、无跳过**（87.4 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：file 模式仍是进程内缓存；并发等待上限约 3 s，超时后可能重复创建（pending 行未过期时）；账本 TTL 默认 10 min、与内存一致；没有清理定时器（查询时顺带删除过期行）。整体方案保持未完成。
 
-### v2 灰度按租户/用户头分桶（P4，2026-11-10）
+### v1 灰度按租户/用户头分桶（P4，2026-11-10）
 
-- **开关**：新增 `PARSE_SERVER_V2_ROLLOUT_HEADER`（如 `x-tenant-id`，启动前校验小写 header 名）。设置后 `POST /v2/sessions` 用该请求头的 sha256 前 4 位 mod 100 分桶；缺失 header 或未配置时回退到 fileId 分桶。
+- **开关**：新增 `PARSE_SERVER_ASYNC_ROLLOUT_HEADER`（如 `x-tenant-id`，启动前校验小写 header 名）。设置后 `POST /v1/sessions` 用该请求头的 sha256 前 4 位 mod 100 分桶；缺失 header 或未配置时回退到 fileId 分桶。
 - **语义**：同一租户/用户始终落在同一桶，可做租户级灰度；0 仍等价关闭、100 全量；与按文件灰度共用百分比。
-- **验证**：`v2-rollout.test.ts` 扩到 3 项：60 个租户重复请求结果稳定且两类结果都出现；缺失 header 时与 fileId 桶一致；非法 header 名启动前拒绝。默认 **59 文件 / 406 通过 + 83 跳过（489）**；真实 MySQL+Redis 串行 **83 文件 / 489 项全部通过、无跳过**（88.6 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
+- **验证**：`async-rollout.test.ts` 扩到 3 项：60 个租户重复请求结果稳定且两类结果都出现；缺失 header 时与 fileId 桶一致；非法 header 名启动前拒绝。默认 **59 文件 / 406 通过 + 83 跳过（489）**；真实 MySQL+Redis 串行 **83 文件 / 489 项全部通过、无跳过**（88.6 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：只是分桶依据，没有自动放量/观测驱动暂停；header 由前置代理注入才可信，服务端不校验身份；同一租户多用户共享桶。整体方案保持未完成。
 
-### v2 灰度时间驱动自动放量（P4，2026-11-10）
+### v1 灰度时间驱动自动放量（P4，2026-11-10）
 
-- **开关**：新增 `v2RolloutRampPerHour` / `PARSE_SERVER_V2_ROLLOUT_RAMP_PER_HOUR`（0–100，默认 0）。设置后有效百分比 = `min(target, floor(uptimeHours × ramp))`；例如 target=100、ramp=10，启动后 10 小时线性从 0 放到 100。
+- **开关**：新增 `asyncRolloutRampPerHour` / `PARSE_SERVER_ASYNC_ROLLOUT_RAMP_PER_HOUR`（0–100，默认 0）。设置后有效百分比 = `min(target, floor(uptimeHours × ramp))`；例如 target=100、ramp=10，启动后 10 小时线性从 0 放到 100。
 - **语义**：纯时间驱动，不依赖错误率/队列等观测反馈；重启会把进程 uptime 归零，从而重新从 0 爬升（可预测但需注意重启会短暂收紧灰度）。与按文件/租户 header 分桶正交。
-- **验证**：新增 `rollout.test.ts` 2 项（ramp 边界/封顶/非法值；分桶确定性）；`v2-rollout.test.ts` 扩到 4 项（ramp=100 时启动即 404、非法 ramp 拒绝）。默认 **60 文件 / 409 通过 + 83 跳过（492）**；真实 MySQL+Redis 串行 **84 文件 / 492 项全部通过、无跳过**（87.7 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
+- **验证**：新增 `rollout.test.ts` 2 项（ramp 边界/封顶/非法值；分桶确定性）；`async-rollout.test.ts` 扩到 4 项（ramp=100 时启动即 404、非法 ramp 拒绝）。默认 **60 文件 / 409 通过 + 83 跳过（492）**；真实 MySQL+Redis 串行 **84 文件 / 492 项全部通过、无跳过**（87.7 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：不是观测驱动的自动暂停/放量控制器，也没有持久化“已放量到多少”的跨重启进度；生产应配合告警人工停量。整体方案保持未完成。
 
-### v2 观测驱动自动暂停（P4，2026-11-10）
+### v1 观测驱动自动暂停（P4，2026-11-10）
 
-- **Guard**：新增 `canary-guard.ts`：统计最近 60 s 的 v2 创建结果，样本 ≥20 且服务端错误率 ≥阈值时，自动暂停 v2 路由 5 min；暂停期间 `POST /v2/sessions` 返回 404 `not_found`，客户端按既定路径回退 v1。4xx 客户端错误不计入失败。
-- **开关**：`v2AutoPauseErrorRate` / `PARSE_SERVER_V2_AUTO_PAUSE_ERROR_RATE`（0–100，0 关闭，启动前校验）。`/v1/health.canaryGuard` 暴露 enabled/paused/threshold/最近样本与触发次数。
+- **Guard**：新增 `canary-guard.ts`：统计最近 60 s 的 v1 异步创建结果，样本 ≥20 且服务端错误率 ≥阈值时，自动暂停异步创建 5 min；暂停期间 `POST /v1/sessions` 返回 404 `not_found`，客户端按既定路径在同一 v1 地址移除 Prefer 后同步重试。4xx 客户端错误不计入失败。
+- **开关**：`asyncAutoPauseErrorRate` / `PARSE_SERVER_ASYNC_AUTO_PAUSE_ERROR_RATE`（0–100，0 关闭，启动前校验）。`/v1/health.canaryGuard` 暴露 enabled/paused/threshold/最近样本与触发次数。
 - **验证**：新增 `canary-guard.test.ts` 4 项：样本不足不暂停、超阈值暂停与冷却到期、窗口过期清理、默认关闭/非法参数；另 1 项真实 server 校验 health 状态与启动前拒绝。默认 **61 文件 / 413 通过 + 83 跳过（496）**；真实 MySQL+Redis 串行 **85 文件 / 496 项全部通过、无跳过**（87.2 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
-- **边界**：只看 v2 创建端点的错误率，不是全链路 SLO；窗口固定 60 s、冷却固定 5 min；进程重启清空样本与暂停状态；没有外部告警联动。整体方案保持未完成。
+- **边界**：只看 v1 异步创建的错误率，不是全链路 SLO；窗口固定 60 s、冷却固定 5 min；进程重启清空样本与暂停状态；没有外部告警联动。整体方案保持未完成。
 
-### v2 DTO 独立版本化（§4，2026-11-10）
+### v1 DTO 版本标识（§4，2026-11-10）
 
-- **常量**：`@genoffice/parse-contract` 导出 `PARSE_DTO_VERSION = 1`，`Capabilities` 增加可选 `dtoVersion`。
-- **响应**：所有 `/v2/` 响应带 `X-Genoffice-Dto-Version` 头；capabilities、v2 创建（201/202）、ready/pending GET、heartbeat、document 响应的 envelope 增加 `dtoVersion` 字段；v1 envelope 完全不变（无字段、无头）。
-- **验证**：新增 `dto-version.test.ts` 1 项：capabilities/创建/pending/ready/document 均有版本字段与头；v1 创建无字段且无头。默认 **62 文件 / 414 通过 + 83 跳过（497）**；真实 MySQL+Redis 串行 **86 文件 / 497 项全部通过、无跳过**（88.1 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
-- **边界**：只覆盖 v2 envelope，不是每个嵌套 DTO 的独立版本；unit 响应仍是原始模型（靠头标记版本）；复杂特性 round-trip 与构建系统注入指纹仍未做。整体方案保持未完成。
+- **常量**：`@genoffice/parse-contract` 导出 `API_VERSION = 1`，`PARSE_DTO_VERSION` 与 `CONTRACT_VERSION` 均从其派生，`Capabilities` 增加可选 `dtoVersion`。
+- **响应**：所有 `/v1/` 响应带 `X-Genoffice-Dto-Version` 头；capabilities、v1 异步创建（201/202）、ready/pending GET、heartbeat、document 响应的 envelope 增加 `dtoVersion` 字段；同步创建响应体保留原有字段；响应头标记统一协议版本。
+- **验证**：新增 `dto-version.test.ts` 1 项：capabilities/创建/pending/ready/document 均有版本字段与头；同步创建保留原有响应体，响应头使用统一版本标识。默认 **62 文件 / 414 通过 + 83 跳过（497）**；真实 MySQL+Redis 串行 **86 文件 / 497 项全部通过、无跳过**（88.1 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
+- **边界**：所有版本字段均标识同一个 v1 协议；模型单元通过 `?representation=model` 获取，并由响应头标记版本；复杂特性 round-trip 与构建系统注入指纹仍未做。整体方案保持未完成。
 
 ### 构建指纹由构建系统注入（§4.1/§4，2026-11-10）
 
@@ -1425,7 +1429,7 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 ### 布局缓存键（§4.1，2026-11-10）
 
 - **模块**：新增 `layout-key.ts`：`layoutCacheKey({artifactKey,width,fontSetHash,rendererVersion?,measurementProfile?})` = sha256(canonicalJson)；`measurementProfileHash()` 固定算法版本；校验 64-hex artifactKey、正整数 width、非空 fontSetHash。
-- **暴露**：v2 ready GET、`/document` 与 POST 创建 201 响应增加可选 `layoutKey`；v1 body 不变。同一 artifact+width+fontSet 稳定，width/rendererVersion/fontSet/measurementProfile 变化即换 key。
+- **暴露**：v1 ready GET、`/document` 与 POST 创建 201 响应增加可选 `layoutKey`；同步创建保留原有响应体。同一 artifact+width+fontSet 稳定，width/rendererVersion/fontSet/measurementProfile 变化即换 key。
 - **验证**：`layout-key.test.ts` 2 项：纯函数确定性/变化/非法值；真实 server 640 与 1280 两个会话 layoutKey 不同、document 与 ready 一致、v1 无字段。默认 **64 文件 / 417 通过 + 83 跳过（500）**；真实 MySQL+Redis 串行 **88 文件 / 500 项全部通过、无跳过**（89.2 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：rendererVersion/measurementProfile 目前是代码常量而非构建注入；客户端尚未真正用 layoutKey 缓存布局；options 默认值仍为空对象。整体方案保持未完成。
 
@@ -1446,7 +1450,7 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 ### bearer token 轮换重叠窗口（§11 验收 6，2026-11-10）
 
 - **开关**：新增 `previousToken` / `PARSE_SERVER_PREVIOUS_TOKEN`：与当前 `token` 同时存在时认证接受两者；启动前拒绝 previous 缺失 token 或与 token 相同。签名（content/parts）始终用当前 token，previous 只是认证重叠。
-- **流程**：部署 new+previous → 客户端/代理切新 token（旧 token 仍可上传、开 v1/v2 会话、取 unit、刷新签名 URL、取字体）→ 重叠窗口后移除 previous。
+- **流程**：部署 new+previous → 客户端/代理切新 token（旧 token 仍可上传、开 v1 会话、取 unit、刷新签名 URL、取字体）→ 重叠窗口后移除 previous。
 - **验证**：新增 `token-rotation.test.ts`：旧 token 全流程可用、错误 token 401、刷新后的签名 URL 无 auth 可取、非法 previous 配置启动前拒绝；默认 **65 文件 / 420 通过 + 83 跳过（503）**，真实 MySQL+Redis **89 文件 / 503 项全部通过**；tsc/ESLint/diff 通过。
 - **边界**：客户端收到 401 后自动刷新/重试尚未实现（依赖外部重新注入 token）；没有自动过期 previous；真实浏览器 403/换域名端到端仍未验收。整体方案保持未完成。
 
@@ -1481,7 +1485,7 @@ updated_at_ms)` 表示整个实例群的一轮压力回收预算（scope 取数�
 ### canonical sidecar 布局（opt-in，§4.2，2026-11-10）
 
 - **开关**：`canonicalArtifactExport` / `PARSE_SERVER_CANONICAL_ARTIFACT_EXPORT=1`（布尔，启动前校验）。开启后会话首次打开产物时，在同一 generation 目录物化 `document.json`、`units/<i>.json`、`fonts/*.sfnt`、`external-media.json`、`artifact-manifest.json`；packed `units.bin` 仍是运行时唯一读取源。
-- **实现**：`ArtifactSession.canonicalDirectory()` 兼容 local reader 与 catalog `ArtifactReadHandle` 的 storagePath；`materializeCanonical()` 复用 `artifact-export.ts`；v1 同步创建与 v2 异步构建成功后各调用一次（失败只告警）。
+- **实现**：`ArtifactSession.canonicalDirectory()` 兼容 local reader 与 catalog `ArtifactReadHandle` 的 storagePath；`materializeCanonical()` 复用 `artifact-export.ts`；v1 同步创建与异步构建成功后各调用一次（失败只告警）。
 - **验证**：新增 `canonical-layout.test.ts` 2 项：opt-in 时 PPTX 生成 document/units/manifest 且 font.docx 生成 fonts/*.sfnt；默认关闭不生成。默认 **70 文件 / 427 通过 + 83 跳过（510）**；真实 MySQL+Redis 串行 **94 文件 / 510 项全部通过、无跳过**（113.5 s）；类型检查、改动文件 ESLint、`git diff --check` 通过。
 - **边界**：默认仍是 packed 布局，sidecar 是 opt-in；写入前按文件字节走 `StorageBudget.reservation()`（不足则整体跳过并告警），写后 generation 不再是严格不可变（仅新增只读文件）；backup 会把 sidecar 当作 artifact 字节。整体方案保持未完成。
 

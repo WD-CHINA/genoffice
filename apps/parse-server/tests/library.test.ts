@@ -50,7 +50,7 @@ it('saved originals and artifacts survive TTL/GC/restart; deleting the library r
   const opened = await first.post('/v1/sessions', { fileId: file.fileId })
   expect(opened.status).toBe(201)
   const { sessionId } = (await opened.json()) as { sessionId: string }
-  const saved = await first.post('/v2/library', { fileId: file.fileId, displayName: '年度计划' })
+  const saved = await first.post('/v1/library', { fileId: file.fileId, displayName: '年度计划' })
   expect(saved.status).toBe(201)
   const entry = (await saved.json()) as { id: string }
   await first.request(`/v1/sessions/${sessionId}`, { method: 'DELETE' })
@@ -66,7 +66,7 @@ it('saved originals and artifacts survive TTL/GC/restart; deleting the library r
   await first.server.close()
   const second = await setup({ dataDir: first.dataDir, contentTtlMs: 1 })
   await second.server.gc()
-  const listing = await second.request('/v2/library')
+  const listing = await second.request('/v1/library')
   expect(await listing.json()).toMatchObject({
     items: [{ id: entry.id, displayName: '年度计划', fileId: file.fileId, retention: 'saved' }],
   })
@@ -79,7 +79,7 @@ it('saved originals and artifacts survive TTL/GC/restart; deleting the library r
   )
   expect(parse).not.toHaveBeenCalled()
   await second.request(`/v1/sessions/${current.sessionId}`, { method: 'DELETE' })
-  expect((await second.request(`/v2/library/${entry.id}`, { method: 'DELETE' })).status).toBe(204)
+  expect((await second.request(`/v1/library/${entry.id}`, { method: 'DELETE' })).status).toBe(204)
   await second.server.gc()
   expect(await second.server.store.stat(file.fileId)).toBeNull()
   expect(await new ArtifactStore(first.dataDir).list()).toHaveLength(0)
@@ -89,7 +89,7 @@ it('quota failure on a duplicate upload cannot remove a saved original', async (
   const first = await setup({ maxStoreBytes: 0 })
   const bytes = Buffer.from('%PDF-1.7\n%%EOF\n')
   const file = await first.upload(bytes)
-  await first.post('/v2/library', { fileId: file.fileId, displayName: 'Saved PDF' })
+  await first.post('/v1/library', { fileId: file.fileId, displayName: 'Saved PDF' })
   expect(await first.upload(bytes)).toEqual(
     expect.objectContaining({ fileId: file.fileId, createdAt: file.createdAt }),
   )
@@ -123,7 +123,7 @@ it('saving a file and GC coordinate so a successful save cannot point at deleted
     await gate
     return original.call(this, fileId, name)
   })
-  const saving = harness.post('/v2/library', { fileId: file.fileId })
+  const saving = harness.post('/v1/library', { fileId: file.fileId })
   await started
   let collected = false
   const collecting = harness.server.gc().then(() => {
@@ -142,32 +142,32 @@ it('saving a file and GC coordinate so a successful save cannot point at deleted
 
 it('validates history requests, deduplicates saves, and paginates without repeating deleted cursor entries', async () => {
   const harness = await setup()
-  expect((await fetch(`${harness.server.url}/v2/library`)).status).toBe(401)
-  expect((await harness.post('/v2/library', null)).status).toBe(400)
-  expect((await harness.post('/v2/library', { fileId: 'a'.repeat(64) })).status).toBe(404)
+  expect((await fetch(`${harness.server.url}/v1/library`)).status).toBe(401)
+  expect((await harness.post('/v1/library', null)).status).toBe(400)
+  expect((await harness.post('/v1/library', { fileId: 'a'.repeat(64) })).status).toBe(404)
   const entries = []
   for (let index = 0; index < 3; index++) {
     const file = await harness.upload(Buffer.from(`%PDF-1.7\n${index}\n%%EOF\n`))
-    const response = await harness.post('/v2/library', {
+    const response = await harness.post('/v1/library', {
       fileId: file.fileId,
       displayName: `File ${index}`,
     })
     entries.push((await response.json()) as { id: string; fileId: string })
   }
-  const updated = await harness.post('/v2/library', {
+  const updated = await harness.post('/v1/library', {
     fileId: entries[0].fileId,
     displayName: 'Renamed',
   })
   expect(await updated.json()).toMatchObject({ id: entries[0].id, displayName: 'Renamed' })
-  expect((await harness.request('/v2/library?limit=0')).status).toBe(400)
-  expect((await harness.request('/v2/library?cursor=invalid')).status).toBe(400)
-  const firstPage = (await (await harness.request('/v2/library?limit=1')).json()) as {
+  expect((await harness.request('/v1/library?limit=0')).status).toBe(400)
+  expect((await harness.request('/v1/library?cursor=invalid')).status).toBe(400)
+  const firstPage = (await (await harness.request('/v1/library?limit=1')).json()) as {
     items: Array<{ id: string }>
     next: string
   }
-  await harness.request(`/v2/library/${firstPage.items[0].id}`, { method: 'DELETE' })
+  await harness.request(`/v1/library/${firstPage.items[0].id}`, { method: 'DELETE' })
   const rest = (await (
-    await harness.request(`/v2/library?limit=2&cursor=${firstPage.next}`)
+    await harness.request(`/v1/library?limit=2&cursor=${firstPage.next}`)
   ).json()) as { items: Array<{ id: string }> }
   expect(rest.items).toHaveLength(2)
   expect(rest.items.map((item) => item.id)).not.toContain(firstPage.items[0].id)
@@ -185,7 +185,7 @@ it('artifact quota exhaustion returns 507, releases reservations and preserves s
   const bytes = Buffer.from(await createBlankPptx())
   const first = await setup({ maxStoreBytes: bytes.length + 1 })
   const file = await first.upload(bytes)
-  expect((await first.post('/v2/library', { fileId: file.fileId })).status).toBe(201)
+  expect((await first.post('/v1/library', { fileId: file.fileId })).status).toBe(201)
   const opened = await first.post('/v1/sessions', { fileId: file.fileId })
   expect(opened.status).toBe(507)
   expect(await opened.json()).toMatchObject({ code: 'storage_full' })
@@ -290,7 +290,7 @@ it('DOCX scratch quota failure crosses the child-process protocol and frees chun
   const bytes = await readFile(join(serverRoot, 'tests/fixtures/docx/table.docx'))
   const app = await setup({ maxStoreBytes: bytes.length + 1 })
   const file = await app.upload(bytes)
-  expect((await app.post('/v2/library', { fileId: file.fileId })).status).toBe(201)
+  expect((await app.post('/v1/library', { fileId: file.fileId })).status).toBe(201)
   const failed = await app.post('/v1/sessions', { fileId: file.fileId })
   expect(failed.status).toBe(507)
   expect(await failed.json()).toMatchObject({ code: 'storage_full' })
@@ -315,7 +315,7 @@ it('storage pressure protects active cached readers, then evicts idle artifacts 
   const bytes = Buffer.from(await createBlankPptx())
   const first = await setup({ maxStoreBytes: 0 })
   const file = await first.upload(bytes)
-  await first.post('/v2/library', { fileId: file.fileId, displayName: 'Retained source' })
+  await first.post('/v1/library', { fileId: file.fileId, displayName: 'Retained source' })
   const opened = (await (await first.post('/v1/sessions', { fileId: file.fileId })).json()) as {
     sessionId: string
   }
@@ -340,7 +340,7 @@ it('storage pressure protects active cached readers, then evicts idle artifacts 
   expect(admitted.status).toBe(201)
   expect(await new ArtifactStore(first.dataDir).list()).toHaveLength(0)
   expect((await second.request(`/v1/files/${file.fileId}/content`)).status).toBe(200)
-  expect(await (await second.request('/v2/library')).json()).toMatchObject({
+  expect(await (await second.request('/v1/library')).json()).toMatchObject({
     items: [{ fileId: file.fileId, displayName: 'Retained source' }],
   })
   const health = (await (await second.request('/v1/health')).json()) as any
@@ -363,8 +363,8 @@ it('a cold build reclaims another idle artifact through the shared write budget'
   const app = await setup({ maxStoreBytes: 0 })
   const first = await app.upload(firstBytes)
   const second = await app.upload(secondBytes)
-  await app.post('/v2/library', { fileId: first.fileId })
-  await app.post('/v2/library', { fileId: second.fileId })
+  await app.post('/v1/library', { fileId: first.fileId })
+  await app.post('/v1/library', { fileId: second.fileId })
   const warm = (await (await app.post('/v1/sessions', { fileId: first.fileId })).json()) as {
     sessionId: string
   }
@@ -390,7 +390,7 @@ it('high-water GC reclaims idle cache while committed usage is still below the h
   const bytes = Buffer.from(await createBlankPptx())
   const first = await setup({ maxStoreBytes: 0 })
   const file = await first.upload(bytes)
-  await first.post('/v2/library', { fileId: file.fileId })
+  await first.post('/v1/library', { fileId: file.fileId })
   const session = (await (await first.post('/v1/sessions', { fileId: file.fileId })).json()) as {
     sessionId: string
   }

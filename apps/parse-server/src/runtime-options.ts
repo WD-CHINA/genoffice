@@ -4,6 +4,49 @@ import { WORK_POOL_DEFAULTS } from './work-pools'
 import type { ParseServerOptions } from './server'
 import { resolveMediaOptions } from './media-options'
 
+/** Normalize deprecated programmatic switches once; conflicts must never silently enable jobs. */
+export function normalizeAsyncOptions(options: ParseServerOptions): ParseServerOptions {
+  const normalized = { ...options }
+  if (options.asyncSessionsV2 !== undefined) {
+    if (options.asyncSessions !== undefined && options.asyncSessions !== options.asyncSessionsV2)
+      throw new Error('conflicting asyncSessions and deprecated asyncSessionsV2')
+    normalized.asyncSessions = options.asyncSessionsV2
+  }
+  if (options.v2RolloutPercent !== undefined) {
+    if (
+      options.asyncRolloutPercent !== undefined &&
+      options.asyncRolloutPercent !== options.v2RolloutPercent
+    )
+      throw new Error('conflicting asyncRolloutPercent and deprecated v2RolloutPercent')
+    normalized.asyncRolloutPercent = options.v2RolloutPercent
+  }
+  if (options.v2RolloutHeader !== undefined) {
+    if (
+      options.asyncRolloutHeader !== undefined &&
+      options.asyncRolloutHeader !== options.v2RolloutHeader
+    )
+      throw new Error('conflicting asyncRolloutHeader and deprecated v2RolloutHeader')
+    normalized.asyncRolloutHeader = options.v2RolloutHeader
+  }
+  if (options.v2RolloutRampPerHour !== undefined) {
+    if (
+      options.asyncRolloutRampPerHour !== undefined &&
+      options.asyncRolloutRampPerHour !== options.v2RolloutRampPerHour
+    )
+      throw new Error('conflicting asyncRolloutRampPerHour and deprecated v2RolloutRampPerHour')
+    normalized.asyncRolloutRampPerHour = options.v2RolloutRampPerHour
+  }
+  if (options.v2AutoPauseErrorRate !== undefined) {
+    if (
+      options.asyncAutoPauseErrorRate !== undefined &&
+      options.asyncAutoPauseErrorRate !== options.v2AutoPauseErrorRate
+    )
+      throw new Error('conflicting asyncAutoPauseErrorRate and deprecated v2AutoPauseErrorRate')
+    normalized.asyncAutoPauseErrorRate = options.v2AutoPauseErrorRate
+  }
+  return normalized
+}
+
 const MAX_TIMER = 2_147_483_647
 /** Reject malformed overrides rather than silently restoring a default or disabling a cap. */
 export function numberEnv(
@@ -92,13 +135,15 @@ export function validateRuntimeOptions(options: ParseServerOptions): void {
   integer('cacheMaxFieldBytes', CACHE_DEFAULTS.maxFieldBytes, 1024, 16 * 1024 ** 2)
   integer('idempotencyTtlMs', 600_000, 1000, MAX_TIMER)
   integer('idempotencyMaxEntries', 256, 1, 100_000)
-  if (options.asyncSessionsV2 !== undefined && typeof options.asyncSessionsV2 !== 'boolean')
-    throw new Error('invalid asyncSessionsV2: expected a boolean')
-  integer('v2RolloutPercent', 100, 0, 100)
-  integer('v2RolloutRampPerHour', 0, 0, 100)
-  integer('v2AutoPauseErrorRate', 0, 0, 100)
-  if (options.canonicalArtifactExport !== undefined &&
-    typeof options.canonicalArtifactExport !== 'boolean')
+  if (options.asyncSessions !== undefined && typeof options.asyncSessions !== 'boolean')
+    throw new Error('invalid asyncSessions: expected a boolean')
+  integer('asyncRolloutPercent', 100, 0, 100)
+  integer('asyncRolloutRampPerHour', 0, 0, 100)
+  integer('asyncAutoPauseErrorRate', 0, 0, 100)
+  if (
+    options.canonicalArtifactExport !== undefined &&
+    typeof options.canonicalArtifactExport !== 'boolean'
+  )
     throw new Error('invalid canonicalArtifactExport')
   if (options.previousToken !== undefined) {
     if (typeof options.previousToken !== 'string' || options.previousToken.length < 1)
@@ -107,17 +152,28 @@ export function validateRuntimeOptions(options: ParseServerOptions): void {
     if (options.previousToken === options.token)
       throw new Error('previousToken must differ from token')
   }
-  if (options.v2RolloutHeader !== undefined &&
-    (typeof options.v2RolloutHeader !== 'string' ||
-      !/^[a-z0-9-]{1,64}$/.test(options.v2RolloutHeader)))
-    throw new Error('invalid v2RolloutHeader')
+  if (
+    options.asyncRolloutHeader !== undefined &&
+    (typeof options.asyncRolloutHeader !== 'string' ||
+      !/^[a-z0-9-]{1,64}$/.test(options.asyncRolloutHeader))
+  )
+    throw new Error('invalid asyncRolloutHeader')
   integer('shutdownTimeoutMs', 30_000, 1, 600_000)
   integer('docxAutoRemoteBytes', 32 * 1024 * 1024, 1, 1024 ** 3)
   integer('pptxAutoRemoteBytes', 64 * 1024 * 1024, 1, 1024 ** 3)
   integer('docxFullRenderBytes', 64 * 1024 * 1024, 1, 1024 ** 3)
-  const memoryCacheBudgetBytes = integer('memoryCacheBudgetBytes', 2 * 1024 ** 3, 0,
-    Number.MAX_SAFE_INTEGER)
-  const modelCacheMaxBytes = integer('modelCacheMaxBytes', 256 * 1024 ** 2, 0, Number.MAX_SAFE_INTEGER)
+  const memoryCacheBudgetBytes = integer(
+    'memoryCacheBudgetBytes',
+    2 * 1024 ** 3,
+    0,
+    Number.MAX_SAFE_INTEGER,
+  )
+  const modelCacheMaxBytes = integer(
+    'modelCacheMaxBytes',
+    256 * 1024 ** 2,
+    0,
+    Number.MAX_SAFE_INTEGER,
+  )
   if (modelCacheMaxBytes > memoryCacheBudgetBytes)
     throw new Error('model cache budget must not exceed the HTTP/index/read memory cache budget')
   integer('httpMaxConcurrency', 128, 1, 100_000)

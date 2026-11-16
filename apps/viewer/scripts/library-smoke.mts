@@ -44,7 +44,7 @@ try {
   })
   await expect(page.getByText('上传成功', { exact: true })).toBeVisible()
   let failSave = true
-  await page.route('**/v2/library*', (route) => {
+  await page.route('**/v1/library*', (route) => {
     if (route.request().method() === 'POST' && failSave) {
       failSave = false
       return route.fulfill({
@@ -66,9 +66,20 @@ try {
     const opened = page.waitForEvent('popup')
     await history.getByRole('link', { name: '打开', exact: true }).click()
     const popup = await opened
+    // A preview canvas can appear before publication; restart reuse requires a ready artifact.
+    const ready = popup.waitForResponse(async (response) => {
+      if (!/^\/v1\/sessions(?:\/[^/]+)?$/.test(new URL(response.url()).pathname) || !response.ok())
+        return false
+      try {
+        return (await response.json()).state === 'ready'
+      } catch {
+        return false
+      }
+    })
     await expect(
       popup.frameLocator('iframe').locator('.viewer-slide-stage canvas').first(),
     ).toBeVisible({ timeout: 30_000 })
+    await ready
     await popup.close()
   }
   await open()
@@ -217,12 +228,14 @@ try {
   await page.goto(
     `${origin}/viewer/?${new URLSearchParams({ parse: 'server', fileId: wordFile.fileId, token, name: 'async-word.docx' })}`,
   )
-  await expect(page.frameLocator('iframe').locator('.viewer-doc-remote-slot').first()).toBeVisible({
-    timeout: 30_000,
-  })
+  await expect(page.frameLocator('iframe').locator('.viewer-doc-reading-unit').first()).toBeVisible(
+    {
+      timeout: 30_000,
+    },
+  )
   const frame = page.frameLocator('iframe')
   await expect(
-    frame.locator('.viewer-doc-remote-page').getByText('Cache paragraph 0', { exact: true }),
+    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
   ).toBeVisible({ timeout: 30_000 })
   const embeddedFontCount = () =>
     frame
@@ -240,12 +253,12 @@ try {
       timeout: 30_000,
     })
   }
-  const viewport = frame.locator('.viewer-doc-remote-viewport')
+  const viewport = frame.locator('.viewer-doc-reading-scroll')
   await viewport.evaluate((element) => {
     element.scrollTop = element.scrollHeight
   })
   await expect(
-    frame.locator('.viewer-doc-remote-page').getByText('Cache paragraph 1200', { exact: true }),
+    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 1200', { exact: true }),
   ).toBeVisible({ timeout: 30_000 })
   const heightBefore = await frame
     .locator('.viewer-doc-remote-canvas')
@@ -258,7 +271,7 @@ try {
   await expect(frame.getByRole('alert')).toContainText('HTTP 500', { timeout: 30_000 })
   await frame.getByRole('button', { name: '重试', exact: true }).click()
   await expect(
-    frame.locator('.viewer-doc-remote-page').getByText('Cache paragraph 0', { exact: true }),
+    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
   ).toBeVisible({ timeout: 30_000 })
   assert.ok(
     firstUnitReads > readsBeforeReturn,
@@ -277,7 +290,7 @@ try {
     element.scrollTop = element.scrollHeight
   })
   await expect(
-    frame.locator('.viewer-doc-remote-page').getByText('Cache paragraph 1200', { exact: true }),
+    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 1200', { exact: true }),
   ).toBeVisible()
   delayNextFirstUnit = true
   const cancelledRead = page.waitForEvent('requestfailed', {
@@ -297,7 +310,7 @@ try {
       element.scrollTop = element.scrollHeight
     })
     await expect(
-      frame.locator('.viewer-doc-remote-page').getByText('Cache paragraph 1200', { exact: true }),
+      frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 1200', { exact: true }),
     ).toBeVisible()
     releaseDelayedUnit()
     await cancelledRead
@@ -305,14 +318,14 @@ try {
     releaseDelayedUnit()
   }
   await expect(
-    frame.locator('.viewer-doc-remote-page').getByText('Cache paragraph 1200', { exact: true }),
+    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 1200', { exact: true }),
   ).toBeVisible()
   await expect(frame.getByRole('alert')).toHaveCount(0)
   await viewport.evaluate((element) => {
     element.scrollTop = 0
   })
   await expect(
-    frame.locator('.viewer-doc-remote-page').getByText('Cache paragraph 0', { exact: true }),
+    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
   ).toBeVisible({ timeout: 30_000 })
   assert.equal(
     await frame
@@ -334,13 +347,13 @@ try {
       element.scrollTop = element.scrollHeight
     })
     await expect(
-      frame.locator('.viewer-doc-remote-page').getByText('Cache paragraph 1200', { exact: true }),
+      frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 1200', { exact: true }),
     ).toBeVisible()
     await viewport.evaluate((element) => {
       element.scrollTop = 0
     })
     await expect(
-      frame.locator('.viewer-doc-remote-page').getByText('Cache paragraph 0', { exact: true }),
+      frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
     ).toBeVisible({ timeout: 30_000 })
     await sampleMemory(cycle)
   }
@@ -361,7 +374,7 @@ try {
   )
   assert.ok(final.nodes < baseline.nodes + 5000, 'offscreen editors must release their DOM nodes')
   assert.ok(
-    wordRequests.some((url) => url.endsWith('/v2/sessions')),
+    wordRequests.some((url) => url.endsWith('/v1/sessions')),
     'large DOCX must use async readiness',
   )
   assert.ok(
@@ -369,7 +382,7 @@ try {
     'large DOCX must not download original content before preview',
   )
   assert.equal(expiredWord, true)
-  assert.equal(wordRequests.filter((url) => url.endsWith('/v2/sessions')).length, 3)
+  assert.equal(wordRequests.filter((url) => url.endsWith('/v1/sessions')).length, 3)
   assert.equal(await embeddedFontCount(), 1, 'session recovery must reuse the document-owned face')
   assert.equal(wordRequests.filter((url) => /\/v1\/sessions\/[^/]+\/fonts\//.test(url)).length, 1)
   const latestStyles = wordRequests.filter((url) => /\/sessions\/[^/]+\/styles$/.test(url)).at(-1)!
@@ -449,7 +462,7 @@ try {
   const anchorProbe = await viewport.evaluate((element) => {
     const top = element.getBoundingClientRect().top
     const paragraph = [
-      ...element.querySelectorAll<HTMLElement>('.viewer-doc-remote-page p[data-idx]'),
+      ...element.querySelectorAll<HTMLElement>('.viewer-doc-reading-unit p[data-idx]'),
     ].find(
       (node) =>
         node.getBoundingClientRect().top >= top + 10 &&
@@ -458,7 +471,7 @@ try {
     return { text: paragraph.textContent!, offset: paragraph.getBoundingClientRect().top - top }
   })
   const reflowHeight = await frame
-    .locator('.viewer-doc-remote-page')
+    .locator('.viewer-doc-reading-unit')
     .first()
     .evaluate((element) => element.getBoundingClientRect().height * 2)
   await frame.locator('body').evaluate((_element, height) => {
@@ -478,13 +491,13 @@ try {
     )
     .toBeGreaterThan(heightBefore + 100)
   const anchoredParagraph = frame
-    .locator('.viewer-doc-remote-page')
+    .locator('.viewer-doc-reading-unit')
     .getByText(anchorProbe.text, { exact: true })
   await expect(anchoredParagraph).toBeVisible()
   const anchorOffset = await anchoredParagraph.evaluate(
     (element) =>
       element.getBoundingClientRect().top -
-      element.closest('.viewer-doc-remote-viewport')!.getBoundingClientRect().top,
+      element.closest('.viewer-doc-reading-scroll')!.getBoundingClientRect().top,
   )
   assert.ok(
     Math.abs(anchorOffset - anchorProbe.offset) <= 32,
@@ -504,7 +517,7 @@ try {
     element.scrollTop = 0
   })
   await expect(
-    frame.locator('.viewer-doc-remote-page').getByText('Cache paragraph 0', { exact: true }),
+    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
   ).toBeVisible()
   assert.equal(
     (await wordHealth()).artifacts.buildsStarted - beforeWord.artifacts.buildsStarted,
@@ -573,7 +586,7 @@ try {
   try {
     const probe = frame.locator('#docx-switch-probe')
     await expect(
-      probe.locator('.viewer-doc-remote-page').getByText('Cache paragraph 0', { exact: true }),
+      probe.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
     ).toBeVisible({ timeout: 30_000 })
     assert.equal(await embeddedFontCount(), 2)
     await expect.poll(async () => frame.locator('body > div[style*="-10000px"]').count()).toBe(0)
@@ -592,7 +605,7 @@ try {
     const switchStarted = page.waitForResponse(
       (response) =>
         response.request().method() === 'POST' &&
-        response.url().endsWith('/v2/sessions') &&
+        response.url().endsWith('/v1/sessions') &&
         response.request().postDataJSON().fileId === switchedFile.fileId,
     )
     void switchStarted.catch(() => undefined)
@@ -620,10 +633,10 @@ try {
       state.releaseFontGate = undefined
     })
     await expect(
-      probe.locator('.viewer-doc-remote-page').getByText('Switched document B', { exact: true }),
+      probe.locator('.viewer-doc-reading-unit').getByText('Switched document B', { exact: true }),
     ).toBeVisible({ timeout: 30_000 })
     await expect(
-      probe.locator('.viewer-doc-remote-page').getByText('Cache paragraph 0', { exact: true }),
+      probe.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
     ).toHaveCount(0)
     assert.equal(
       await embeddedFontCount(),

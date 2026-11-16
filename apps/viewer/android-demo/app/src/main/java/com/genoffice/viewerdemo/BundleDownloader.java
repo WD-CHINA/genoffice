@@ -286,7 +286,7 @@ final class BundleDownloader {
     /** Fetch and fully validate the authoritative manifest; 404/405 keeps the legacy flow. */
     private JSONObject fetchDeclaredManifest() throws IOException, JSONException {
         listener.stage("正在准备离线资源清单…");
-        String root = "/v2/sessions/" + encode(sessionId) + "/bundle";
+        String root = "/v1/sessions/" + encode(sessionId) + "/bundle";
         JSONObject manifest;
         HttpURLConnection connection = open(server + root, "GET");
         try {
@@ -343,7 +343,7 @@ final class BundleDownloader {
 
     private int downloadDeclaredResources(JSONObject manifest) throws IOException, JSONException {
         boolean pdf = "pdf".equals(manifest.optString("format"));
-        String root = pdf ? null : "/v2/sessions/" + encode(sessionId) + "/bundle";
+        String root = pdf ? null : "/v1/sessions/" + encode(sessionId) + "/bundle";
         String artifactKey = manifest.getString("artifactKey");
         int count = manifest.getInt("unitCount");
         JSONArray resources = manifest.getJSONArray("resources");
@@ -374,7 +374,7 @@ final class BundleDownloader {
         manifest.put("mediaObjectCount", requests.size());
         if (requests.isEmpty()) { manifest.put("mediaPreparation", "not-needed"); return; }
         JSONObject capabilities;
-        try { capabilities = requestJson(server + "/v2/capabilities", "GET", null); }
+        try { capabilities = requestJson(server + "/v1/capabilities", "GET", null); }
         catch (HttpFailure failure) {
             if (failure.status != 404 && failure.status != 405) throw failure;
             manifest.put("mediaPreparation", "unavailable"); return;
@@ -485,9 +485,9 @@ final class BundleDownloader {
         JSONObject body = new JSONObject();
         body.put("fileId", fileId);
         JSONObject created;
-        sessionApi = "/v2/sessions";
+        sessionApi = "/v1/sessions";
         try {
-            created = requestJson(server + sessionApi, "POST", body.toString());
+            created = requestJson(server + sessionApi, "POST", body.toString(), true);
         } catch (HttpFailure failure) {
             if (failure.status != 404 && failure.status != 405) throw failure;
             sessionApi = "/v1/sessions";
@@ -606,8 +606,14 @@ final class BundleDownloader {
 
     private JSONObject requestJson(String url, String method, String body)
             throws IOException, JSONException {
+        return requestJson(url, method, body, false);
+    }
+
+    private JSONObject requestJson(String url, String method, String body, boolean respondAsync)
+            throws IOException, JSONException {
         HttpURLConnection connection = open(url, method);
         try {
+            if (respondAsync) connection.setRequestProperty("Prefer", "respond-async");
             if (body != null) {
                 connection.setDoOutput(true);
                 connection.setRequestProperty("Content-Type", "application/json");

@@ -1,17 +1,19 @@
 # Web、解析服务与 Android 的功能与架构
 
+接口版本统一为 **v1**。请求模式、迁移和配置说明见 [API v1](./api-v1.zh-CN.md)。
+
 更新日期：2026-11-12。本文说明当前代码中的运行方式，不以历史测试数量或完成度百分比作为交付结论。限制见[运行边界](runtime-boundaries.zh-CN.md)，测试入口、精简映射与本轮证据见[测试指南](testing-guide.zh-CN.md)。
 
 ## 1. 功能需求与职责
 
-| 能力            | Web Viewer                                                             | parse-server                                                  | Android Demo                                             |
-| --------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------- |
-| 文件导入        | 本机选择、直链导入、历史资源入口；读取前检查大小与路由                 | 流式上传、内容识别、SHA-256 寻址、元数据、原文件保留          | WebView 文件选择；按 fileId 在线打开或下载               |
-| PPTX 阅读与放映 | Canvas 渲染、缩略图、跳页、动画、音视频交互、字体实测                  | OOXML 解析、模型/渲染树按页输出、字体与媒体资源               | 复用同一 Viewer，提供 WebView、全屏和本地资源服务        |
+| 能力            | Web Viewer                                                            | parse-server                                                  | Android Demo                                             |
+| --------------- | --------------------------------------------------------------------- | ------------------------------------------------------------- | -------------------------------------------------------- |
+| 文件导入        | 本机选择、直链导入、历史资源入口；读取前检查大小与路由                | 流式上传、内容识别、SHA-256 寻址、元数据、原文件保留          | WebView 文件选择；按 fileId 在线打开或下载               |
+| PPTX 阅读与放映 | Canvas 渲染、缩略图、跳页、动画、音视频交互、字体实测                 | OOXML 解析、模型/渲染树按页输出、字体与媒体资源               | 复用同一 Viewer，提供 WebView、全屏和本地资源服务        |
 | DOCX 阅读       | 本地完整解析，或远程 block-chunk 与虚拟窗口；连续阅读、注释和完整表格 | 流式正文提取、样式上下文、脚注/尾注、分节/页眉页脚与块模型    | 下载模型、样式、字体和媒体，离线重放远程阅读协议         |
-| PDF 阅读        | PDF.js 解析与渲染，支持 URL、签名内容和本地原文件                      | 提供原文件 Range/HEAD/ETag；不是 PDF 页面渲染服务             | 下载并校验 PDF 原文件；本地 Range 服务和打包 PDF.js 资源 |
-| 音视频兼容      | 显示准备状态，轮询结果、重试、播放兼容资源                             | FFprobe 检查；兼容媒体复用、必要时重封装/转码，持久队列与缓存 | 下载已准备媒体及映射，离线指向本地文件                   |
-| 缓存与恢复      | 当前窗口缓存、签名刷新、会话恢复、阅读位置                             | 持久产物、轻量阅读会话、并发任务协调、损坏检查与恢复          | 断点续传、完整性校验、版本发布、配额和失败保留旧版本     |
+| PDF 阅读        | PDF.js 解析与渲染，支持 URL、签名内容和本地原文件                     | 提供原文件 Range/HEAD/ETag；不是 PDF 页面渲染服务             | 下载并校验 PDF 原文件；本地 Range 服务和打包 PDF.js 资源 |
+| 音视频兼容      | 显示准备状态，轮询结果、重试、播放兼容资源                            | FFprobe 检查；兼容媒体复用、必要时重封装/转码，持久队列与缓存 | 下载已准备媒体及映射，离线指向本地文件                   |
+| 缓存与恢复      | 当前窗口缓存、签名刷新、会话恢复、阅读位置                            | 持久产物、轻量阅读会话、并发任务协调、损坏检查与恢复          | 断点续传、完整性校验、版本发布、配额和失败保留旧版本     |
 
 三端是只读预览系统。支持格式不代表任意 Office 文件都能逐像素还原；Android Demo 也不等于已完成所有 Android 机型的兼容认证。
 
@@ -48,7 +50,7 @@ sequenceDiagram
   participant J as 队列与 Worker
   participant A as 持久产物
   C->>S: capabilities；上传或使用已有 fileId
-  C->>S: 创建 v2 阅读会话
+  C->>S: POST /v1/sessions + Prefer: respond-async
   alt 可复用 ready 产物
     S->>A: 校验 identity / generation / 读租约
     S-->>C: ready 会话与模型描述
@@ -68,7 +70,7 @@ sequenceDiagram
 
 ### 3.1 路由与兼容
 
-入口通过 `local`、`server`、`auto` 选择路径，结合服务端 capabilities 与部署阈值判断；手动指定的不可用路径明确报错。旧服务或 Android 本地重放不支持 v2 时才回退 v1；队列饱和、鉴权失败和普通服务错误不能通过回退绕过限制。
+入口通过 `local`、`server`、`auto` 选择路径，结合服务端 capabilities 与部署阈值判断；手动指定的不可用路径明确报错。所有客户端使用 `/v1`；请求异步模式（`Prefer: respond-async`）被明确以 404/405 拒绝时，移除该请求头后同步重试同一地址；队列饱和、鉴权失败和普通服务错误不能通过回退绕过限制。
 
 当前 Viewer 本机文件预检上限为 **1 GiB**；默认 DOCX 自动远端阈值 **32 MiB**，PPTX/PDF 为 **64 MiB**。部署可下发有效阈值。手动 server 的 DOCX 默认读取远程模型，只有显式 `docxLocalFallback=1` 且不超过完整渲染阈值时才下载原文件走完整本地渲染。上限、自动路由阈值和解析内存能力不可混为一谈。
 
@@ -159,7 +161,7 @@ PPTX/DOCX 下载的是可重放上下文、模型单元和资源；PDF 下载原
 
 ## 7. 部署与配置入口
 
-- Web：`npm run package -w @genoffice/viewer` 生成 `apps/viewer/releases/genoffice-viewer/`；反代需支持 `/v1`、`/v2` 和实际 base 路径。Android 构建把这个目录同步为 APK assets。
+- Web：`npm run package -w @genoffice/viewer` 生成 `apps/viewer/releases/genoffice-viewer/`；反代需支持`/v1` 和实际 base 路径。Android 构建把这个目录同步为 APK assets。
 - 服务端：`src/bin.ts` 读取运行时配置，`src/runtime-options.ts`/`src/limits.ts` 校验预算，`src/media-options.ts` 校验转码配置；身份凭据不放进文档示例或持久模型。
 - 运维：健康与 metrics、告警规则、共享存储挂载、数据库备份、解析指纹和回滚配置必须一起核对。Docker 配额只是测试条件，不证明物理硬件配置或生产容量。
 - 当前验收与复跑命令统一见[测试指南](testing-guide.zh-CN.md)。[原解析架构方案](parse-backend-architecture.zh-CN.md)、[持久化设计](parse-persistence-optimization.zh-CN.md)和[历史进度](parse-optimization-progress.zh-CN.md)保留设计与演进依据；与当前说明冲突时应回查代码及最近验证证据。

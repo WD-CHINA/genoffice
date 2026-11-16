@@ -7,7 +7,7 @@ import { aliases, app, root } from './scripts/paths.mjs'
 
 const host = process.env.VIEWER_HOST || '0.0.0.0'
 const base = process.env.VIEWER_BASE || '/'
-/** Same-origin dev proxy: /v1 and /v2 -> parse-server, so the Viewer URL needs no ?server=. */
+/** Same-origin v1 API proxy with deployment compatibility forwarding. */
 const parseServer = process.env.PARSE_SERVER_URL || 'http://127.0.0.1:8787'
 
 function pdfjsAssets(): Plugin {

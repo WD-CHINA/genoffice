@@ -147,7 +147,7 @@ async function inspect(c, id, input, disconnected) {
     if (!snapshot.rightEdge.visible)
       throw Error('Business Word outer right table border is clipped')
   }
-  snapshot.external = snapshot.external.filter((url) => url !== backend + '/v2/capabilities')
+  snapshot.external = snapshot.external.filter((url) => url !== backend + '/v1/capabilities')
   if (disconnected && snapshot.images.some((image) => !image.local))
     throw Error('Offline Word image is not local')
   if (disconnected && snapshot.external.length)
@@ -284,7 +284,7 @@ try {
       )
       device.disconnect()
       const unavailable = await offline.c.evaluate(
-        `(async()=>{try{await fetch(${JSON.stringify(backend + '/v2/capabilities')},{signal:AbortSignal.timeout(2000)});return false}catch{return true}})()`,
+        `(async()=>{try{await fetch(${JSON.stringify(backend + '/v1/capabilities')},{signal:AbortSignal.timeout(2000)});return false}catch{return true}})()`,
         offline.id,
       )
       if (!unavailable) throw Error('Remote backend is reachable')

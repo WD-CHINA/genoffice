@@ -1,5 +1,7 @@
 # 解析优化实施进度
 
+接口版本统一为 **v1**。请求模式、迁移和配置说明见 [API v1](../../docs/api-v1.zh-CN.md)。
+
 当前三端说明：[功能与架构](../../docs/runtime-workflows.zh-CN.md) · [运行边界](../../docs/runtime-boundaries.zh-CN.md) · [测试与验收](../../docs/testing-guide.zh-CN.md)。历史报告保留各自的验证日期与环境。
 
 > 2026-11-11 新增：[在线音视频自动准备](../../docs/media-transcoding-production.zh-CN.md)，包含兼容媒体复用、MP4/MP3 转换、MySQL 持久队列、共享缓存、前端状态及回滚。验收见 [媒体生产流程验证](../../docs/media-transcoding-production-validation.zh-CN.md)。
@@ -27,15 +29,15 @@
 - P2：提供 Linux cgroup v2 配置入口，父进程在允许解析前设置 memory.max/swap/oom.group 并分配子进程；配置失败不降级为无防护执行。开发机为 macOS，内核硬限制尚未实测，默认 RSS 看门狗存在采样间隔内的超限窗口。
 - 观测：health 暴露队列、内存预留、隔离子进程的外部采样 RSS 和内存错误次数；Prometheus 增加对应 gauges，失败日志记录 PID/taskId/峰值 RSS，不输出子进程 stderr。
 - P0：CLI 数字环境变量统一校验，支持明确允许的零值，拒绝空串/NaN/负数/小数与溢出定时器；服务启动前检查 heap < RSS <= 总预算，避免先创建数据库资源后才发现配置错误。
-- 历史库：新增 `/v2/library` 保存、游标列表和移除引用接口；文件模式原子持久化 library.json，损坏时拒绝启动，避免误删历史。MySQL 模式新增 library_entries 唯一文件引用及外键保护。
+- 历史库：新增 `/v1/library` 保存、游标列表和移除引用接口；文件模式原子持久化 library.json，损坏时拒绝启动，避免误删历史。MySQL 模式新增 library_entries 唯一文件引用及外键保护。
 - 历史库：显式保存的原文件跨重启保留，不被 TTL/容量 GC 删除；直接删除已保存或活跃读取的文件返回 409。移除历史引用后恢复临时回收策略。
 - 生命周期：文件级锁与读租约覆盖保存、原文件/模型/字体读取和会话创建；GC 删除前重新检查引用，保护在建 DOCX chunk。上传入库串行检查原文件及产物大小；重复上传不刷新创建时间，容量失败不误删已保存的旧文件。
-- Web：上传页新增历史资源保存/列表/打开/移除，与本机最近上传分开；服务地址、token 和 /viewer/ base 在导航中保留，Vite/nginx 均补充 v2 转发。
+- Web：上传页新增历史资源保存/列表/打开/移除，与本机最近上传分开；服务地址、token 和 /viewer/ base 在导航中保留，Vite/nginx 均补充 v1 转发与旧地址兼容。
 - 运行验证发现并修复：独立 worker TS 入口不能稳定依赖父进程 --import tsx；新增 JS bootstrap，显式注册 tsx 后加载解析入口。
 
-- v2 异步会话：冷访问返回 202，客户端轮询 queued/building/ready/failed；缓存命中返回 201。队列溢出返回 429，同产物共享构建，取消一个阅读会话不会中止其他请求共享的构建。
-- v2 等待会话使用文件原子日志或 MySQL parse_pending_sessions 持久化，重启恢复；这是单实例等待日志，尚不是分布式任务租约。支持 v2 文件、document 和原始 units 接口，v1 保留兼容。
-- Web 和 Android 接入异步等待，仅在 404/405 时回退 v1；失败与取消清理会话。Web 修复就绪时关闭页面的竞争，避免重新启动心跳。
+- v1 异步会话：冷访问返回 202，客户端轮询 queued/building/ready/failed；缓存命中返回 201。队列溢出返回 429，同产物共享构建，取消一个阅读会话不会中止其他请求共享的构建。
+- 异步等待会话使用文件原子日志或 MySQL parse_pending_sessions 持久化，重启恢复；这是单实例等待日志，尚不是分布式任务租约。支持 v1 文件、document 和模型 units 接口（`?representation=model`），原有渲染树 units 默认行为保持兼容。
+- Web 和 Android 接入异步等待，仅在 404/405 时在同一 v1 地址移除 Prefer 后同步重试；失败与取消清理会话。Web 修复就绪时关闭页面的竞争，避免重新启动心跳。
 - 打包修复 pnpm 嵌套依赖根目录识别，按包版本收集许可证。
 
 - 损坏恢复：区分内容损坏与权限/I/O 故障，只有确定损坏的派生产物可重建；不删除原文件。重建复用既有 single-flight 与队列，旧的已检测损坏 reader 失效，避免继续输出。
@@ -73,7 +75,7 @@
 
 - 本轮磁盘预留验证：服务端 88 项通过、3 项可选 MySQL 测试跳过；覆盖并发预算竞争、关闭配额仍检查物理空间、manifest 超额清理，以及真实 507 后原文件保留、扩容重启可成功重试。类型检查与本轮改动 ESLint 通过。
 
-- 本轮损坏恢复验证：84 项通过，3 项 MySQL 集成测试因未启动实例而跳过；新增 4 项覆盖损坏索引/缺失数据、并发重建、同长度坏帧、元数据准入校验和真实 v2 API 重建。类型检查和本轮改动 ESLint 通过。
+- 本轮损坏恢复验证：84 项通过，3 项 MySQL 集成测试因未启动实例而跳过；新增 4 项覆盖损坏索引/缺失数据、并发重建、同长度坏帧、元数据准入校验和真实 v1 API 重建。类型检查和本轮改动 ESLint 通过。
 
 - 上轮 parse-server：83 项测试通过，包含隔离 MySQL 实例上的 3 项集成测试；除 P0/产物存储外，覆盖真实 PPTX/DOCX 在全部会话关闭、服务重启后的缓存复用、字体字节一致、图片鉴权、版本隔离、会话字宽隔离、队列 FIFO/溢出/关闭。
 - 实际接口测试：一个冷解析占满队列时，10 个缓存阅读会话均可成功建立；另一个冷任务返回 429，缓存打开不重复调用解析入口。
@@ -85,7 +87,7 @@
 - 新增子进程故障注入：不同 PID 和二进制 IPC、CPU 阻塞时 RSS 杀进程、总生命周期、异常退出、非法 cgroup 拒绝执行、PPTX/DOCX 内存失败后 HTTP 仍健康并可重试、队列内存归还均通过。
 - 未进行 Linux 真实 cgroup OOM、Windows 内存采样、Android 真机、MySQL 产物/任务租约或 8 核 16 GiB 压测。
 
-- Chrome 增补 65 MiB DOCX 容器远程分流验证：实际文档可见、使用 v2 且未下载原文件；在首次读取列表前真实删除会话，自动重开成功，解析产物构建数仅增加 1，确认恢复不重解析。截图已检查。这不代表大正文流式解析已完成。
+- Chrome 增补 65 MiB DOCX 容器远程分流验证：实际文档可见、使用 v1 且未下载原文件；在首次读取列表前真实删除会话，自动重开成功，解析产物构建数仅增加 1，确认恢复不重解析。截图已检查。这不代表大正文流式解析已完成。
 - Android 主应用与 instrumentation APK 构建通过；新增异步就绪、兼容回退、429 与失败保留旧包用例已编译，未连接设备，未执行设备测试。
 
 ## 下一步（保持完整方案范围）
@@ -93,7 +95,7 @@
 1. P0 的 DOCX 失效恢复、取消/重开隔离已接入并补故障测试；继续补复杂文档与长时阅读验证。CLI 与运行时配置校验已统一。
 2. 补充复杂 PPTX 模型/渲染保真验证、损坏产物重建与完整资源依赖清单；上传准入已统计产物占用，已补产物增量写入预留，仍需补完整临时空间对账及跨进程压力回收。
 3. 接入 MySQL 产物/任务索引、租约和 generation、崩溃对账与版本迁移；历史库索引及永久原文件引用已落地，跨进程生命周期仍待实现。
-4. v2 异步会话及 Web/Android 等待状态已接入；继续补任务目录、跨进程租约与最后一个等待者取消后的调度策略。
+4. v1 异步会话及 Web/Android 等待状态已接入；继续补任务目录、跨进程租约与最后一个等待者取消后的调度策略。
 5. 在 Linux 委派 cgroup 上验证内核 OOM/进程组清理，并补压力下的实际 RSS 曲线及关闭宽限期；独立子进程、内存预留、外部 RSS 看门狗已落地。
 6. DOCX 正文双遍流式读取与批量落盘已接入；继续实现前端有界 chunk 缓存、构建期间增量首屏、Android 下载清单/校验/续传/空间管理和大正文压测。
 7. 完成 GC/配额/备份恢复、压测与灰度回滚验收。
@@ -117,7 +119,7 @@ process has stopped; sharing one data directory remains unsupported.
 
 ## Authoritative PPTX offline bundles
 
-`GET /v2/sessions/:id/bundle` lazily builds a persistent offline manifest after
+`GET /v1/sessions/:id/bundle` lazily builds a persistent offline manifest after
 PPTX readiness. It declares canonical model JSON, fonts with explicit
 `resourcePath`, and every `ppt/media` ZIP entry, including unused media. Each
 resource has its raw byte size and SHA-256. ZIP size/CRC are verified while
@@ -125,7 +127,7 @@ hashing. External media are reported separately; their availability is not
 covered by the offline guarantee. Bundle schema is 1; model schema is 2.
 Existing older model artifacts rebuild once from the retained source.
 
-`GET/HEAD /v2/sessions/:id/bundle/resources/<path>` serves only declared paths,
+`GET/HEAD /v1/sessions/:id/bundle/resources/<path>` serves only declared paths,
 with bearer authentication, private/no-store and SHA ETags. Buffered resources
 and stored ZIP media support byte Range and If-Range; compressed ZIP media
 fall back to a full 200 response. Manifest hrefs are session-specific.
@@ -381,7 +383,7 @@ Configuration: `cacheMode` (`PARSE_SERVER_CACHE_MODE=redis`), `redis` config
 Redis mode requires MySQL plus `artifactBackend: 'catalog'`: the shared
 `parse_jobs` row is what lets another instance address the projection. Rollback
 is switching back to `memory`; keys expire by TTL and no persistent data is
-rewritten. `/v2/capabilities` advertises `thresholds {docxAutoRemoteBytes,
+rewritten. `/v1/capabilities` advertises `thresholds {docxAutoRemoteBytes,
 pptxAutoRemoteBytes, docxFullRenderBytes}` so viewers do not hardcode deployment
 policies; the same limits are validated before startup.
 
@@ -395,7 +397,7 @@ request path. The first projection read on a waiting instance performs one
 `parse_jobs` lookup (via `activeJob`) to resolve the build's `jobId`; a local
 preview or a cached read never touches SQL.
 
-Cross-instance waiter attach: durable v2 waiters live in
+Cross-instance waiter attach: durable async waiters live in
 `parse_pending_sessions`, so an instance that did not create a session can
 resolve the row lazily and serve its current status, shared preview frames and
 progress. Such a waiter is read-only on the attaching instance: it never starts
@@ -413,7 +415,7 @@ been exercised on this checkout.
 Local drills exist but are not target-hardware acceptance:
 
 - `npm run sessions:load -w @genoffice/parse-server -- --sessions 500 --strict`
-  starts a real server, warms one shared artifact, opens 500 v2 reading sessions
+  starts a real server, warms one shared artifact, opens 500 v1 reading sessions
   against it and reports create/status latency plus per-session RSS growth.
   File-mode run: 500/500 ready, 1 build, status p95 0.5 ms, +103 MiB / ~211 KiB
   per session. `--mysql --catalog` (isolated DB) run: 500/500 ready, 1 build,
@@ -463,7 +465,7 @@ export PARSE_SERVER_BUILD_FINGERPRINT=$(
 fails the build (or CI) when the recorded value no longer matches the sources.
 The runtime only reads the injected value (`PARSE_SERVER_BUILD_FINGERPRINT`).
 
-## Deployment switches and v2 contract extras
+## Deployment switches and v1 API modes
 
 `bin.ts` parses deployment switches strictly and aborts startup on an unknown
 value: `PARSE_SERVER_ARTIFACT_BACKEND=local|catalog`,
@@ -479,16 +481,16 @@ a stuck phase logs `shutdown_phase_timeout` and shutdown continues),
 `PARSE_SERVER_DOCX_AUTO_REMOTE_BYTES` / `PARSE_SERVER_PPTX_AUTO_REMOTE_BYTES` /
 `PARSE_SERVER_DOCX_FULL_RENDER_BYTES` (client routing thresholds advertised via
 capabilities; defaults 32/64/64 MiB),
-`PARSE_SERVER_ASYNC_SESSIONS_V2=1|0` (process kill switch), and
-`PARSE_SERVER_V2_ROLLOUT_PERCENT=0..100` (deterministic canary: files whose
-`parseInt(fileId[0..4],16) % 100` is below the percentage use v2; the rest get
-404 and fall back to v1), `PARSE_SERVER_V2_ROLLOUT_HEADER` (optional header such
+`PARSE_SERVER_ASYNC_SESSIONS=1|0` (process kill switch), and
+`PARSE_SERVER_ASYNC_ROLLOUT_PERCENT=0..100` (deterministic canary: files whose
+`parseInt(fileId[0..4],16) % 100` is below the percentage use async mode; the rest get
+404 and retry synchronously on the same v1 path), `PARSE_SERVER_ASYNC_ROLLOUT_HEADER` (optional header such
 as `x-tenant-id`; when present, its sha256 bucket replaces the file bucket so a
-tenant/user is rolled out consistently), `PARSE_SERVER_V2_ROLLOUT_RAMP_PER_HOUR`
+tenant/user is rolled out consistently), `PARSE_SERVER_ASYNC_ROLLOUT_RAMP_PER_HOUR`
 (time-based auto ramp: effective percentage = min(target, hours_of_uptime × ramp);
-default 0 keeps the target fixed), `PARSE_SERVER_V2_AUTO_PAUSE_ERROR_RATE`
-(0–100 server-error percentage over the last 60 s / ≥20 v2 creates that pauses
-the v2 route for 5 min with 404/v1 fallback; 0 disables), and the restore gate
+default 0 keeps the target fixed), `PARSE_SERVER_ASYNC_AUTO_PAUSE_ERROR_RATE`
+(0–100 server-error percentage over the last 60 s / ≥20 async creates that pauses
+async creation for 5 min with 404/synchronous retry; 0 disables), and the restore gate
 `PARSE_SERVER_RESTORE_MANIFEST=<manifest.json>` with
 `PARSE_SERVER_RESTORE_DEEP`, `PARSE_SERVER_RESTORE_READ_ONLY` and
 `PARSE_SERVER_RESTORE_INVALIDATE`. A restore toggle without a manifest path is a
@@ -507,8 +509,8 @@ startup failures.
 are added idempotently on startup (including on tables created by an older
 release), the legacy `base_url`/`model`/`fonts` columns are relaxed to NULL and
 are no longer written; rows written by an older release are still read as a
-fallback. GET/heartbeat touches refresh `expires_at` and the v2 ready body
-exposes it. v1 and v2 responses still return `model`/`fonts`, but by lazily
+fallback. GET/heartbeat touches refresh `expires_at` and the v1 ready body
+exposes it. Session responses still return `model`/`fonts`, but by lazily
 reading the published artifact document (no parser worker; only a missing or
 damaged artifact falls back to a reopen/rebuild), so a session truly references
 its shared artifact. File-index mode stores the same fields in `sessions.json`.
@@ -516,25 +518,25 @@ Rollback note: a previous release reading a new row sees `model = NULL` and
 cannot restore that session, although its artifact and source remain and can be
 rebuilt; the reading position/layout preferences are still client-side.
 
-Staged rollback: `PARSE_SERVER_ASYNC_SESSIONS_V2=0` disables the v2 async
-session routes (they answer 404, capabilities report `features.asyncSessions:
-false`) while the whole v1 synchronous contract stays functional, so clients
+Staged rollback: `PARSE_SERVER_ASYNC_SESSIONS=0` rejects new asynchronous
+session creation (404; existing reads and cleanup remain available), capabilities report `features.asyncSessions:
+false` while the whole v1 synchronous contract stays functional, so clients
 fall back exactly as they do for older servers. Use it as the first rollback
-step (v2 async → v1, then optionally `artifactBackend=catalog → local`, then
+step (async → synchronous, then optionally `artifactBackend=catalog → local`, then
 cache `mode=redis → memory`). This is a process-level switch; it does not delete
 sessions, artifacts or files.
 
-`POST /v2/sessions` optionally accepts bounded `layoutPrefs`
+`POST /v1/sessions` with `Prefer: respond-async` optionally accepts bounded `layoutPrefs`
 (`zoom` 0.25–4, `page`, `anchor {unitId, blockIndex?, offsetPx?}`, ≤2 KiB,
 unknown keys rejected). The preference is carried through the durable waiter and
-persisted in `parse_sessions.layout_prefs`; `GET /v2/sessions/:id` echoes it
+persisted in `parse_sessions.layout_prefs`; `GET /v1/sessions/:id` echoes it
 while pending and after ready, and it survives a restart. It is a per-session
 reading hint only — it never enters the shared model/artifact cache, and v1
 bodies are unchanged.
 
 Cross-instance ready attach: any instance that shares the documented deployment
 precondition (one `dataDir` + one catalog) lazily loads a durable ready session
-created by another instance on `GET /v2/sessions/:id`, its units and heartbeat.
+created by another instance on `GET /v1/sessions/:id`, its units and heartbeat.
 Attaching opens the ready generation read-only through the catalog and never
 rebuilds the model or takes over a live builder's leases; `DELETE` stays owned
 by the creating instance. Crash takeover: if a remote **pending** waiter still
@@ -551,7 +553,7 @@ publishing them (a running build is not aborted mid-flight). Crashed readers
 expire by TTL. Object storage / instances without a shared filesystem are not
 supported yet.
 
-`POST /v2/sessions/:id/heartbeat` also accepts an optional bounded
+`POST /v1/sessions/:id/heartbeat` also accepts an optional bounded
 `layoutPrefs` body to update the reading position incrementally (ready sessions
 persist it in `parse_sessions.layout_prefs`, locally-owned waiters in their
 journal; remote waiters stay read-only).
@@ -561,23 +563,24 @@ returns `{url, expiresAt}`; viewers call it after a 403/expired signature or a
 deployment-origin change instead of reopening the reading session. Traversal and
 control characters are rejected.
 
-v2 ready views/document expose an opaque `layoutKey` (plan §4.1):
+v1 ready views/document expose an opaque `layoutKey` (plan §4.1):
 sha256(artifactKey + rendererVersion + width + fontSetHash + measurementProfileHash).
 Layouts are immutable per key, so clients can cache a laid-out deck across
 sessions and re-lay out only when the width/font set/artifact changes.
 
-v2 DTO envelopes carry an independent version: `/v2/capabilities.dtoVersion`,
-`dtoVersion` on v2 session/document/status envelopes, and the
-`X-Genoffice-Dto-Version` header on every `/v2/` response. v1 envelopes are
-unchanged.
+The public API is v1. `API_VERSION`, `CONTRACT_VERSION` and
+`PARSE_DTO_VERSION` all resolve to 1; `contractVersion`, `dtoVersion` and
+`X-Genoffice-Dto-Version` describe that same contract. Blocking creation retains
+its historical response body. All client requests, generated locations and
+resource URLs use `/v1`. See [API v1](../../docs/api-v1.zh-CN.md).
 
-v2 contract completions: `POST /v2/sessions/:id/heartbeat` renews only the
+v1 session capabilities: `POST /v1/sessions/:id/heartbeat` renews only the
 lightweight reading session (200 with `state` and `pollAfterMs`; 404 for an
 unknown id) and never touches a build lease or ready pointer. `GET
-/v2/sessions/:id` on a ready session adds `artifactKey`, terminal `progress`
+/v1/sessions/:id` on a ready session adds `artifactKey`, terminal `progress`
 (`unitsProduced`/`unitCount`/`percent`), `pollAfterMs: 0` and
-`complete: true`; the v1 body is unchanged. `GET
-/v2/sessions/:id/bundle-manifest` aliases the existing `/bundle` manifest (no
+`complete: true`. `GET
+/v1/sessions/:id/bundle-manifest` aliases the existing `/bundle` manifest (no
 sub-resources on the alias).
 
 Startup reconcile runs before the listener: canonical `g-N` directories older
@@ -603,7 +606,7 @@ again) and disappears from listings. Tombstones are purged after 30 days.
 Re-saving the same file creates a fresh active row; file-index mode mirrors the
 same semantics in `library.json`.
 
-`POST /v2/sessions` accepts an `Idempotency-Key` header (8–128 chars,
+`POST /v1/sessions` with `Prefer: respond-async` accepts an `Idempotency-Key` header (8–128 chars,
 `[A-Za-z0-9._:-]`): a replay returns the same `sessionId` and its current
 state (201 ready or 202 building) instead of opening a second durable waiter.
 A bounded in-process cache (`idempotencyTtlMs`, default 10 min;
@@ -612,7 +615,7 @@ the key is also written to the durable `parse_idempotency` ledger: another
 instance or a restarted process replays the same `sessionId`; concurrent retries
 merge via a pending claim (the loser waits for and replays the winner's body).
 File-index mode keeps the process-local cache only. Uploads are naturally
-idempotent by content addressing and `POST /v2/library` by its unique file
+idempotent by content addressing and `POST /v1/library` by its unique file
 reference.
 
 ## Observability metrics (plan §11)
@@ -697,9 +700,9 @@ isolated parse worker. A snapshot never writes SQL, never touches a published
 generation, and never marks an artifact ready: `complete` here means "all frames
 written", not "manifest published".
 
-A building v2 session advertises `features.incrementalPreview` and returns
+A building v1 session advertises `features.incrementalPreview` and returns
 `previewable`, `complete: false`, `progress`, and `availableUnits` from
-`GET /v2/sessions/:id`. `GET .../document`, `GET .../units?cursor=` and
+`GET /v1/sessions/:id`. `GET .../document`, `GET .../units?cursor=` and
 `GET .../units/:unitId` serve only committed units; uncommitted units answer
 `202` with `state: 'pending'`, `code: 'unit_pending'`, `retryAfterMs` and
 `pollAfterMs`. Without a snapshot the existing `409 session_not_ready` remains,

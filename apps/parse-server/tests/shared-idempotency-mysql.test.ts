@@ -49,9 +49,12 @@ describe.skipIf(!socketPath)('shared Idempotency-Key ledger over real MySQL', ()
     const request = (server: ParseServer) => (path: string, init?: RequestInit) =>
       fetch(server.url + path, init)
     const create = (server: ParseServer, fileId: string, key: string) =>
-      request(server)('/v2/sessions', {
+      request(server)('/v1/sessions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': key },
+        headers: {
+          ...{ 'Content-Type': 'application/json', 'Idempotency-Key': key },
+          Prefer: 'respond-async',
+        },
         body: JSON.stringify({ fileId }),
       })
     const a = await start()

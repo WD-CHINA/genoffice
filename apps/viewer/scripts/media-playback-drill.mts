@@ -81,7 +81,7 @@ try {
     : source.documents.filter((d: any) => d.media.length)) {
     const path = phase === 'original' ? document.source : document.converted
     assert.ok(path, 'converted PPTX not generated')
-    const uploaded = await request('/v2/files', { method: 'POST', body: await openAsBlob(path) })
+    const uploaded = await request('/v1/files', { method: 'POST', body: await openAsBlob(path) })
     const record: any = {
       name: document.name,
       fileId: uploaded.fileId,
@@ -89,27 +89,29 @@ try {
       status: 'running',
     }
     report.documents.push(record)
-    const session = await request('/v2/sessions', {
+    const session = await request('/v1/sessions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
       body: JSON.stringify({ fileId: uploaded.fileId }),
     })
     const deadline = Date.now() + 600_000
     let state: any
     for (;;) {
-      state = await request(`/v2/sessions/${session.sessionId}`)
+      state = await request(`/v1/sessions/${session.sessionId}`)
       if (state.state === 'ready') break
       assert.ok(!['failed', 'cancelled'].includes(state.state), JSON.stringify(state))
       assert.ok(Date.now() < deadline, 'parse timed out')
       await delay(250)
     }
     for (let index = 0; index < state.model.unitCount; index++) {
-      const unit = await request(`/v2/sessions/${session.sessionId}/units/${index}`)
+      const unit = await request(
+        `/v1/sessions/${session.sessionId}/units/${index}?representation=model`,
+      )
       if (unit.mediaRefs?.length) record.units.push({ index, media: unit.mediaRefs })
     }
     record.unitCount = state.model.unitCount
     record.status = 'passed'
-    await request(`/v2/sessions/${session.sessionId}`, { method: 'DELETE' })
+    await request(`/v1/sessions/${session.sessionId}`, { method: 'DELETE' })
     for (const media of document.media) {
       const asset = source.assets.find((a: any) => a.sha256 === media.sha256)
       const extension = asset.conversion?.output?.split('.').pop()

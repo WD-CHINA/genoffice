@@ -32,7 +32,7 @@ test('a loaded slide with expired image URLs refreshes its description before re
   })
   globalThis.Worker = WorkerStub as unknown as typeof Worker
   globalThis.fetch = (async (url: string, init?: RequestInit) => {
-    if (url.endsWith('/v2/capabilities')) return new Response('{}', { status: 404 })
+    if (url.endsWith('/v1/capabilities')) return new Response('{}', { status: 404 })
     if (init?.method === 'POST') return new Response(JSON.stringify({ sessionId: 's', fonts: [] }))
     if (url.endsWith('/layout')) return new Response(JSON.stringify({ slideCount: 1, fonts: [] }))
     return new Response(JSON.stringify({ state: 'ready' }))

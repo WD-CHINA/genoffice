@@ -134,9 +134,9 @@ async function createEnvironment(redisOverride?: { socketPath: string }): Promis
     return ((await response.json()) as { fileId: string }).fileId
   }
   const open = async (server: ParseServer, fileId: string) => {
-    const response = await requestOf(server)('/v2/sessions', {
+    const response = await requestOf(server)('/v1/sessions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
       body: JSON.stringify({ fileId }),
     })
     const body = (await response.json()) as { sessionId: string }
@@ -227,7 +227,7 @@ describe.skipIf(!mysqlSocket || !redisSocket)('shared hot cache over real MySQL 
     const deadline = Date.now() + 10_000
     let body: Record<string, any> | undefined
     for (;;) {
-      const response = await env.requestOf(server)(`/v2/sessions/${opened.sessionId}`)
+      const response = await env.requestOf(server)(`/v1/sessions/${opened.sessionId}`)
       expect(response.status).toBe(200)
       body = (await response.json()) as Record<string, any>
       if (body.previewable || body.state === 'ready' || body.state === 'failed') break
@@ -240,14 +240,18 @@ describe.skipIf(!mysqlSocket || !redisSocket)('shared hot cache over real MySQL 
     expect(body.complete).toBe(false)
     expect(body.progress).toMatchObject({ unitsProduced: 1, unitCount: 3 })
     expect(body.availableUnits).toEqual({ from: 0, to: 1 })
-    const first = await env.requestOf(server)(`/v2/sessions/${opened.sessionId}/units/0`)
+    const first = await env.requestOf(server)(
+      `/v1/sessions/${opened.sessionId}/units/0?representation=model`,
+    )
     expect(first.status).toBe(200)
     expect(await first.json()).toMatchObject({ index: 0 })
-    const pending = await env.requestOf(server)(`/v2/sessions/${opened.sessionId}/units/1`)
+    const pending = await env.requestOf(server)(
+      `/v1/sessions/${opened.sessionId}/units/1?representation=model`,
+    )
     expect(pending.status).toBe(202)
     expect(await pending.json()).toMatchObject({ code: 'unit_pending' })
     const documentResponse = await env.requestOf(server)(
-      `/v2/sessions/${opened.sessionId}/document`,
+      `/v1/sessions/${opened.sessionId}/document`,
     )
     expect(documentResponse.status).toBe(200)
     expect(await documentResponse.json()).toMatchObject({
@@ -265,7 +269,7 @@ describe.skipIf(!mysqlSocket || !redisSocket)('shared hot cache over real MySQL 
     // A cleared/evicted cache is a miss: the session stays pending with a 200,
     // never a 5xx and never a false ready.
     await env.store.del([pvKey, progressKey])
-    const cleared = await env.requestOf(server)(`/v2/sessions/${opened.sessionId}`)
+    const cleared = await env.requestOf(server)(`/v1/sessions/${opened.sessionId}`)
     expect(cleared.status).toBe(200)
     const clearedBody = (await cleared.json()) as Record<string, any>
     expect(clearedBody.state).not.toBe('ready')
@@ -317,7 +321,7 @@ describe.skipIf(!mysqlSocket || !redisSocket)('shared hot cache over real MySQL 
       let body: Record<string, any> = {}
       const deadline = Date.now() + 10_000
       for (;;) {
-        const response = await env.requestOf(reader)(`/v2/sessions/${remoteId}`)
+        const response = await env.requestOf(reader)(`/v1/sessions/${remoteId}`)
         expect(response.status).toBe(200)
         body = (await response.json()) as Record<string, any>
         if (body.previewable || body.state === 'failed') break
@@ -327,9 +331,13 @@ describe.skipIf(!mysqlSocket || !redisSocket)('shared hot cache over real MySQL 
       expect(body.previewable).toBe(true)
       expect(body.complete).toBe(false)
       expect(body.progress).toMatchObject({ unitsProduced: 1, unitCount: 2 })
-      const first = await env.requestOf(reader)(`/v2/sessions/${remoteId}/units/0`)
+      const first = await env.requestOf(reader)(
+        `/v1/sessions/${remoteId}/units/0?representation=model`,
+      )
       expect(first.status).toBe(200)
-      const second = await env.requestOf(reader)(`/v2/sessions/${remoteId}/units/1`)
+      const second = await env.requestOf(reader)(
+        `/v1/sessions/${remoteId}/units/1?representation=model`,
+      )
       expect(second.status).toBe(202)
       expect(await second.json()).toMatchObject({ code: 'unit_pending' })
       // Attaching must never start a second build on this instance.
@@ -338,14 +346,15 @@ describe.skipIf(!mysqlSocket || !redisSocket)('shared hot cache over real MySQL 
       }
       expect(remoteHealth.artifacts.buildsStarted).toBe(0)
       expect(remoteHealth.artifacts.sourceParsesStarted).toBe(0)
-      const beat = await env.requestOf(reader)(`/v2/sessions/${remoteId}/heartbeat`, {
+      const beat = await env.requestOf(reader)(`/v1/sessions/${remoteId}/heartbeat`, {
+        headers: { Prefer: 'respond-async' },
         method: 'POST',
       })
       expect(beat.status).toBe(200)
       // Closing the remote reading view must not delete the builder's waiter row.
-      const closed = await env.requestOf(reader)(`/v2/sessions/${remoteId}`, { method: 'DELETE' })
+      const closed = await env.requestOf(reader)(`/v1/sessions/${remoteId}`, { method: 'DELETE' })
       expect(closed.status).toBe(204)
-      const stillThere = await env.requestOf(builder)(`/v2/sessions/${remoteId}`)
+      const stillThere = await env.requestOf(builder)(`/v1/sessions/${remoteId}`)
       expect(stillThere.status).toBe(200)
     } finally {
       pause.blocked.resolve()
@@ -354,7 +363,7 @@ describe.skipIf(!mysqlSocket || !redisSocket)('shared hot cache over real MySQL 
     // from the catalog ready pointer, never from the projection.
     const readyDeadline = Date.now() + 20_000
     for (;;) {
-      const response = await env.requestOf(builder)(`/v2/sessions/${builderSession.sessionId}`)
+      const response = await env.requestOf(builder)(`/v1/sessions/${builderSession.sessionId}`)
       expect(response.status).toBe(200)
       const body = (await response.json()) as { state: string }
       if (body.state === 'ready') break
@@ -376,7 +385,7 @@ describe.skipIf(!mysqlSocket || !redisSocket)('shared hot cache over real MySQL 
     expect(opened.status).toBe(202)
     const deadline = Date.now() + 20_000
     for (;;) {
-      const response = await env.requestOf(server)(`/v2/sessions/${opened.sessionId}`)
+      const response = await env.requestOf(server)(`/v1/sessions/${opened.sessionId}`)
       expect(response.status).toBe(200)
       const body = (await response.json()) as { state: string }
       if (body.state === 'ready') break
@@ -390,7 +399,9 @@ describe.skipIf(!mysqlSocket || !redisSocket)('shared hot cache over real MySQL 
     expect(health.cache.mode).toBe('redis')
     expect(health.cache.enabled).toBe(true)
     expect(health.cache.errors).toBeGreaterThan(0)
-    const unit = await env.requestOf(server)(`/v2/sessions/${opened.sessionId}/units/0`)
+    const unit = await env.requestOf(server)(
+      `/v1/sessions/${opened.sessionId}/units/0?representation=model`,
+    )
     expect(unit.status).toBe(200)
   })
 })

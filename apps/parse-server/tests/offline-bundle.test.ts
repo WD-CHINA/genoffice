@@ -53,7 +53,7 @@ async function setup(existing?: string, options: Partial<ParseServerOptions> = {
     return ((await response.json()) as { sessionId: string }).sessionId
   }
   const manifest = async (id: string) => {
-    const response = await request(`/v2/sessions/${id}/bundle`)
+    const response = await request(`/v1/sessions/${id}/bundle`)
     expect(response.status, await response.clone().text()).toBe(200)
     return (await response.json()) as OfflineBundleManifest
   }
@@ -88,7 +88,7 @@ it('serves exact hashed bundle bytes, complete stripped-media inventory and auth
   const id = await app.open(fileId)
   const manifest = await app.manifest(id)
   for (const path of ['document.json', 'units/0.json'])
-    expect((await app.request(`/v2/sessions/${id}/bundle/resources/${path}`)).status).toBe(404)
+    expect((await app.request(`/v1/sessions/${id}/bundle/resources/${path}`)).status).toBe(404)
   expect(manifest).toMatchObject({
     fileId,
     format: 'pptx',
@@ -144,13 +144,13 @@ it('serves exact hashed bundle bytes, complete stripped-media inventory and auth
   expect(full.status).toBe(200)
   expect(sha(Buffer.from(await full.arrayBuffer()))).toBe(deflated.sha256)
   expect(
-    (await app.request(`/v2/sessions/${id}/bundle/resources/parts/ppt/media/missing.bin`)).status,
+    (await app.request(`/v1/sessions/${id}/bundle/resources/parts/ppt/media/missing.bin`)).status,
   ).toBe(404)
-  expect((await app.request(`/v2/sessions/${id}/bundle/resources/parts/%E0%A4%A`)).status).toBe(400)
+  expect((await app.request(`/v1/sessions/${id}/bundle/resources/parts/%E0%A4%A`)).status).toBe(400)
   const head = await app.request(stored.href!, { method: 'HEAD' })
   expect(head.headers.get('content-length')).toBe(String(stored.size))
   expect((await head.arrayBuffer()).byteLength).toBe(0)
-  const capabilities = (await (await app.request('/v2/capabilities')).json()) as any
+  const capabilities = (await (await app.request('/v1/capabilities')).json()) as any
   expect(capabilities.features.offlineBundles).toBe(true)
 })
 
@@ -188,10 +188,10 @@ it('rejects bad media CRC during construction and never publishes a falsely comp
   const before = (await (await app.request('/v1/health')).json()) as any
   expect(before.artifacts.buildsStarted).toBe(1)
   expect(before.artifacts.sourceParsesStarted).toBe(1)
-  const response = await app.request(`/v2/sessions/${id}/bundle`)
+  const response = await app.request(`/v1/sessions/${id}/bundle`)
   expect(response.status).toBe(422)
   expect(await response.text()).toContain('CRC mismatch')
-  expect((await app.request(`/v2/sessions/${id}/units/0`)).status).toBe(200)
+  expect((await app.request(`/v1/sessions/${id}/units/0?representation=model`)).status).toBe(200)
   expect(await readdir(join(app.dir, 'staging'))).toEqual([])
   const health = (await (await app.request('/v1/health')).json()) as any
   expect(health.activeWorkers).toBe(0)
@@ -239,9 +239,11 @@ it('queues lazy bundle construction separately and keeps cached previews readabl
   const building = app.open(cold)
   try {
     await started
-    const blocked = await app.request(`/v2/sessions/${warm}/bundle`)
+    const blocked = await app.request(`/v1/sessions/${warm}/bundle`)
     expect(blocked.status).toBe(429)
-    expect((await app.request(`/v2/sessions/${warm}/units/0`)).status).toBe(200)
+    expect((await app.request(`/v1/sessions/${warm}/units/0?representation=model`)).status).toBe(
+      200,
+    )
   } finally {
     release()
     await building
@@ -277,7 +279,7 @@ it('retains a shared lazy build after its client cancels and closes the viewing 
   const controller = new AbortController()
   try {
     await started
-    const requested = app.request(`/v2/sessions/${warm}/bundle`, { signal: controller.signal })
+    const requested = app.request(`/v1/sessions/${warm}/bundle`, { signal: controller.signal })
     const aborted = expect(requested).rejects.toMatchObject({ name: 'AbortError' })
     await vi.waitFor(
       async () => {
@@ -288,7 +290,7 @@ it('retains a shared lazy build after its client cancels and closes the viewing 
     )
     controller.abort()
     await aborted
-    expect((await app.request(`/v2/sessions/${warm}`, { method: 'DELETE' })).status).toBe(204)
+    expect((await app.request(`/v1/sessions/${warm}`, { method: 'DELETE' })).status).toBe(204)
   } finally {
     controller.abort()
     release()
@@ -316,12 +318,12 @@ it.each(['image', 'font', 'table'])(
     zip.file('word/embeddings/unused.bin', Buffer.from('offline-inventory'))
     const fileId = await h.upload(await zip.generateAsync({ type: 'nodebuffer' }))
     const sessionId = await h.open(fileId)
-    const response = await h.request(`/v2/sessions/${sessionId}/bundle`)
+    const response = await h.request(`/v1/sessions/${sessionId}/bundle`)
     expect(response.status, await response.clone().text()).toBe(200)
     const manifest = (await response.json()) as OfflineBundleManifest
     expect(manifest.format).toBe('docx')
     for (const path of ['layout.json', 'layout/0.json'])
-      expect((await h.request(`/v2/sessions/${sessionId}/bundle/resources/${path}`)).status).toBe(
+      expect((await h.request(`/v1/sessions/${sessionId}/bundle/resources/${path}`)).status).toBe(
         404,
       )
     expect(manifest.inventory).toBe('docx-media-v1')
@@ -349,7 +351,7 @@ it.each(['image', 'font', 'table'])(
     expect(total).toBe(manifest.totalBytes)
     const reopened = await h.open(fileId)
     const warm = (await (
-      await h.request(`/v2/sessions/${reopened}/bundle`)
+      await h.request(`/v1/sessions/${reopened}/bundle`)
     ).json()) as OfflineBundleManifest
     expect(warm.artifactKey).toBe(manifest.artifactKey)
   },

@@ -1,5 +1,7 @@
 # Viewer 稳定性验证
 
+> 本文接口名称与配置按 [API v1](../../../docs/api-v1.zh-CN.md) 统一整理；历史测量结果保留，不代表新一轮验收。
+
 > 2026-11-12：当前执行时长改为每模式 1 小时；历史实测数字保留原条件。当前架构、边界与本轮完整结果见[架构主文档](../../../docs/runtime-workflows.zh-CN.md)、[运行边界](../../../docs/runtime-boundaries.zh-CN.md)和[测试指南](../../../docs/testing-guide.zh-CN.md)。
 
 ## 四组验收场景
@@ -52,7 +54,7 @@ node --import tsx apps/viewer/scripts/resilience-smoke.mts
 
 ## 2026-11-10 签名过期与能力探测（Web）
 
-- 新增 `src/web/capabilities.ts`：打开会话前探测 `/v2/capabilities`（1.5 s 超时、按 origin 缓存 5 分钟、失败回退旧行为）；服务端显式 `asyncSessions=false` 时走 v1，`incrementalPreview=false` 时不展示首屏预览。
+- 新增 `src/web/capabilities.ts`：打开会话前探测 `/v1/capabilities`（1.5 s 超时、按 origin 缓存 5 分钟、失败回退旧行为）；服务端显式 `asyncSessions=false` 时直接同步创建，`incrementalPreview=false` 时不展示首屏预览。
 - 新增 `src/web/signed-url.ts`：解析 part URL 的 `exp`/`sig`，提前 60 s 判定过期并识别部署 origin 变化。DOCX 随机访问/顺序加载命中过期签名的缓存 chunk 时自动重取描述；PPTX 音视频 mediaRef 同样刷新。缓存模型不失效，只替换资源描述，因此不再需要因签名过期重开文档。
 - PPTX 模型路径同样接入：worker 缓存的 layout slide/source 若含过期 `exp/sig` 或旧部署 origin，会在复用前 `refresh` 并重取该页描述（图片 `media` 引用与音视频 mediaRef 一并更新）；测试 `pptx-signed-refresh.test.ts` 覆盖“已加载页 → 过期 → refresh → 新签名”。
 - 未覆盖：嵌入字体走 Authorization 的 token 轮换、真实浏览器下的 403/换域名端到端验收；上面的 12 小时有效期仍作为缓存上限。

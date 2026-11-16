@@ -97,7 +97,7 @@ describe.skipIf(!socketPath)('catalog-backed offline bundle over HTTP', () => {
 
   it('serves a bundle from its own SQL generation and pins it independently', async () => {
     const h = await setup()
-    const response = await h.request(`/v2/sessions/${h.sessionId}/bundle`)
+    const response = await h.request(`/v1/sessions/${h.sessionId}/bundle`)
     expect(response.status, await response.clone().text()).toBe(200)
     const manifest = (await response.json()) as OfflineBundleManifest
 
@@ -112,7 +112,7 @@ describe.skipIf(!socketPath)('catalog-backed offline bundle over HTTP', () => {
     expect(await stat(join(h.dataDir, bundle.storage_path, 'manifest.json'))).toBeDefined()
 
     const layout = manifest.resources.find((resource) => resource.path === 'layout.json')!
-    const resource = await h.request(`/v2/sessions/${h.sessionId}/bundle/resources/layout.json`)
+    const resource = await h.request(`/v1/sessions/${h.sessionId}/bundle/resources/layout.json`)
     expect(resource.status).toBe(200)
     expect(resource.headers.get('etag')).toBe(`"${layout.sha256}"`)
     const [leases] = await h.server.db!.pool.query<RowDataPacket[]>(
@@ -144,7 +144,7 @@ describe.skipIf(!socketPath)('catalog-backed offline bundle over HTTP', () => {
 
   it('rebuilds only a damaged bundle generation through the HTTP route', async () => {
     const h = await setup()
-    const first = await h.request(`/v2/sessions/${h.sessionId}/bundle`)
+    const first = await h.request(`/v1/sessions/${h.sessionId}/bundle`)
     expect(first.status).toBe(200)
     const manifest = (await first.json()) as OfflineBundleManifest
     const broken = (await h.rows()).find((row) => options(row).purpose === 'offline-bundle')!
@@ -164,7 +164,7 @@ describe.skipIf(!socketPath)('catalog-backed offline bundle over HTTP', () => {
       await file.close()
     }
 
-    const repaired = await h.request(`/v2/sessions/${h.sessionId}/bundle`)
+    const repaired = await h.request(`/v1/sessions/${h.sessionId}/bundle`)
     expect(repaired.status, await repaired.clone().text()).toBe(200)
     expect(((await repaired.json()) as OfflineBundleManifest).artifactKey).toBe(
       manifest.artifactKey,
@@ -177,7 +177,7 @@ describe.skipIf(!socketPath)('catalog-backed offline bundle over HTTP', () => {
     expect(Number(model.ready_generation)).toBe(1)
     // Immutable old generations are left for the retirement/sweeper path.
     await expect(stat(join(oldPath, 'manifest.json'))).resolves.toBeDefined()
-    const resource = await h.request(`/v2/sessions/${h.sessionId}/bundle/resources/layout.json`)
+    const resource = await h.request(`/v1/sessions/${h.sessionId}/bundle/resources/layout.json`)
     expect(resource.status).toBe(200)
     const health = (await (await h.request('/v1/health')).json()) as { errors: number }
     expect(health.errors).toBe(0)
@@ -185,7 +185,7 @@ describe.skipIf(!socketPath)('catalog-backed offline bundle over HTTP', () => {
 
   it('reuses the repaired bundle generation after the server restarts', async () => {
     const h = await setup()
-    expect((await h.request(`/v2/sessions/${h.sessionId}/bundle`)).status).toBe(200)
+    expect((await h.request(`/v1/sessions/${h.sessionId}/bundle`)).status).toBe(200)
     const generation = Number(
       (await h.rows()).find((row) => options(row).purpose === 'offline-bundle')!.ready_generation,
     )
@@ -201,7 +201,7 @@ describe.skipIf(!socketPath)('catalog-backed offline bundle over HTTP', () => {
     cleanups.push(async () => {
       await restarted.close().catch(() => undefined)
     })
-    const response = await fetch(restarted.url + `/v2/sessions/${h.sessionId}/bundle`, {
+    const response = await fetch(restarted.url + `/v1/sessions/${h.sessionId}/bundle`, {
       headers: { Authorization: 'Bearer secret' },
     })
     expect(response.status, await response.clone().text()).toBe(200)
@@ -268,7 +268,7 @@ describe.skipIf(!socketPath)('catalog-backed offline bundle over HTTP', () => {
       ),
     )
 
-    const response = await h.request(`/v2/sessions/${h.sessionId}/bundle`)
+    const response = await h.request(`/v1/sessions/${h.sessionId}/bundle`)
     expect(response.status, await response.clone().text()).toBe(200)
     const manifest = (await response.json()) as OfflineBundleManifest
     expect(manifest.artifactKey).toBe(bundleKey)
@@ -292,7 +292,7 @@ describe.skipIf(!socketPath)('catalog-backed offline bundle over HTTP', () => {
 
     const layout = manifest.resources.find((resource) => resource.path === 'layout.json')!
     const layoutResponse = await h.request(
-      `/v2/sessions/${h.sessionId}/bundle/resources/layout.json`,
+      `/v1/sessions/${h.sessionId}/bundle/resources/layout.json`,
     )
     expect(layoutResponse.status).toBe(200)
     // The imported frame keeps the exact hash declared by the authoritative inventory.

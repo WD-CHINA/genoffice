@@ -10,7 +10,7 @@ import { canonicalJson } from './artifact-store'
  * that will be published in the final generation. Nothing in this module can
  * mark an artifact ready, mutate an already published unit, or authorise an
  * offline bundle: `complete: false` is always reported until the full manifest
- * exists and the v2 session itself transitions to `ready`.
+ * exists and the v1 session itself transitions to `ready`.
  */
 
 export interface PreviewDocument {
@@ -114,8 +114,11 @@ export function parsePreviewDocument(value: unknown): PreviewDocument | null {
   if (!rawModel || typeof rawModel !== 'object' || Array.isArray(rawModel)) return null
   const model = rawModel as Record<string, unknown>
   if (typeof model.format !== 'string' || !['pptx', 'docx'].includes(model.format)) return null
-  if (model.unitCount !== undefined &&
-    (!Number.isSafeInteger(model.unitCount) || (model.unitCount as number) < 0)) return null
+  if (
+    model.unitCount !== undefined &&
+    (!Number.isSafeInteger(model.unitCount) || (model.unitCount as number) < 0)
+  )
+    return null
   if (!Array.isArray(record.fonts)) return null
   return { model: model as PreviewDocument['model'], fonts: record.fonts, layout: record.layout }
 }
@@ -139,7 +142,10 @@ export class PreviewRegistry {
     this.ttlMs = options.ttlMs ?? DEFAULTS.ttlMs
     this.now = options.now ?? Date.now
     for (const [name, value] of Object.entries({
-      maxUnits: this.maxUnits, maxBytes: this.maxBytes, maxKeys: this.maxKeys, ttlMs: this.ttlMs,
+      maxUnits: this.maxUnits,
+      maxBytes: this.maxBytes,
+      maxKeys: this.maxKeys,
+      ttlMs: this.ttlMs,
     })) {
       if (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647)
         throw new Error(`invalid preview ${name}`)
@@ -188,16 +194,22 @@ export class PreviewRegistry {
       const state = this.states.get(key)
       if (!state || state.complete) return
       // Only strictly consecutive, already-committed frames may advance the range.
-      if (event.index !== state.unitsProduced || event.unitsProduced !== event.index + 1 ||
-        event.index >= state.unitCount) {
+      if (
+        event.index !== state.unitsProduced ||
+        event.unitsProduced !== event.index + 1 ||
+        event.index >= state.unitCount
+      ) {
         this.dropped++
         return
       }
       state.unitsProduced = event.unitsProduced
       if (state.units.length === event.index && state.units.length < this.maxUnits) {
         let size: number
-        try { size = Buffer.byteLength(canonicalJson(event.unit as never)) }
-        catch { size = this.maxBytes + 1 }
+        try {
+          size = Buffer.byteLength(canonicalJson(event.unit as never))
+        } catch {
+          size = this.maxBytes + 1
+        }
         if (state.bytes + size <= this.maxBytes) {
           state.units.push(event.unit)
           state.bytes += size
@@ -240,7 +252,11 @@ export class PreviewRegistry {
       // Deep copy: a consumer must not be able to mutate a committed record,
       // even though it only ever serialises the snapshot into a response.
       units: state.units.map((entry) => {
-        try { return structuredClone(entry) } catch { return entry }
+        try {
+          return structuredClone(entry)
+        } catch {
+          return entry
+        }
       }),
       complete: state.complete,
       previewable: state.unitsProduced > 0 && state.units.length > 0,
@@ -248,8 +264,14 @@ export class PreviewRegistry {
     }
   }
 
-  stats(): { keys: number; cachedUnits: number; cachedBytes: number;
-    completed: number; failed: number; dropped: number } {
+  stats(): {
+    keys: number
+    cachedUnits: number
+    cachedBytes: number
+    completed: number
+    failed: number
+    dropped: number
+  } {
     this.prune()
     let cachedUnits = 0
     let cachedBytes = 0
@@ -257,21 +279,31 @@ export class PreviewRegistry {
       cachedUnits += state.units.length
       cachedBytes += state.bytes
     }
-    return { keys: this.states.size, cachedUnits, cachedBytes,
-      completed: this.completed, failed: this.failed, dropped: this.dropped }
+    return {
+      keys: this.states.size,
+      cachedUnits,
+      cachedBytes,
+      completed: this.completed,
+      failed: this.failed,
+      dropped: this.dropped,
+    }
   }
 
-  clear(): void { this.states.clear() }
+  clear(): void {
+    this.states.clear()
+  }
 
   private prune(): void {
     const cutoff = this.now() - this.ttlMs
-    for (const [key, state] of this.states)
-      if (state.updatedAt < cutoff) this.states.delete(key)
+    for (const [key, state] of this.states) if (state.updatedAt < cutoff) this.states.delete(key)
     while (this.states.size > this.maxKeys) {
       let oldestKey: string | undefined
       let oldest = Infinity
       for (const [key, state] of this.states)
-        if (state.updatedAt < oldest) { oldest = state.updatedAt; oldestKey = key }
+        if (state.updatedAt < oldest) {
+          oldest = state.updatedAt
+          oldestKey = key
+        }
       if (!oldestKey) break
       this.states.delete(oldestKey)
     }

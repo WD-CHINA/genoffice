@@ -64,7 +64,7 @@ it('startup removes aged orphan temp paths but retains fresh paths, unknown name
       ownedChunk,
     ])
       await expect(stat(path)).resolves.toBeDefined()
-    expect((await fetch(`${server.url}/v2/sessions/${ticket.id}`)).status).toBe(200)
+    expect((await fetch(`${server.url}/v1/sessions/${ticket.id}`)).status).toBe(200)
     await server.gc()
     await expect(stat(ownedChunk)).resolves.toBeDefined()
   } finally {

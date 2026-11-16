@@ -72,10 +72,6 @@ const server = await createParseServer({
   cacheProgressTtlMs: numberEnv('PARSE_SERVER_CACHE_PROGRESS_TTL_MS'),
   cacheProgressThrottleMs: numberEnv('PARSE_SERVER_CACHE_PROGRESS_THROTTLE_MS', 0),
   cacheMaxFieldBytes: numberEnv('PARSE_SERVER_CACHE_MAX_FIELD_BYTES'),
-  v2RolloutPercent: numberEnv('PARSE_SERVER_V2_ROLLOUT_PERCENT'),
-  v2RolloutHeader: process.env.PARSE_SERVER_V2_ROLLOUT_HEADER || undefined,
-  v2RolloutRampPerHour: numberEnv('PARSE_SERVER_V2_ROLLOUT_RAMP_PER_HOUR'),
-  v2AutoPauseErrorRate: numberEnv('PARSE_SERVER_V2_AUTO_PAUSE_ERROR_RATE'),
   canonicalArtifactExport: ['1', 'true', 'yes', 'on'].includes(
     (process.env.PARSE_SERVER_CANONICAL_ARTIFACT_EXPORT ?? '').toLowerCase(),
   ),

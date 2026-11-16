@@ -77,9 +77,9 @@ async function createEnvironment(): Promise<Env> {
     return ((await response.json()) as { fileId: string }).fileId
   }
   const open = async (server: ParseServer, fileId: string) => {
-    const response = await requestOf(server)('/v2/sessions', {
+    const response = await requestOf(server)('/v1/sessions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
       body: JSON.stringify({ fileId }),
     })
     return {
@@ -124,7 +124,7 @@ describe.skipIf(!socketPath)('cross-instance waiter journal over real MySQL', ()
       ])
       // The reader never saw this session until now: it resolves the durable row
       // from MySQL and serves it read-only.
-      const remote = await env.requestOf(env.reader)(`/v2/sessions/${session.sessionId}`)
+      const remote = await env.requestOf(env.reader)(`/v1/sessions/${session.sessionId}`)
       expect(remote.status).toBe(200)
       const body = (await remote.json()) as { state: string; previewable?: boolean }
       expect(['queued', 'building']).toContain(body.state)
@@ -134,23 +134,24 @@ describe.skipIf(!socketPath)('cross-instance waiter journal over real MySQL', ()
       }
       expect(health.artifacts.buildsStarted).toBe(0)
       expect(health.artifacts.sourceParsesStarted).toBe(0)
-      const beat = await env.requestOf(env.reader)(`/v2/sessions/${session.sessionId}/heartbeat`, {
+      const beat = await env.requestOf(env.reader)(`/v1/sessions/${session.sessionId}/heartbeat`, {
+        headers: { Prefer: 'respond-async' },
         method: 'POST',
       })
       expect(beat.status).toBe(200)
       // Closing the remote reading view must not delete the builder's row.
-      const closed = await env.requestOf(env.reader)(`/v2/sessions/${session.sessionId}`, {
+      const closed = await env.requestOf(env.reader)(`/v1/sessions/${session.sessionId}`, {
         method: 'DELETE',
       })
       expect(closed.status).toBe(204)
-      const owner = await env.requestOf(env.builder)(`/v2/sessions/${session.sessionId}`)
+      const owner = await env.requestOf(env.builder)(`/v1/sessions/${session.sessionId}`)
       expect(owner.status).toBe(200)
     } finally {
       pause.blocked.resolve()
     }
     const readyDeadline = Date.now() + 20_000
     for (;;) {
-      const response = await env.requestOf(env.builder)(`/v2/sessions/${session.sessionId}`)
+      const response = await env.requestOf(env.builder)(`/v1/sessions/${session.sessionId}`)
       expect(response.status).toBe(200)
       const body = (await response.json()) as { state: string }
       if (body.state === 'ready') break
@@ -160,7 +161,7 @@ describe.skipIf(!socketPath)('cross-instance waiter journal over real MySQL', ()
     }
     // The remote reader cannot attach to the ready generation without the same
     // data directory; the journal attach is a status/first-screen view.
-    const afterReady = await env.requestOf(env.reader)(`/v2/sessions/${session.sessionId}`)
+    const afterReady = await env.requestOf(env.reader)(`/v1/sessions/${session.sessionId}`)
     expect([200, 404]).toContain(afterReady.status)
   })
 })

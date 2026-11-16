@@ -43,14 +43,15 @@ function isolatedEnv(overrides: Record<string, string | undefined>): NodeJS.Proc
     TMPDIR: process.env.TMPDIR,
     LANG: process.env.LANG,
   }
-  for (const [name, value] of Object.entries(overrides))
-    if (value !== undefined) env[name] = value
+  for (const [name, value] of Object.entries(overrides)) if (value !== undefined) env[name] = value
   return env
 }
 
 async function startServer(env: NodeJS.ProcessEnv, timeoutMs = 30_000): Promise<Started> {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/bin.ts'], {
-    cwd: serverDir, env, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: serverDir,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
   })
   children.add(child)
   let output = ''
@@ -64,15 +65,21 @@ async function startServer(env: NodeJS.ProcessEnv, timeoutMs = 30_000): Promise<
       else resolve(value!)
     }
     const timer = setTimeout(
-      () => finish(new Error(`server did not start in time:\n${output}`)), timeoutMs)
+      () => finish(new Error(`server did not start in time:\n${output}`)),
+      timeoutMs,
+    )
     const onData = (chunk: Buffer) => {
       output += chunk.toString()
       const match = /\[parse-server\] listening on (http:\/\/\S+)/.exec(output)
       if (match) finish(undefined, match[1])
     }
     child.stdout?.on('data', onData)
-    child.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString() })
-    child.once('exit', (code) => finish(new Error(`server exited early (code=${code}):\n${output}`)))
+    child.stderr?.on('data', (chunk: Buffer) => {
+      output += chunk.toString()
+    })
+    child.once('exit', (code) =>
+      finish(new Error(`server exited early (code=${code}):\n${output}`)),
+    )
   })
   return { url, child, output: () => output }
 }
@@ -93,15 +100,22 @@ async function stopServer(started: Started, timeoutMs = 15_000): Promise<void> {
 }
 
 async function runFailing(
-  env: NodeJS.ProcessEnv, timeoutMs = 20_000,
+  env: NodeJS.ProcessEnv,
+  timeoutMs = 20_000,
 ): Promise<{ code: number | null; output: string }> {
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/bin.ts'], {
-    cwd: serverDir, env, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: serverDir,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
   })
   children.add(child)
   let output = ''
-  child.stdout?.on('data', (chunk: Buffer) => { output += chunk.toString() })
-  child.stderr?.on('data', (chunk: Buffer) => { output += chunk.toString() })
+  child.stdout?.on('data', (chunk: Buffer) => {
+    output += chunk.toString()
+  })
+  child.stderr?.on('data', (chunk: Buffer) => {
+    output += chunk.toString()
+  })
   const code = await Promise.race([
     new Promise<number | null>((resolve) => child.once('exit', resolve)),
     new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), timeoutMs)),
@@ -145,30 +159,33 @@ describe.skipIf(!socketPath)('catalog deployment through environment variables o
     try {
       const call = request(first.url)
       const uploaded = await call('/v1/files', {
-        method: 'POST', body: Buffer.from(await createBlankPptx()),
+        method: 'POST',
+        body: Buffer.from(await createBlankPptx()),
       })
       expect(uploaded.status, await uploaded.clone().text()).toBe(201)
-      const { fileId } = await uploaded.json() as { fileId: string }
-      const opened = await call('/v2/sessions', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const { fileId } = (await uploaded.json()) as { fileId: string }
+      const opened = await call('/v1/sessions', {
+        method: 'POST',
+        headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
         body: JSON.stringify({ fileId }),
       })
       expect([201, 202]).toContain(opened.status)
       sessionId = ((await opened.json()) as { sessionId: string }).sessionId
       const deadline = Date.now() + 25_000
       for (;;) {
-        const status = await call(`/v2/sessions/${sessionId}`)
+        const status = await call(`/v1/sessions/${sessionId}`)
         expect(status.status).toBe(200)
-        const body = await status.json() as { state: string }
+        const body = (await status.json()) as { state: string }
         if (body.state === 'ready') break
         if (body.state === 'failed') throw new Error('cold catalog build failed')
         if (Date.now() > deadline) throw new Error('cold catalog build did not become ready')
         await new Promise((resolve) => setTimeout(resolve, 50))
       }
-      const unit = await call(`/v2/sessions/${sessionId}/units/0`)
+      const unit = await call(`/v1/sessions/${sessionId}/units/0?representation=model`)
       expect(unit.status).toBe(200)
-      const health = await (await call('/v1/health')).json() as {
-        storage: string; artifacts: { buildsStarted: number }
+      const health = (await (await call('/v1/health')).json()) as {
+        storage: string
+        artifacts: { buildsStarted: number }
       }
       expect(health.storage).toBe('mysql')
       expect(health.artifacts.buildsStarted).toBe(1)
@@ -181,15 +198,15 @@ describe.skipIf(!socketPath)('catalog deployment through environment variables o
     const second = await startServer(baseEnv)
     try {
       const call = request(second.url)
-      const restored = await call(`/v2/sessions/${sessionId}`)
+      const restored = await call(`/v1/sessions/${sessionId}`)
       expect(restored.status).toBe(200)
       expect(await restored.json()).toMatchObject({ state: 'ready', sessionId })
-      const health = await (await call('/v1/health')).json() as {
+      const health = (await (await call('/v1/health')).json()) as {
         artifacts: { buildsStarted: number; sourceParsesStarted: number }
       }
       expect(health.artifacts.buildsStarted).toBe(0)
       expect(health.artifacts.sourceParsesStarted).toBe(0)
-      const unit = await call(`/v2/sessions/${sessionId}/units/0`)
+      const unit = await call(`/v1/sessions/${sessionId}/units/0?representation=model`)
       expect(unit.status).toBe(200)
     } finally {
       await stopServer(second)
@@ -198,19 +215,23 @@ describe.skipIf(!socketPath)('catalog deployment through environment variables o
 
   it('refuses a restore toggle without a manifest and catalog without MySQL before listening', async () => {
     const missing = join(tmpdir(), `missing-manifest-${randomUUID()}.json`)
-    const restore = await runFailing(isolatedEnv({
-      PARSE_SERVER_DATA_DIR: join(tmpdir(), `no-data-${randomUUID()}`),
-      PARSE_SERVER_PORT: '0',
-      PARSE_SERVER_RESTORE_MANIFEST: missing,
-    }))
+    const restore = await runFailing(
+      isolatedEnv({
+        PARSE_SERVER_DATA_DIR: join(tmpdir(), `no-data-${randomUUID()}`),
+        PARSE_SERVER_PORT: '0',
+        PARSE_SERVER_RESTORE_MANIFEST: missing,
+      }),
+    )
     expect(restore.code).not.toBe(0)
     expect(restore.output).toMatch(/invalid restore manifest/)
 
-    const catalog = await runFailing(isolatedEnv({
-      PARSE_SERVER_DATA_DIR: join(tmpdir(), `no-data-${randomUUID()}`),
-      PARSE_SERVER_PORT: '0',
-      PARSE_SERVER_ARTIFACT_BACKEND: 'catalog',
-    }))
+    const catalog = await runFailing(
+      isolatedEnv({
+        PARSE_SERVER_DATA_DIR: join(tmpdir(), `no-data-${randomUUID()}`),
+        PARSE_SERVER_PORT: '0',
+        PARSE_SERVER_ARTIFACT_BACKEND: 'catalog',
+      }),
+    )
     expect(catalog.code).not.toBe(0)
     expect(catalog.output).toMatch(/catalog artifact backend requires MySQL/)
   }, 60_000)

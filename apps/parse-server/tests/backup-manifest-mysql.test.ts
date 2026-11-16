@@ -168,16 +168,16 @@ describe.skipIf(!socketPath)('backup manifest and restore drill over real MySQL'
     expect(report.warnings.some((issue) => issue.code === 'ready_withdrawn')).toBe(true)
     expect(await readyGeneration(h)).toBeNull()
 
-    const waiting = await h.request('/v2/sessions', {
+    const waiting = await h.request('/v1/sessions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
       body: JSON.stringify({ fileId: h.fileId }),
     })
     const pending = (await waiting.json()) as { sessionId: string; state?: string }
     let state = pending.state ?? 'queued'
     for (let attempt = 0; attempt < 150 && state !== 'ready'; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 40))
-      const status = (await (await h.request(`/v2/sessions/${pending.sessionId}`)).json()) as {
+      const status = (await (await h.request(`/v1/sessions/${pending.sessionId}`)).json()) as {
         state: string
       }
       state = status.state
@@ -185,7 +185,9 @@ describe.skipIf(!socketPath)('backup manifest and restore drill over real MySQL'
     }
     expect(state).toBe('ready')
     expect(await readyGeneration(h)).toBe(2)
-    expect((await h.request(`/v2/sessions/${pending.sessionId}/units/0`)).status).toBe(200)
+    expect(
+      (await h.request(`/v1/sessions/${pending.sessionId}/units/0?representation=model`)).status,
+    ).toBe(200)
   }, 40_000)
 
   it('fails closed on source loss and refuses to start with an unverifiable restore', async () => {

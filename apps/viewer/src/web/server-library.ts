@@ -16,7 +16,7 @@ export function createLibraryClient(base: string, token: string) {
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     const headers = new Headers(init.headers)
     if (token) headers.set('Authorization', `Bearer ${token}`)
-    const response = await fetch(`${root}/v2/library${path}`, { ...init, headers })
+    const response = await fetch(`${root}/v1/library${path}`, { ...init, headers })
     if (!response.ok) {
       let detail = `HTTP ${response.status}`
       try {

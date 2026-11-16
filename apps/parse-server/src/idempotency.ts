@@ -1,5 +1,5 @@
 /**
- * Bounded, in-process idempotency cache for replayable v2 POST responses.
+ * Bounded, in-process idempotency cache for replayable v1 asynchronous POST responses.
  *
  * Replays never leave the process: this store is a memory aid for clients that
  * retry, not a shared ledger, so a duplicate that lands on another node still

@@ -200,9 +200,9 @@ it('repairs a corrupt persisted manifest through the asynchronous API without de
   await app.json(`/v1/sessions/${session.sessionId}`, { method: 'DELETE' })
   const [artifact] = await new ArtifactStore(app.dir).list()
   await writeFile(join(artifact.directory, 'manifest.json'), '{corrupt')
-  const waiting = await app.json('/v2/sessions', {
+  const waiting = await app.json('/v1/sessions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
     body: JSON.stringify({ fileId: uploaded.fileId }),
   })
   let ready = waiting
@@ -210,11 +210,13 @@ it('repairs a corrupt persisted manifest through the asynchronous API without de
   // bounded but generous enough for a loaded CI machine (~10 s).
   for (let attempt = 0; attempt < 500 && ready.state !== 'ready'; attempt++) {
     await new Promise((resolve) => setTimeout(resolve, 20))
-    ready = await app.json(`/v2/sessions/${waiting.sessionId}`)
+    ready = await app.json(`/v1/sessions/${waiting.sessionId}`)
     expect(ready.state).not.toBe('failed')
   }
   expect(ready.state).toBe('ready')
   expect(parse).toHaveBeenCalledTimes(2)
-  expect(await app.json(`/v2/sessions/${waiting.sessionId}/units/0`)).toHaveProperty('slide')
+  expect(
+    await app.json(`/v1/sessions/${waiting.sessionId}/units/0?representation=model`),
+  ).toHaveProperty('slide')
   expect(await app.json(`/v1/files/${uploaded.fileId}`)).toHaveProperty('fileId', uploaded.fileId)
 })

@@ -15,7 +15,7 @@ function stubFetch(context: any, responses: Array<{ image: string }>): Stub {
   const state: Stub = { unitReads: 0, paths: [] }
   context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
     state.paths.push(url)
-    if (url.endsWith('/v2/sessions') && init.method === 'POST')
+    if (url.endsWith('/v1/sessions') && init.method === 'POST')
       return json({ sessionId: 's', state: 'ready', model: {}, fonts: [] }, 201)
     if (url.includes('/units/0')) {
       const next = responses[Math.min(state.unitReads, responses.length - 1)]

@@ -7,7 +7,7 @@ import { stat, statfs } from 'node:fs/promises'
 import { PendingSessionStore, type PendingSession } from './pending-session-store'
 import { artifactKey } from './artifact-store'
 import { isolatedMemory } from './isolated-worker'
-import { validateRuntimeOptions } from './runtime-options'
+import { normalizeAsyncOptions, validateRuntimeOptions } from './runtime-options'
 import { FileLifecycle } from './file-lifecycle'
 import { LibraryStore } from './library-store'
 import { ParseQueue } from './parse-queue'
@@ -75,7 +75,11 @@ import { IdempotencyStore, readIdempotencyKey } from './idempotency'
 import { SharedIdempotencyStore } from './shared-idempotency'
 import { normalizeLayoutPrefs } from './layout-prefs'
 import { verifyRestore, type BackupManifest, type RestoreReport } from './backup-manifest'
-import { MEMORY_CACHE_BUDGET_DEFAULT_BYTES, MODEL_CACHE_DEFAULT_BYTES, ModelCache } from './model-cache'
+import {
+  MEMORY_CACHE_BUDGET_DEFAULT_BYTES,
+  MODEL_CACHE_DEFAULT_BYTES,
+  ModelCache,
+} from './model-cache'
 import { WORK_POOL_DEFAULTS, WorkPools } from './work-pools'
 import { MediaService } from './media-service'
 import { handleMedia } from './media-http'
@@ -186,22 +190,32 @@ export interface ParseServerOptions {
   cacheMaxFieldBytes?: number
   /** Tests/embeddings may inject a store instead of opening Redis. */
   cacheStore?: HotCacheStore
+  /** @deprecated Use asyncSessions; retained for existing integrations. */
+  asyncSessionsV2?: boolean
+  /** @deprecated Use asyncRolloutPercent; retained for existing integrations. */
+  v2RolloutPercent?: number
+  /** @deprecated Use asyncRolloutHeader; retained for existing integrations. */
+  v2RolloutHeader?: string
+  /** @deprecated Use asyncRolloutRampPerHour; retained for existing integrations. */
+  v2RolloutRampPerHour?: number
+  /** @deprecated Use asyncAutoPauseErrorRate; retained for existing integrations. */
+  v2AutoPauseErrorRate?: number
   /**
-   * Staged-rollback switch (plan §10): when false the v2 async session routes
+   * Staged-rollback switch (plan §10): when false the asynchronous session requests
    * answer 404 so clients use the v1 synchronous contract again.
    */
-  asyncSessionsV2?: boolean
+  asyncSessions?: boolean
   /**
-   * Deterministic per-file v2 canary (plan §10 gray switch): 0 disables the v2
+   * Deterministic per-file async canary (plan §10 gray switch): 0 disables async
    * session route, 100 serves every file, values in between bucket by fileId.
    */
-  v2RolloutPercent?: number
+  asyncRolloutPercent?: number
   /** Optional request header used as the canary bucket (tenant/user id). */
-  v2RolloutHeader?: string
+  asyncRolloutHeader?: string
   /** Time-based auto ramp: percentage points added per hour of uptime. */
-  v2RolloutRampPerHour?: number
-  /** 0–100 server-error rate that auto-pauses the v2 route; 0 disables. */
-  v2AutoPauseErrorRate?: number
+  asyncRolloutRampPerHour?: number
+  /** 0–100 server-error rate that auto-pauses the async mode; 0 disables. */
+  asyncAutoPauseErrorRate?: number
   /** Staged/opt-in: materialize document.json/units/fonts next to each generation. */
   canonicalArtifactExport?: boolean
   /** Hard cap for each shutdown phase (plan §6.3); defaults 30 s. */
@@ -210,9 +224,9 @@ export interface ParseServerOptions {
   docxAutoRemoteBytes?: number
   pptxAutoRemoteBytes?: number
   docxFullRenderBytes?: number
-  /** Retention of a v2 POST response keyed by Idempotency-Key (in-process). */
+  /** Retention of an async POST response keyed by Idempotency-Key (in-process). */
   idempotencyTtlMs?: number
-  /** Bounded number of remembered idempotent v2 responses. */
+  /** Bounded number of remembered idempotent async responses. */
   idempotencyMaxEntries?: number
   /** MySQL persistence for file metadata and sessions; unset = filesystem only. */
   mysql?: MysqlConfig
@@ -245,7 +259,7 @@ interface SessionEntry {
   record: SessionRecord
   session?: SessionHandle
   opening?: Promise<SessionHandle>
-  /** Artifact document lazily read for v1/v2 responses; never persisted per session. */
+  /** Artifact document lazily read for session responses; never persisted per session. */
   document?: StoredSessionDocument
   documentOpening?: Promise<StoredSessionDocument>
 }
@@ -259,15 +273,19 @@ interface Context {
   sessionDisposals: Set<Promise<void>>
   sessionDisposalByHandle: WeakMap<SessionHandle, Promise<void>>
   artifactCatalog?: MysqlArtifactCatalog
-  sharedArtifacts?: { catalog: MysqlArtifactCatalog; disk: ArtifactGenerations; coordinator: ArtifactCoordinator }
+  sharedArtifacts?: {
+    catalog: MysqlArtifactCatalog
+    disk: ArtifactGenerations
+    coordinator: ArtifactCoordinator
+  }
   generationCollection?: ArtifactCollectionService
   readyEviction?: ArtifactReadyEviction
   previews: PreviewRegistry
   cache: HotCache
-  asyncSessionsV2: boolean
-  v2RolloutPercent: number
-  v2RolloutHeader?: string
-  v2RolloutRampPerHour: number
+  asyncSessions: boolean
+  asyncRolloutPercent: number
+  asyncRolloutHeader?: string
+  asyncRolloutRampPerHour: number
   canaryGuard: CanaryGuard
   canonicalArtifactExport: boolean
   shutdownTimeoutMs: number
@@ -404,12 +422,12 @@ function applyCors(req: IncomingMessage, res: ServerResponse, allowedOrigins: st
     res.setHeader('Vary', 'Origin')
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Authorization, Content-Type, Range, X-Request-Id',
+      'Authorization, Content-Type, Range, X-Request-Id, Prefer, Idempotency-Key',
     )
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, DELETE, OPTIONS')
     res.setHeader(
       'Access-Control-Expose-Headers',
-      'Accept-Ranges, Content-Range, ETag, X-Request-Id',
+      'Accept-Ranges, Content-Range, ETag, X-Request-Id, Location, X-Genoffice-Dto-Version',
     )
   }
 }
@@ -443,7 +461,7 @@ function capabilitiesOf(ctx: Context): Capabilities {
       rangeRequests: true,
       fontWidthFeedback: true,
       streamingUnits: true,
-      asyncSessions: ctx.asyncSessionsV2,
+      asyncSessions: ctx.asyncSessions,
       historyLibrary: true,
       offlineBundles: true,
       incrementalPreview: true,
@@ -493,12 +511,7 @@ async function measuredUnitRead<T>(ctx: Context, work: () => Promise<T>): Promis
 }
 
 /** Sign DOCX resource descriptions at response time and count the refresh. */
-function signedDocxPayload(
-  ctx: Context,
-  value: unknown,
-  fileId: string,
-  baseUrl: string,
-): unknown {
+function signedDocxPayload(ctx: Context, value: unknown, fileId: string, baseUrl: string): unknown {
   const payload = refreshDocxResourceUrls(value, fileId, baseUrl, ctx.token)
   if (ctx.token) recordSignatureRefresh(ctx.metrics)
   return payload
@@ -538,7 +551,10 @@ function parseFailure(error: unknown): HttpError {
   )
 }
 
-function openDocument(ctx: Context, ...args: Parameters<typeof ArtifactSession.open>): Promise<ArtifactSession> {
+function openDocument(
+  ctx: Context,
+  ...args: Parameters<typeof ArtifactSession.open>
+): Promise<ArtifactSession> {
   const [store, input, queue, onAdmission, demand] = args
   return ctx.sharedArtifacts
     ? ArtifactSession.openShared(store, input, ctx.sharedArtifacts, queue, onAdmission, demand)
@@ -552,9 +568,13 @@ function closeSession(session: SessionHandle | undefined, ctx: Context): void {
   const work = Promise.resolve().then(() => session.dispose())
   ctx.sessionDisposalByHandle.set(session, work)
   ctx.sessionDisposals.add(work)
-  void work.finally(() => ctx.sessionDisposals.delete(work)).catch((error) => {
-    logEvent('warn', 'session_disposal_failed', { message: error instanceof Error ? error.message : String(error) })
-  })
+  void work
+    .finally(() => ctx.sessionDisposals.delete(work))
+    .catch((error) => {
+      logEvent('warn', 'session_disposal_failed', {
+        message: error instanceof Error ? error.message : String(error),
+      })
+    })
 }
 
 async function ensureSession(
@@ -596,7 +616,8 @@ async function openRestoredSession(
     throw new HttpError(409, 'session_expired', 'session record has no artifact identity')
   const baseUrl = baseUrlOf(req, ctx)
   try {
-    entry.session = await openDocument(ctx,
+    entry.session = await openDocument(
+      ctx,
       ctx.artifacts,
       {
         id: entry.record.id,
@@ -626,10 +647,10 @@ async function openRestoredSession(
   }
   // New records reference the artifact: no full model/fonts/baseUrl copy is
   // written back. Only the identity and the transient document cache are kept.
-  entry.record.format = entry.session.model.format === 'pptx' ||
-    entry.session.model.format === 'docx'
-    ? entry.session.model.format
-    : format
+  entry.record.format =
+    entry.session.model.format === 'pptx' || entry.session.model.format === 'docx'
+      ? entry.session.model.format
+      : format
   entry.record.artifactKey ??= artifactKey(
     ArtifactSession.identity({
       fileId: entry.record.fileId,
@@ -657,9 +678,21 @@ async function sessionDocument(
 ): Promise<StoredSessionDocument> {
   const document = await storedSessionDocument(entry, req, ctx)
   return document.model.docx
-    ? { ...document, model: { ...document.model, docx: { ...document.model.docx,
-        hfParts: signedDocxPayload(ctx, document.model.docx.hfParts, entry.record.fileId, baseUrlOf(req, ctx)) as Record<string, object>,
-      } } }
+    ? {
+        ...document,
+        model: {
+          ...document.model,
+          docx: {
+            ...document.model.docx,
+            hfParts: signedDocxPayload(
+              ctx,
+              document.model.docx.hfParts,
+              entry.record.fileId,
+              baseUrlOf(req, ctx),
+            ) as Record<string, object>,
+          },
+        },
+      }
     : document
 }
 
@@ -680,14 +713,16 @@ async function storedSessionDocument(
     const format = record.format
     if (format !== 'pptx' && format !== 'docx')
       throw new HttpError(409, 'session_expired', 'session record has no artifact identity')
-    const key = record.artifactKey ?? artifactKey(
-      ArtifactSession.identity({
-        fileId: record.fileId,
-        format,
-        parserVersion: ctx.parserVersion,
-        parserFingerprint: ctx.parserFingerprint,
-      }),
-    )
+    const key =
+      record.artifactKey ??
+      artifactKey(
+        ArtifactSession.identity({
+          fileId: record.fileId,
+          format,
+          parserVersion: ctx.parserVersion,
+          parserFingerprint: ctx.parserFingerprint,
+        }),
+      )
     let raw: Awaited<ReturnType<ArtifactReadHandle['read']>> | undefined
     if (ctx.sharedArtifacts) {
       const handle = await ArtifactReadHandle.open(
@@ -713,9 +748,10 @@ async function storedSessionDocument(
         raw = await reader.read('document')
       }
     }
-    const document = raw && !Buffer.isBuffer(raw)
-      ? (raw as { model?: DocModel; fonts?: PptxFontSummary[] })
-      : undefined
+    const document =
+      raw && !Buffer.isBuffer(raw)
+        ? (raw as { model?: DocModel; fonts?: PptxFontSummary[] })
+        : undefined
     if (document?.model && Array.isArray(document.fonts)) {
       const documentFormat = document.model.format
       if (documentFormat === 'pptx' || documentFormat === 'docx') {
@@ -775,7 +811,8 @@ async function handleCreateSession(
     ctx.pendingSessions++
     ctx.pendingSessionIds.add(sessionId)
     try {
-      session = await openDocument(ctx,
+      session = await openDocument(
+        ctx,
         ctx.artifacts,
         {
           id: sessionId,
@@ -863,7 +900,11 @@ async function sharedPreview(ctx: Context, record: PendingSession) {
 async function sharedBuildJob(ctx: Context, record: PendingSession): Promise<string | undefined> {
   const catalog = ctx.sharedArtifacts?.catalog
   if (!catalog) return undefined
-  try { return (await catalog.activeJob(record.artifactKey)) ?? undefined } catch { return undefined }
+  try {
+    return (await catalog.activeJob(record.artifactKey)) ?? undefined
+  } catch {
+    return undefined
+  }
 }
 
 /**
@@ -878,11 +919,16 @@ async function sharedProgress(ctx: Context, record: PendingSession) {
   return jobId ? ctx.cache.readProgress(jobId) : undefined
 }
 
-function layoutKeyOf(ctx: Context, record: { artifactKey?: string; width: number }): string | undefined {
+function layoutKeyOf(
+  ctx: Context,
+  record: { artifactKey?: string; width: number },
+): string | undefined {
   if (!record.artifactKey) return undefined
   try {
     return layoutCacheKey({
-      artifactKey: record.artifactKey, width: record.width, fontSetHash: ctx.fontSetHash,
+      artifactKey: record.artifactKey,
+      width: record.width,
+      fontSetHash: ctx.fontSetHash,
     })
   } catch {
     return undefined
@@ -898,7 +944,9 @@ async function materializeCanonicalLayout(
   try {
     const result = await session.materializeCanonical(ctx.dataDir, reservation.reserve)
     logEvent('info', 'canonical_artifact_exported', {
-      units: result.units, fonts: result.fonts, documentBytes: result.documentBytes,
+      units: result.units,
+      fonts: result.fonts,
+      documentBytes: result.documentBytes,
     })
   } catch (error) {
     logEvent('warn', 'canonical_artifact_export_failed', {
@@ -930,7 +978,11 @@ async function pendingBody(ctx: Context, record: PendingSession) {
     ...(progress
       ? {
           ...(preview?.previewable
-            ? { previewable: true, complete: false, availableUnits: { from: 0, to: preview.cachedUntil } }
+            ? {
+                previewable: true,
+                complete: false,
+                availableUnits: { from: 0, to: preview.cachedUntil },
+              }
             : {}),
           progress: {
             unitsProduced: progress.unitsProduced,
@@ -954,7 +1006,10 @@ async function shutdownDeadline(
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     await Promise.race([
-      work.then(() => undefined, () => undefined),
+      work.then(
+        () => undefined,
+        () => undefined,
+      ),
       new Promise<void>((resolve) => {
         timer = setTimeout(() => {
           logEvent('warn', 'shutdown_phase_timeout', { phase, timeoutMs })
@@ -999,7 +1054,8 @@ function startAsyncWork(
       release = await ctx.files.acquire(record.fileId)
       const path = await ctx.store.pathOf(record.fileId)
       if (!path) throw new HttpError(404, 'not_found', 'file content is missing')
-      const session = await openDocument(ctx,
+      const session = await openDocument(
+        ctx,
         ctx.artifacts,
         {
           id: record.id,
@@ -1029,7 +1085,7 @@ function startAsyncWork(
       await materializeCanonicalLayout(ctx, session)
       try {
         if (ctx.closing) return
-        if (await ctx.pendingViews.readerCount(record.id) === 0) {
+        if ((await ctx.pendingViews.readerCount(record.id)) === 0) {
           // Every waiting view went away while the build ran: discard instead of
           // publishing bytes nobody can read.
           await ctx.pendingViews.remove(record.id)
@@ -1056,7 +1112,7 @@ function startAsyncWork(
           expiresAt: now + ctx.sessionTtlMs,
         }
         await ctx.sessionStore.set(ready)
-        if (await ctx.pendingViews.readerCount(record.id) === 0) {
+        if ((await ctx.pendingViews.readerCount(record.id)) === 0) {
           await ctx.sessionStore.remove(record.id)
           return
         }
@@ -1114,6 +1170,7 @@ async function discardAsyncView(ctx: Context, id: string): Promise<void> {
     closeSession(ready.session, ctx)
     ctx.sessions.delete(id)
     await ctx.sessionStore.remove(id)
+    await removeChunks(chunkDir(ctx.chunkRoot, id))
   }
 }
 
@@ -1176,14 +1233,13 @@ async function replayIdempotentSession(
     return
   }
   let pending = ctx.pendingViews.get(sessionId)
-  if (!pending && ctx.db)
-    pending = await ctx.pendingViews.load(sessionId).catch(() => undefined)
+  if (!pending && ctx.db) pending = await ctx.pendingViews.load(sessionId).catch(() => undefined)
   if (pending?.error) {
     await ctx.pendingViews.remove(sessionId)
     throw new HttpError(pending.error.status, pending.error.code, pending.error.message)
   }
   if (!pending) throw new HttpError(404, 'not_found', 'session was closed')
-  res.setHeader('Location', `/v2/sessions/${sessionId}`)
+  res.setHeader('Location', `/v1/sessions/${sessionId}`)
   res.setHeader('Retry-After', '1')
   sendJson(res, 202, await pendingBody(ctx, pending))
 }
@@ -1195,12 +1251,11 @@ async function handleCreateAsyncSession(
 ): Promise<void> {
   let idempotencyKey: string | undefined
   try {
-    idempotencyKey = readIdempotencyKey(
-      req.headers as { 'idempotency-key'?: string | string[] },
-    )
+    idempotencyKey = readIdempotencyKey(req.headers as { 'idempotency-key'?: string | string[] })
   } catch {
     throw new HttpError(400, 'invalid_request', 'invalid Idempotency-Key')
   }
+  // Durable ledger namespace predates the v1 route unification; preserve retry identities.
   const idempotencyScope = 'v2:sessions'
   if (idempotencyKey) {
     const cached = ctx.idempotency.get(idempotencyScope, idempotencyKey)
@@ -1209,7 +1264,8 @@ async function handleCreateAsyncSession(
       return
     }
     if (ctx.sharedIdempotency) {
-      const shared = await ctx.sharedIdempotency.lookup(idempotencyScope, idempotencyKey)
+      const shared = await ctx.sharedIdempotency
+        .lookup(idempotencyScope, idempotencyKey)
         .catch(() => undefined)
       if (shared?.body) {
         const entry = { status: 202, body: shared.body, headers: {} }
@@ -1222,7 +1278,8 @@ async function handleCreateAsyncSession(
         // second waiter. Give it a bounded window, then fall through.
         for (let attempt = 0; attempt < 120; attempt++) {
           await new Promise((resolve) => setTimeout(resolve, 25))
-          const again = await ctx.sharedIdempotency.lookup(idempotencyScope, idempotencyKey)
+          const again = await ctx.sharedIdempotency
+            .lookup(idempotencyScope, idempotencyKey)
             .catch(() => undefined)
           if (again?.body) {
             const entry = { status: 202, body: again.body, headers: {} }
@@ -1236,7 +1293,9 @@ async function handleCreateAsyncSession(
     }
   }
   const body = (await readJsonBody(req, 64 * 1024)) as {
-    fileId?: unknown; width?: unknown; layoutPrefs?: unknown
+    fileId?: unknown
+    width?: unknown
+    layoutPrefs?: unknown
   } | null
   if (
     !body ||
@@ -1248,23 +1307,24 @@ async function handleCreateAsyncSession(
   }
   const fileId = body.fileId
   // Deterministic per-file canary: same file always lands in the same bucket,
-  // so a rollout never flips mid-read. 404 makes clients fall back to v1.
+  // so a rollout never flips mid-read. 404 makes clients retry synchronously on the same v1 address.
   const rolloutPercent = effectiveRolloutPercent(
-    ctx.v2RolloutPercent,
-    ctx.v2RolloutRampPerHour,
+    ctx.asyncRolloutPercent,
+    ctx.asyncRolloutRampPerHour,
     Date.now() - ctx.metrics.startedAt,
   )
   if (rolloutPercent < 100) {
-    const rawHeader = ctx.v2RolloutHeader
-      ? req.headers[ctx.v2RolloutHeader]
-      : undefined
+    const rawHeader = ctx.asyncRolloutHeader ? req.headers[ctx.asyncRolloutHeader] : undefined
     const tenant = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader
-    const bucket = ctx.v2RolloutHeader && typeof tenant === 'string' && tenant.length > 0 &&
+    const bucket =
+      ctx.asyncRolloutHeader &&
+      typeof tenant === 'string' &&
+      tenant.length > 0 &&
       tenant.length <= 128
-      ? Number.parseInt(createHash('sha256').update(tenant).digest('hex').slice(0, 4), 16) % 100
-      : Number.parseInt(fileId.slice(0, 4), 16) % 100
+        ? Number.parseInt(createHash('sha256').update(tenant).digest('hex').slice(0, 4), 16) % 100
+        : Number.parseInt(fileId.slice(0, 4), 16) % 100
     if (bucket >= rolloutPercent)
-      throw new HttpError(404, 'not_found', 'v2 sessions are not enabled for this file')
+      throw new HttpError(404, 'not_found', 'async sessions are not enabled for this file')
   }
   let layoutPrefs: ReturnType<typeof normalizeLayoutPrefs>
   try {
@@ -1299,14 +1359,23 @@ async function handleCreateAsyncSession(
     let cached = false
     try {
       const reader = ctx.sharedArtifacts
-        ? await ArtifactReadHandle.open(ctx.sharedArtifacts.catalog, ctx.sharedArtifacts.disk, key, `probe:${randomUUID()}`)
+        ? await ArtifactReadHandle.open(
+            ctx.sharedArtifacts.catalog,
+            ctx.sharedArtifacts.disk,
+            key,
+            `probe:${randomUUID()}`,
+          )
         : await ctx.artifacts.find(key)
-      try { if (reader) {
-        if (!reader.has('document'))
-          throw new ArtifactCorruptionError('artifact document record missing')
-        await reader.read('document')
-        cached = true
-      } } finally { if (reader instanceof ArtifactReadHandle) await reader.close() }
+      try {
+        if (reader) {
+          if (!reader.has('document'))
+            throw new ArtifactCorruptionError('artifact document record missing')
+          await reader.read('document')
+          cached = true
+        }
+      } finally {
+        if (reader instanceof ArtifactReadHandle) await reader.close()
+      }
     } catch (error) {
       if (!(error instanceof ArtifactCorruptionError)) throw error
       // The shared build path owns invalidation and repair; probing never deletes.
@@ -1317,7 +1386,7 @@ async function handleCreateAsyncSession(
     let sharedClaim = false
     try {
       // Bind the waiter to the catalog's in-flight build when one exists so the
-      // v2 jobId and the shared progress projection describe the same attempt.
+      // Async jobId and the shared progress projection describe the same attempt.
       const sharedJobId = ctx.sharedArtifacts
         ? await ctx.sharedArtifacts.catalog.activeJob(key).catch(() => null)
         : null
@@ -1331,8 +1400,12 @@ async function handleCreateAsyncSession(
           let completed: { body?: unknown } | undefined
           for (let attempt = 0; attempt < 120; attempt++) {
             const existing = await ctx.sharedIdempotency
-              .lookup(idempotencyScope, idempotencyKey).catch(() => undefined)
-            if (existing?.body) { completed = existing; break }
+              .lookup(idempotencyScope, idempotencyKey)
+              .catch(() => undefined)
+            if (existing?.body) {
+              completed = existing
+              break
+            }
             if (!existing) break
             await new Promise((resolve) => setTimeout(resolve, 25))
           }
@@ -1346,21 +1419,25 @@ async function handleCreateAsyncSession(
         }
       }
       try {
-        record = await ctx.pendingViews.create({
-          id: randomUUID(),
-          artifactKey: key,
-          fileId,
-          format: meta.format,
-          width,
-          parserVersion: ctx.parserVersion,
-          parserFingerprint: ctx.parserFingerprint,
-          createdAt: now,
-          lastUsed: now,
-          ...(layoutPrefs ? { layoutPrefs } : {}),
-        }, sharedJobId ?? undefined)
+        record = await ctx.pendingViews.create(
+          {
+            id: randomUUID(),
+            artifactKey: key,
+            fileId,
+            format: meta.format,
+            width,
+            parserVersion: ctx.parserVersion,
+            parserFingerprint: ctx.parserFingerprint,
+            createdAt: now,
+            lastUsed: now,
+            ...(layoutPrefs ? { layoutPrefs } : {}),
+          },
+          sharedJobId ?? undefined,
+        )
       } catch (error) {
         if (sharedClaim && idempotencyKey && ctx.sharedIdempotency)
-          await ctx.sharedIdempotency.release(idempotencyScope, idempotencyKey)
+          await ctx.sharedIdempotency
+            .release(idempotencyScope, idempotencyKey)
             .catch(() => undefined)
         throw error
       }
@@ -1428,7 +1505,7 @@ async function handleCreateAsyncSession(
       throw new HttpError(pending.error.status, pending.error.code, pending.error.message)
     }
     ctx.metrics.sessionsCreated++
-    res.setHeader('Location', `/v2/sessions/${record.id}`)
+    res.setHeader('Location', `/v1/sessions/${record.id}`)
     res.setHeader('Retry-After', '1')
     sendJson(res, 202, await pendingBody(ctx, pending))
   } finally {
@@ -1457,7 +1534,7 @@ async function handleOfflineBundle(
       ...manifest,
       resources: manifest.resources.map((resource) => ({
         ...resource,
-        href: `/v2/sessions/${encodeURIComponent(entry.record.id)}/bundle/resources/${resource.path.split('/').map(encodeURIComponent).join('/')}`,
+        href: `/v1/sessions/${encodeURIComponent(entry.record.id)}/bundle/resources/${resource.path.split('/').map(encodeURIComponent).join('/')}`,
       })),
     })
     return
@@ -1557,11 +1634,19 @@ async function attachReadySession(ctx: Context, id: string): Promise<void> {
 async function maybeTakeoverPending(
   ctx: Context,
   id: string,
-  record: { artifactKey?: string; parserVersion: string; parserFingerprint: string; error?: unknown },
+  record: {
+    artifactKey?: string
+    parserVersion: string
+    parserFingerprint: string
+    error?: unknown
+  },
 ): Promise<void> {
   if (!ctx.sharedArtifacts || ctx.asyncFlights.has(id) || record.error) return
-  if (record.parserVersion !== ctx.parserVersion ||
-      record.parserFingerprint !== ctx.parserFingerprint) return
+  if (
+    record.parserVersion !== ctx.parserVersion ||
+    record.parserFingerprint !== ctx.parserFingerprint
+  )
+    return
   if (!record.artifactKey) return
   const active = await ctx.sharedArtifacts.catalog.activeJob(record.artifactKey).catch(() => null)
   if (active) return
@@ -1589,8 +1674,11 @@ async function handleAsyncSession(
   }
   if (!pending && !ctx.sessions.has(id) && req.method !== 'DELETE')
     await attachReadySession(ctx, id)
-  if (pending && ctx.pendingViews.isRemote(id) &&
-      !(await ctx.pendingViews.sharedExists(id).catch(() => true))) {
+  if (
+    pending &&
+    ctx.pendingViews.isRemote(id) &&
+    !(await ctx.pendingViews.sharedExists(id).catch(() => true))
+  ) {
     // Another instance published/discarded this waiter: drop the stale remote
     // view and fall through to ready attach (or 404).
     ctx.pendingViews.forget(id)
@@ -1624,7 +1712,7 @@ async function handleAsyncSession(
     sendJson(res, 200, {
       dtoVersion: PARSE_DTO_VERSION,
       sessionId: id,
-      state: ready ? 'ready' : pending?.error ? 'failed' : pending?.state ?? 'queued',
+      state: ready ? 'ready' : pending?.error ? 'failed' : (pending?.state ?? 'queued'),
       pollAfterMs: ready ? 0 : 500,
     })
     return
@@ -1675,7 +1763,9 @@ async function handleAsyncSession(
     if (
       req.method === 'GET' &&
       ((parts[3] === 'document' && parts.length === 4) ||
-        (parts[3] === 'units' && parts.length === 5))
+        (parts[3] === 'units' &&
+          parts.length === 5 &&
+          url.searchParams.get('representation') === 'model'))
     ) {
       await pinResponseFile(ctx, entry.record.fileId, res)
       const session = await ensureSession(entry, req, ctx)
@@ -1737,7 +1827,9 @@ async function handleAsyncSession(
     }
     if (parts[3] === 'units' && parts.length === 4) {
       const rawLimit = Number(url.searchParams.get('limit') ?? 100)
-      const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(500, Math.trunc(rawLimit))) : 100
+      const limit = Number.isFinite(rawLimit)
+        ? Math.max(1, Math.min(500, Math.trunc(rawLimit)))
+        : 100
       const cursor = url.searchParams.get('cursor')
       const start = cursor === null ? 0 : Number.parseInt(cursor, 10)
       if (!Number.isInteger(start) || start < 0 || start > preview.unitCount)
@@ -1839,11 +1931,10 @@ async function handleSession(
     // published document (no parser worker) instead of a per-session SQL copy.
     const document = await sessionDocument(entry, req, ctx)
     const unitCount = document.model.unitCount ?? 0
-    // v2 adds the stable artifact identity and a terminal progress projection;
-    // v1 keeps its existing body for compatibility.
+    // All ready sessions expose the stable artifact identity and terminal progress.
     const format = document.model.format
     const artifactIdentity =
-      url.pathname.startsWith('/v2/') && (format === 'pptx' || format === 'docx')
+      format === 'pptx' || format === 'docx'
         ? artifactKey(
             ArtifactSession.identity({
               fileId: entry.record.fileId,
@@ -2023,8 +2114,9 @@ async function fileInUse(ctx: Context, fileId: string): Promise<boolean> {
     [...ctx.sessions.values()].some((entry) => entry.record.fileId === fileId) ||
     ctx.pendingViews.values().some((entry) => entry.fileId === fileId) ||
     (await ctx.library.hasFile(fileId)) ||
-    (!!ctx.artifactCatalog && (await ctx.artifactCatalog.hasFileReference(fileId) ||
-      await ctx.artifactCatalog.hasDependencyOnFile(fileId)))
+    (!!ctx.artifactCatalog &&
+      ((await ctx.artifactCatalog.hasFileReference(fileId)) ||
+        (await ctx.artifactCatalog.hasDependencyOnFile(fileId))))
   )
 }
 
@@ -2060,11 +2152,7 @@ async function reclaimArtifacts(ctx: Context, bytes: number): Promise<void> {
   }
 }
 
-function runGc(
-  ctx: Context,
-  keepFileId?: string,
-  committedReservationBytes = 0,
-): Promise<void> {
+function runGc(ctx: Context, keepFileId?: string, committedReservationBytes = 0): Promise<void> {
   if (ctx.closing) return Promise.resolve()
   const work = Promise.resolve().then(() => {
     if (!ctx.closing) return performGc(ctx, keepFileId, committedReservationBytes)
@@ -2074,7 +2162,11 @@ function runGc(
   return work
 }
 
-async function performGc(ctx: Context, keepFileId?: string, committedReservationBytes = 0): Promise<void> {
+async function performGc(
+  ctx: Context,
+  keepFileId?: string,
+  committedReservationBytes = 0,
+): Promise<void> {
   // Reconcile redundant pre-generation flat bytes with the background collector.
   // The catalog transaction that authorizes deletion must not run under the
   // storage admission lock, so GC only reports the bytes and requests a sweep.
@@ -2177,8 +2269,14 @@ async function handleUpload(
       }
       if ((error as { code?: string }).code === 'storage_admission_lease_lost') {
         res.setHeader('Retry-After', '1')
-        reply = () => sendError(res, 503, 'storage_admission_lease_lost',
-          'shared storage admission lease expired; retry', true)
+        reply = () =>
+          sendError(
+            res,
+            503,
+            'storage_admission_lease_lost',
+            'shared storage admission lease expired; retry',
+            true,
+          )
         return
       }
       throw error
@@ -2262,7 +2360,7 @@ async function handleLibrary(
   url: URL,
 ): Promise<void> {
   res.setHeader('Cache-Control', 'private, no-store')
-  if (url.pathname === '/v2/library' && req.method === 'POST') {
+  if (url.pathname === '/v1/library' && req.method === 'POST') {
     const body = (await readJsonBody(req, 8 * 1024)) as {
       fileId?: unknown
       displayName?: unknown
@@ -2294,7 +2392,7 @@ async function handleLibrary(
     sendJson(res, 201, entry)
     return
   }
-  if (url.pathname === '/v2/library' && req.method === 'GET') {
+  if (url.pathname === '/v1/library' && req.method === 'GET') {
     const rawLimit = url.searchParams.get('limit') ?? '50'
     if (!/^[0-9]+$/.test(rawLimit) || Number(rawLimit) < 1 || Number(rawLimit) > 200)
       throw new HttpError(400, 'invalid_request', 'limit must be between 1 and 200')
@@ -2319,7 +2417,7 @@ async function handleLibrary(
     sendJson(res, 200, { items, ...(next ? { next } : {}) })
     return
   }
-  const match = /^\/v2\/library\/([a-f0-9-]{36})$/.exec(url.pathname)
+  const match = /^\/v1\/library\/([a-f0-9-]{36})$/.exec(url.pathname)
   if (match && req.method === 'DELETE') {
     if (!(await ctx.library.remove(match[1])))
       throw new HttpError(404, 'not_found', 'library entry not found')
@@ -2383,6 +2481,18 @@ async function route(
     return
   }
   const url = new URL(req.url ?? '/', 'http://localhost')
+  // Legacy addresses share the v1 handlers, including authentication and signed resources.
+  // Legacy creation requests select asynchronous mode without an explicit preference.
+  if (url.pathname === '/v2' || url.pathname.startsWith('/v2/')) {
+    if (req.method === 'POST' && url.pathname === '/v2/sessions')
+      req.headers.prefer = 'respond-async'
+    if (/^\/v2\/sessions\/[^/]+\/units\/[^/]+$/.test(url.pathname))
+      url.searchParams.set('representation', 'model')
+    url.pathname = url.pathname.replace(/^\/v2(?=\/|$)/, '/v1')
+  }
+  if (url.pathname === '/v1' || url.pathname.startsWith('/v1/'))
+    res.setHeader('X-Genoffice-Dto-Version', String(PARSE_DTO_VERSION))
+
   const startedAt = Date.now()
   res.on('finish', () => {
     recordRequest(ctx.metrics, req.method ?? 'GET', res.statusCode, Date.now() - startedAt)
@@ -2401,8 +2511,7 @@ async function route(
   const segments = url.pathname.split('/').filter(Boolean)
   const isPublic =
     (req.method === 'GET' && url.pathname === '/v1/health') ||
-    (req.method === 'GET' &&
-      (url.pathname === '/v1/capabilities' || url.pathname === '/v2/capabilities')) ||
+    (req.method === 'GET' && url.pathname === '/v1/capabilities') ||
     (req.method === 'GET' && url.pathname === '/metrics')
   const bearerMatches = (authorization: string | undefined): boolean =>
     authorization === `Bearer ${ctx.token}` ||
@@ -2413,7 +2522,7 @@ async function route(
     let signed = false
     if (
       !bearerMatches(req.headers.authorization) &&
-      (segments[0] === 'v1' || segments[0] === 'v2') &&
+      segments[0] === 'v1' &&
       segments[1] === 'files' &&
       segments[2]
     ) {
@@ -2425,8 +2534,13 @@ async function route(
           .slice(4)
           .map((segment) => decodeURIComponent(segment))
           .join('/')
-      else if (segments[3] === 'media' && segments.length === 6 && segments[5] === 'content' &&
-          (req.method === 'GET' || req.method === 'HEAD')) resource = `media:${segments[4]}`
+      else if (
+        segments[3] === 'media' &&
+        segments.length === 6 &&
+        segments[5] === 'content' &&
+        (req.method === 'GET' || req.method === 'HEAD')
+      )
+        resource = `media:${segments[4]}`
       if (resource) {
         const exp = Number(url.searchParams.get('exp'))
         const sig = url.searchParams.get('sig') ?? ''
@@ -2495,7 +2609,13 @@ async function route(
       sessions: ctx.sessions.size + ctx.pendingViews.values().length,
       pendingSessions: ctx.pendingViews.values().length,
       activeWorkers: ctx.parseQueue.snapshot.running,
-      media: ctx.media ? { enabled: ctx.media.options.enabled, ...await ctx.media.catalog.snapshot(), counters: ctx.media.stats } : null,
+      media: ctx.media
+        ? {
+            enabled: ctx.media.options.enabled,
+            ...(await ctx.media.catalog.snapshot()),
+            counters: ctx.media.stats,
+          }
+        : null,
       requests: ctx.metrics.requests,
       errors: ctx.metrics.errors,
       uploads: ctx.metrics.uploads,
@@ -2536,16 +2656,18 @@ async function route(
       readyEviction: ctx.readyEviction?.snapshot ?? null,
       canaryGuard: ctx.canaryGuard.snapshot(),
       sharedPressure: (await ctx.sharedPressure?.state()) ?? null,
-      restore: ctx.restoreReport ? {
-        checkedAt: ctx.restoreReport.checkedAt,
-        ok: ctx.restoreReport.ok,
-        readyAllowed: ctx.restoreReport.readyAllowed,
-        digest: ctx.restoreReport.digest,
-        counts: ctx.restoreReport.counts,
-        blockedReady: ctx.restoreReport.blockedReady.length,
-        errors: ctx.restoreReport.errors.length,
-        warnings: ctx.restoreReport.warnings.length,
-      } : null,
+      restore: ctx.restoreReport
+        ? {
+            checkedAt: ctx.restoreReport.checkedAt,
+            ok: ctx.restoreReport.ok,
+            readyAllowed: ctx.restoreReport.readyAllowed,
+            digest: ctx.restoreReport.digest,
+            counts: ctx.restoreReport.counts,
+            blockedReady: ctx.restoreReport.blockedReady.length,
+            errors: ctx.restoreReport.errors.length,
+            warnings: ctx.restoreReport.warnings.length,
+          }
+        : null,
       childProcesses: isolatedMemory(ctx.processGroup),
       processLimits: {
         rssMb: ctx.workerRssMb,
@@ -2563,59 +2685,43 @@ async function route(
     })
     return
   }
-  if (url.pathname === '/v2' || url.pathname.startsWith('/v2/'))
-    res.setHeader('X-Genoffice-Dto-Version', String(PARSE_DTO_VERSION))
-  if (
-    req.method === 'GET' &&
-    (url.pathname === '/v1/capabilities' || url.pathname === '/v2/capabilities')
-  ) {
+  if (req.method === 'GET' && url.pathname === '/v1/capabilities') {
     sendJson(res, 200, capabilitiesOf(ctx))
     return
   }
-  if (
-    !ctx.asyncSessionsV2 &&
-    (url.pathname === '/v2/sessions' || url.pathname.startsWith('/v2/sessions/'))
-  ) {
-    // Staged rollback: behave like a server that predates the v2 contract.
-    sendError(res, 404, 'not_found', 'v2 async sessions are disabled', false, requestId)
-    return
-  }
-  if (url.pathname === '/v2/library' || url.pathname.startsWith('/v2/library/')) {
+  if (url.pathname === '/v1/library' || url.pathname.startsWith('/v1/library/')) {
     await handleLibrary(req, res, ctx, url)
     return
   }
-  if (req.method === 'POST' && url.pathname === '/v2/sessions') {
-    if (ctx.canaryGuard.paused())
-      throw new HttpError(404, 'not_found', 'v2 sessions are temporarily paused')
+  if (req.method === 'POST' && url.pathname === '/v1/sessions') {
+    const preferAsync = /(?:^|,)\s*respond-async\s*(?:,|$)/i.test(
+      [req.headers.prefer ?? ''].flat().join(','),
+    )
+    if (!preferAsync) {
+      await handleCreateSession(req, res, ctx)
+      return
+    }
+    if (!ctx.asyncSessions || ctx.canaryGuard.paused())
+      throw new HttpError(404, 'not_found', 'async sessions are unavailable')
     try {
       await handleCreateAsyncSession(req, res, ctx)
       ctx.canaryGuard.record(true)
     } catch (error) {
       const status = error instanceof HttpError ? error.status : 500
-      // Only server-side failures trip the emergency brake; 4xx is client input.
       ctx.canaryGuard.record(status < 500)
       throw error
     }
     return
-    return
   }
-  if (segments[0] === 'v2' && segments[1] === 'sessions' && segments[2]) {
+  if (segments[0] === 'v1' && segments[1] === 'sessions' && segments[2]) {
     await handleAsyncSession(req, res, ctx, url, decodeURIComponent(segments[2]), requestId)
     return
   }
-  if (req.method === 'POST' && url.pathname === '/v1/sessions') {
-    await handleCreateSession(req, res, ctx)
-    return
-  }
-  if (segments[0] === 'v1' && segments[1] === 'sessions' && segments[2]) {
-    await handleSession(req, res, ctx, url, decodeURIComponent(segments[2]), requestId)
-    return
-  }
-  if (req.method === 'POST' && (url.pathname === '/v1/files' || url.pathname === '/v2/files')) {
+  if (req.method === 'POST' && url.pathname === '/v1/files') {
     await handleUpload(req, res, ctx)
     return
   }
-  if ((segments[0] !== 'v1' && segments[0] !== 'v2') || segments[1] !== 'files' || !segments[2]) {
+  if (segments[0] !== 'v1' || segments[1] !== 'files' || !segments[2]) {
     sendError(res, 404, 'not_found', 'unknown route', false, requestId)
     return
   }
@@ -2629,20 +2735,32 @@ async function route(
     return
   }
   if (segments[3] === 'media') {
-    await handleMedia(req, res, { media: ctx.media, fileId, rest: segments.slice(4),
-      baseUrl: baseUrlOf(req, ctx), token: ctx.token, readJson: () => readJsonBody(req, 8192) })
+    await handleMedia(req, res, {
+      media: ctx.media,
+      fileId,
+      rest: segments.slice(4),
+      baseUrl: baseUrlOf(req, ctx),
+      token: ctx.token,
+      readJson: () => readJsonBody(req, 8192),
+    })
     return
   }
   if (segments.length === 4 && segments[3] === 'part-url' && req.method === 'POST') {
     // Refresh one signed part URL (image/audio/font) without reopening a session;
     // used by viewers after a 403/expiry or a deployment-origin change.
-    const body = await readJsonBody(req, 8 * 1024) as { path?: unknown } | null
+    const body = (await readJsonBody(req, 8 * 1024)) as { path?: unknown } | null
     const path = body?.path
-    if (typeof path !== 'string' || path.length < 1 || path.length > 512 || path.startsWith('/') ||
-      path.includes('..') || [...path].some((character) => {
+    if (
+      typeof path !== 'string' ||
+      path.length < 1 ||
+      path.length > 512 ||
+      path.startsWith('/') ||
+      path.includes('..') ||
+      [...path].some((character) => {
         const code = character.charCodeAt(0)
         return code < 0x20 || code === 0x7f
-      }))
+      })
+    )
       throw new HttpError(400, 'invalid_request', 'invalid part path')
     const base = baseUrlOf(req, ctx)
     const plain = `${base}/v1/files/${encodeURIComponent(fileId)}/parts/${path.split('/').map(encodeURIComponent).join('/')}`
@@ -2757,13 +2875,20 @@ async function route(
 }
 
 export async function createParseServer(options: ParseServerOptions): Promise<ParseServer> {
-  if (options.artifactBackend !== undefined && !['local', 'catalog'].includes(options.artifactBackend))
+  options = normalizeAsyncOptions(options)
+  if (
+    options.artifactBackend !== undefined &&
+    !['local', 'catalog'].includes(options.artifactBackend)
+  )
     throw new Error('invalid artifact backend')
   if (options.artifactBackend === 'catalog' && !options.mysql)
     throw new Error('catalog artifact backend requires MySQL')
   if (options.storageAdmission === 'shared' && !options.mysql)
     throw new Error('shared storage admission requires MySQL')
-  if (options.storageAdmission !== undefined && !['instance', 'shared'].includes(options.storageAdmission))
+  if (
+    options.storageAdmission !== undefined &&
+    !['instance', 'shared'].includes(options.storageAdmission)
+  )
     throw new Error('invalid storage admission mode')
   validateRuntimeOptions(options)
   let restoreReport: RestoreReport | undefined
@@ -2781,9 +2906,13 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
         deep: options.restoreCheck.deep,
         invalidate: options.restoreCheck.invalidate,
       })
-    } finally { await gateDb?.close() }
+    } finally {
+      await gateDb?.close()
+    }
     if (!restoreReport.ok || !restoreReport.readyAllowed)
-      throw new Error(`restore check failed: ${restoreReport.errors.map((issue) => issue.code).join(',') || 'unverified ready pointers'}`)
+      throw new Error(
+        `restore check failed: ${restoreReport.errors.map((issue) => issue.code).join(',') || 'unverified ready pointers'}`,
+      )
   }
   const limits = resolveLimits(options.limits)
   const db = options.mysql ? new MysqlDatabase(options.mysql) : undefined
@@ -2793,21 +2922,35 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
   if (mediaOptions.enabled && !db) {
     throw new Error('media conversion requires MySQL for durable shared tasks')
   }
-  const existingMediaCache = db && (await stat(join(options.dataDir, 'media-cache')).catch(() => null))?.isDirectory()
-  const media = (mediaOptions.enabled || existingMediaCache) && db ? new MediaService({
-    dataDir: options.dataDir, store, db, limits, options: mediaOptions,
-  }) : undefined
-  try { await media?.init() }
-  catch (error) { await media?.close(); await db?.close(); throw error }
-  const sharedAdmission = db && (
-    options.storageAdmission === 'shared' ||
-    (options.storageAdmission !== 'instance' && options.artifactBackend === 'catalog')
-  )
-    ? new SqlStorageReservations(db, {
-      ...(options.storageReservationLeaseMs === undefined
-        ? {} : { leaseMs: options.storageReservationLeaseMs }),
-    })
-    : undefined
+  const existingMediaCache =
+    db && (await stat(join(options.dataDir, 'media-cache')).catch(() => null))?.isDirectory()
+  const media =
+    (mediaOptions.enabled || existingMediaCache) && db
+      ? new MediaService({
+          dataDir: options.dataDir,
+          store,
+          db,
+          limits,
+          options: mediaOptions,
+        })
+      : undefined
+  try {
+    await media?.init()
+  } catch (error) {
+    await media?.close()
+    await db?.close()
+    throw error
+  }
+  const sharedAdmission =
+    db &&
+    (options.storageAdmission === 'shared' ||
+      (options.storageAdmission !== 'instance' && options.artifactBackend === 'catalog'))
+      ? new SqlStorageReservations(db, {
+          ...(options.storageReservationLeaseMs === undefined
+            ? {}
+            : { leaseMs: options.storageReservationLeaseMs }),
+        })
+      : undefined
   if (sharedAdmission) {
     await sharedAdmission.init()
     // Startup reconciliation: rows from processes that died without closing are
@@ -2818,10 +2961,14 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
   // The pressure ledger needs MySQL but not the admission GET_LOCK: every call
   // happens later in the background sweeper. A fleet of catalog instances then
   // shares one reclaim budget instead of each reclaiming the full deficit.
-  const sharedPressure = db ? new SqlPressureLedger(db, {
-    ...(options.pressureRoundMs === undefined ? {} : { roundMs: options.pressureRoundMs }),
-    ...(options.pressureCooldownMs === undefined ? {} : { cooldownMs: options.pressureCooldownMs }),
-  }) : undefined
+  const sharedPressure = db
+    ? new SqlPressureLedger(db, {
+        ...(options.pressureRoundMs === undefined ? {} : { roundMs: options.pressureRoundMs }),
+        ...(options.pressureCooldownMs === undefined
+          ? {}
+          : { cooldownMs: options.pressureCooldownMs }),
+      })
+    : undefined
   if (sharedPressure) await sharedPressure.init()
   const library = new LibraryStore(options.dataDir, db)
   await library.init()
@@ -2861,7 +3008,11 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     inflateConcurrency: options.inflateConcurrency ?? WORK_POOL_DEFAULTS.inflateConcurrency,
   })
   const artifacts: ArtifactStore = new ArtifactStore(
-    options.dataDir, undefined, storageBudget, modelCache, workPools,
+    options.dataDir,
+    undefined,
+    storageBudget,
+    modelCache,
+    workPools,
     options.buildRetryAttempts ?? 2,
   )
   const previews = new PreviewRegistry({
@@ -2874,12 +3025,14 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
   // Optional cross-node projection (plan §5.1). Memory keeps exactly the
   // in-process preview; redis mirrors frames/progress and never carries truth.
   const cacheMode: CacheMode = options.cacheMode ?? 'memory'
-  const cacheStore = options.cacheStore ?? (cacheMode === 'redis'
-    ? createRedisCacheStore(options.redis ?? {}, {
-      timeoutMs: options.cacheCommandTimeoutMs ?? CACHE_DEFAULTS.commandTimeoutMs,
-      breakerMs: options.cacheBreakerMs ?? CACHE_DEFAULTS.breakerMs,
-    })
-    : undefined)
+  const cacheStore =
+    options.cacheStore ??
+    (cacheMode === 'redis'
+      ? createRedisCacheStore(options.redis ?? {}, {
+          timeoutMs: options.cacheCommandTimeoutMs ?? CACHE_DEFAULTS.commandTimeoutMs,
+          breakerMs: options.cacheBreakerMs ?? CACHE_DEFAULTS.breakerMs,
+        })
+      : undefined)
   const cache = createHotCache({
     mode: cacheMode,
     ...(cacheStore ? { store: cacheStore } : {}),
@@ -2891,7 +3044,7 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     progressThrottleMs: options.cacheProgressThrottleMs ?? CACHE_DEFAULTS.progressThrottleMs,
     maxFieldBytes: options.cacheMaxFieldBytes ?? CACHE_DEFAULTS.maxFieldBytes,
   })
-  // Bounded, in-process replay cache for v2 POST retries (plan §7). It is a
+  // Bounded, in-process replay cache for async POST retries (plan §7). It is a
   // memory aid, not a shared ledger: a restart or another node re-runs the POST.
   const idempotencyTtlMs = options.idempotencyTtlMs ?? 600_000
   const idempotency = new IdempotencyStore({
@@ -2965,11 +3118,11 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     storageBudget,
     previews,
     cache,
-    asyncSessionsV2: options.asyncSessionsV2 ?? true,
-    v2RolloutPercent: options.v2RolloutPercent ?? 100,
-    ...(options.v2RolloutHeader ? { v2RolloutHeader: options.v2RolloutHeader } : {}),
-    v2RolloutRampPerHour: options.v2RolloutRampPerHour ?? 0,
-    canaryGuard: new CanaryGuard({ errorRatePercent: options.v2AutoPauseErrorRate ?? 0 }),
+    asyncSessions: options.asyncSessions ?? true,
+    asyncRolloutPercent: options.asyncRolloutPercent ?? 100,
+    ...(options.asyncRolloutHeader ? { asyncRolloutHeader: options.asyncRolloutHeader } : {}),
+    asyncRolloutRampPerHour: options.asyncRolloutRampPerHour ?? 0,
+    canaryGuard: new CanaryGuard({ errorRatePercent: options.asyncAutoPauseErrorRate ?? 0 }),
     canonicalArtifactExport: options.canonicalArtifactExport ?? false,
     shutdownTimeoutMs: options.shutdownTimeoutMs ?? 30_000,
     parseThresholds: {
@@ -3035,50 +3188,71 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
     ...(restoreReport ? { restoreReport } : {}),
   }
   if (ctx.artifactCatalog) {
-    const disk = new ArtifactGenerations(options.dataDir, undefined, storageBudget, modelCache, workPools)
+    const disk = new ArtifactGenerations(
+      options.dataDir,
+      undefined,
+      storageBudget,
+      modelCache,
+      workPools,
+    )
     const readyEviction = new ArtifactReadyEviction(ctx.artifactCatalog, disk, {
       idleMs: options.readyEvictionIdleMs ?? 60_000,
       batchSize: options.readyEvictionBatchSize ?? 16,
       sourceExists: async (fileId) => !!(await store.pathOf(fileId)),
       ...(ctx.sharedPressure ? { ledger: ctx.sharedPressure } : {}),
       onReclaimed: (result) => {
-        if (result.withdrawn > 0) logEvent('info', 'ready_generations_reclaimed',
-          { withdrawn: result.withdrawn, collected: result.collected, bytes: result.bytesFreed })
+        if (result.withdrawn > 0)
+          logEvent('info', 'ready_generations_reclaimed', {
+            withdrawn: result.withdrawn,
+            collected: result.collected,
+            bytes: result.bytesFreed,
+          })
       },
     })
     ctx.readyEviction = readyEviction
     if (options.artifactBackend === 'catalog') {
-      ctx.sharedArtifacts = { catalog: ctx.artifactCatalog, disk,
-        coordinator: new ArtifactCoordinator(ctx.artifactCatalog, disk, undefined, undefined,
-          { attempts: options.buildRetryAttempts ?? 2 }) }
+      ctx.sharedArtifacts = {
+        catalog: ctx.artifactCatalog,
+        disk,
+        coordinator: new ArtifactCoordinator(ctx.artifactCatalog, disk, undefined, undefined, {
+          attempts: options.buildRetryAttempts ?? 2,
+        }),
+      }
     }
-    ctx.generationCollection = new ArtifactCollectionService(new ArtifactGenerationSweeper(
-      disk, ctx.artifactCatalog, ctx.artifactCatalog,
-      (key, bytes) => {
-        artifacts.stats.legacyFlatCollected++
-        artifacts.stats.legacyFlatCollectedBytes += bytes
-        artifacts.stats.legacyFlatPendingBytes = Math.max(0,
-          artifacts.stats.legacyFlatPendingBytes - bytes)
-        artifacts.forgetFlat(key)
-      },
-      {
-        retainGenerations: options.generationRetainCount ?? 4,
-        archiveCatalog: ctx.artifactCatalog,
-        onArchived: (archive) => {
-          artifacts.stats.archivedKeys++
-          artifacts.stats.archivedRetiredRows += archive.retiredGenerations
+    ctx.generationCollection = new ArtifactCollectionService(
+      new ArtifactGenerationSweeper(
+        disk,
+        ctx.artifactCatalog,
+        ctx.artifactCatalog,
+        (key, bytes) => {
+          artifacts.stats.legacyFlatCollected++
+          artifacts.stats.legacyFlatCollectedBytes += bytes
+          artifacts.stats.legacyFlatPendingBytes = Math.max(
+            0,
+            artifacts.stats.legacyFlatPendingBytes - bytes,
+          )
+          artifacts.forgetFlat(key)
         },
-        readyEviction,
+        {
+          retainGenerations: options.generationRetainCount ?? 4,
+          archiveCatalog: ctx.artifactCatalog,
+          onArchived: (archive) => {
+            artifacts.stats.archivedKeys++
+            artifacts.stats.archivedRetiredRows += archive.retiredGenerations
+          },
+          readyEviction,
+        },
+      ),
+      {
+        intervalMs: ctx.gcIntervalMs,
+        // Plan §11 gc_deleted_bytes: physical bytes removed by background collection.
+        onResult: (result) =>
+          recordSweeperBytes(
+            ctx.metrics,
+            (result.flatBytes ?? 0) + (result.readyBytes ?? 0) + (result.collectedBytes ?? 0),
+          ),
       },
-    ), {
-      intervalMs: ctx.gcIntervalMs,
-      // Plan §11 gc_deleted_bytes: physical bytes removed by background collection.
-      onResult: (result) =>
-        recordSweeperBytes(
-          ctx.metrics,
-          (result.flatBytes ?? 0) + (result.readyBytes ?? 0) + (result.collectedBytes ?? 0),
-        ),
-    })
+    )
   }
   for (const record of sessionStore.values()) ctx.sessions.set(record.id, { record })
   const server: Server = createServer((req, res) => {
@@ -3118,8 +3292,14 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
           status: error.status,
           message: error.message,
         })
-        sendError(res, error.status, error.code, error.message,
-          error.code === 'artifact_corrupt' || error.code === 'storage_admission_lease_lost', requestId)
+        sendError(
+          res,
+          error.status,
+          error.code,
+          error.message,
+          error.code === 'artifact_corrupt' || error.code === 'storage_admission_lease_lost',
+          requestId,
+        )
         return
       }
       const message = error instanceof Error ? error.message : String(error)
@@ -3170,45 +3350,65 @@ export async function createParseServer(options: ParseServerOptions): Promise<Pa
   gcTimer.unref?.()
   const address = server.address() as AddressInfo
   let closing: Promise<void> | undefined
-  const close = (): Promise<void> => closing ??= (async () => {
-    ctx.closing = true
-    await shutdownDeadline(ctx.media?.close() ?? Promise.resolve(), 'media_queue', ctx.shutdownTimeoutMs)
-    clearInterval(sweeper)
-    clearInterval(gcTimer)
-    ctx.previews.clear()
-    ctx.readyEviction?.close()
-    const collectionClosed = ctx.generationCollection?.close()
-    const coordinatorClosed = ctx.sharedArtifacts?.coordinator.close()
-    for (const entry of ctx.sessions.values()) closeSession(entry.session, ctx)
-    await shutdownDeadline(ctx.parseQueue.close(), 'parse_queue', ctx.shutdownTimeoutMs)
-    await shutdownDeadline(coordinatorClosed ?? Promise.resolve(), 'coordinator', ctx.shutdownTimeoutMs)
-    await shutdownDeadline(ctx.artifacts.drain(), 'artifact_drain', ctx.shutdownTimeoutMs)
-    await shutdownDeadline(
-      Promise.allSettled([...ctx.asyncFlights.values()]), 'async_flights', ctx.shutdownTimeoutMs)
-    for (const entry of ctx.sessions.values()) closeSession(entry.session, ctx)
-    ctx.sessions.clear()
-    server.closeAllConnections?.()
-    await shutdownDeadline(new Promise<void>((resolve, reject) => {
-      server.close((error) => (error ? reject(error) : resolve()))
-    }), 'http_close', ctx.shutdownTimeoutMs)
-    await shutdownDeadline(
-      Promise.allSettled([...ctx.gcFlights, ...(collectionClosed ? [collectionClosed] : [])]),
-      'gc_flights', ctx.shutdownTimeoutMs)
-    while (ctx.sessionDisposals.size) await Promise.allSettled([...ctx.sessionDisposals])
-    // Flush the trailing progress projection and close the shared client before
-    // the database goes away; cache teardown only loses projections.
-    await ctx.cache.close()
-    ctx.idempotency.close()
-    await ctx.sessionStore.flush()
-    await ctx.library.flush()
-    await ctx.pendingViews.flush()
-    // Graceful shutdown releases our rows immediately instead of making other
-    // instances wait for the lease to expire.
-    await sharedAdmission?.close().catch((error: unknown) =>
-      logEvent('warn', 'storage_admission_release_failed', { message: String(error) }),
-    )
-    if (db) await shutdownDeadline(db.close(), 'database', ctx.shutdownTimeoutMs)
-  })()
+  const close = (): Promise<void> =>
+    (closing ??= (async () => {
+      ctx.closing = true
+      await shutdownDeadline(
+        ctx.media?.close() ?? Promise.resolve(),
+        'media_queue',
+        ctx.shutdownTimeoutMs,
+      )
+      clearInterval(sweeper)
+      clearInterval(gcTimer)
+      ctx.previews.clear()
+      ctx.readyEviction?.close()
+      const collectionClosed = ctx.generationCollection?.close()
+      const coordinatorClosed = ctx.sharedArtifacts?.coordinator.close()
+      for (const entry of ctx.sessions.values()) closeSession(entry.session, ctx)
+      await shutdownDeadline(ctx.parseQueue.close(), 'parse_queue', ctx.shutdownTimeoutMs)
+      await shutdownDeadline(
+        coordinatorClosed ?? Promise.resolve(),
+        'coordinator',
+        ctx.shutdownTimeoutMs,
+      )
+      await shutdownDeadline(ctx.artifacts.drain(), 'artifact_drain', ctx.shutdownTimeoutMs)
+      await shutdownDeadline(
+        Promise.allSettled([...ctx.asyncFlights.values()]),
+        'async_flights',
+        ctx.shutdownTimeoutMs,
+      )
+      for (const entry of ctx.sessions.values()) closeSession(entry.session, ctx)
+      ctx.sessions.clear()
+      server.closeAllConnections?.()
+      await shutdownDeadline(
+        new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()))
+        }),
+        'http_close',
+        ctx.shutdownTimeoutMs,
+      )
+      await shutdownDeadline(
+        Promise.allSettled([...ctx.gcFlights, ...(collectionClosed ? [collectionClosed] : [])]),
+        'gc_flights',
+        ctx.shutdownTimeoutMs,
+      )
+      while (ctx.sessionDisposals.size) await Promise.allSettled([...ctx.sessionDisposals])
+      // Flush the trailing progress projection and close the shared client before
+      // the database goes away; cache teardown only loses projections.
+      await ctx.cache.close()
+      ctx.idempotency.close()
+      await ctx.sessionStore.flush()
+      await ctx.library.flush()
+      await ctx.pendingViews.flush()
+      // Graceful shutdown releases our rows immediately instead of making other
+      // instances wait for the lease to expire.
+      await sharedAdmission
+        ?.close()
+        .catch((error: unknown) =>
+          logEvent('warn', 'storage_admission_release_failed', { message: String(error) }),
+        )
+      if (db) await shutdownDeadline(db.close(), 'database', ctx.shutdownTimeoutMs)
+    })())
   return {
     url: `http://127.0.0.1:${address.port}`,
     port: address.port,

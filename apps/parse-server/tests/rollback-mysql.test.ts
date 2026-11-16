@@ -59,16 +59,16 @@ describe.skipIf(!socketPath)('backend rollback safety over real MySQL', () => {
       return ((await response.json()) as { fileId: string }).fileId
     }
     const openReady = async (server: ParseServer, fileId: string): Promise<string> => {
-      const opened = await request(server)('/v2/sessions', {
+      const opened = await request(server)('/v1/sessions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
         body: JSON.stringify({ fileId }),
       })
       expect([201, 202]).toContain(opened.status)
       const { sessionId } = (await opened.json()) as { sessionId: string }
       const deadline = Date.now() + 20_000
       for (;;) {
-        const status = await request(server)(`/v2/sessions/${sessionId}`)
+        const status = await request(server)(`/v1/sessions/${sessionId}`)
         expect(status.status).toBe(200)
         const body = (await status.json()) as { state: string }
         if (body.state === 'ready') return sessionId
@@ -82,7 +82,7 @@ describe.skipIf(!socketPath)('backend rollback safety over real MySQL', () => {
     const first = await start('catalog')
     const savedFile = await upload(first)
     const sessionOnlyFile = await upload(first)
-    const saved = await request(first)('/v2/library', {
+    const saved = await request(first)('/v1/library', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ fileId: savedFile, displayName: 'rollback-saved.pptx' }),
@@ -100,7 +100,7 @@ describe.skipIf(!socketPath)('backend rollback safety over real MySQL', () => {
       expect(content.status, `source ${fileId.slice(0, 8)} must survive rollback GC`).toBe(200)
       await content.arrayBuffer()
     }
-    const library = (await (await request(second)('/v2/library')).json()) as {
+    const library = (await (await request(second)('/v1/library')).json()) as {
       items: Array<{ fileId: string }>
     }
     expect(library.items.some((entry) => entry.fileId === savedFile)).toBe(true)

@@ -127,15 +127,15 @@ describe.skipIf(!socketPath)('incremental preview with the real MySQL catalog', 
     expect(uploaded.status, await uploaded.clone().text()).toBe(201)
     const { fileId } = (await uploaded.json()) as { fileId: string }
     const open = () =>
-      request('/v2/sessions', {
+      request('/v1/sessions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
         body: JSON.stringify({ fileId }),
       })
     const ready = async (id: string) => {
       const deadline = Date.now() + 15_000
       while (Date.now() < deadline) {
-        const status = (await (await request(`/v2/sessions/${id}`)).json()) as {
+        const status = (await (await request(`/v1/sessions/${id}`)).json()) as {
           state: string
           error?: unknown
         }
@@ -157,7 +157,7 @@ describe.skipIf(!socketPath)('incremental preview with the real MySQL catalog', 
     try {
       await paused.entered.promise
       const status = (await (
-        await harness.request(`/v2/sessions/${opening.sessionId}`)
+        await harness.request(`/v1/sessions/${opening.sessionId}`)
       ).json()) as Record<string, unknown>
       expect(status).toMatchObject({
         state: 'building',
@@ -165,8 +165,14 @@ describe.skipIf(!socketPath)('incremental preview with the real MySQL catalog', 
         complete: false,
         availableUnits: { from: 0, to: 1 },
       })
-      expect((await harness.request(`/v2/sessions/${opening.sessionId}/units/0`)).status).toBe(200)
-      expect((await harness.request(`/v2/sessions/${opening.sessionId}/units/1`)).status).toBe(202)
+      expect(
+        (await harness.request(`/v1/sessions/${opening.sessionId}/units/0?representation=model`))
+          .status,
+      ).toBe(200)
+      expect(
+        (await harness.request(`/v1/sessions/${opening.sessionId}/units/1?representation=model`))
+          .status,
+      ).toBe(202)
 
       const [artifacts] = await harness.pool.query<ArtifactRow[]>(
         'SELECT * FROM parse_artifacts WHERE artifact_key = ?',
@@ -194,7 +200,10 @@ describe.skipIf(!socketPath)('incremental preview with the real MySQL catalog', 
     expect(Number(after[0].ready_generation)).toBe(1)
     expect(after[0].state).toBe('ready')
     expect(Number(after[0].unit_count)).toBe(3)
-    expect((await harness.request(`/v2/sessions/${opening.sessionId}/units/2`)).status).toBe(200)
+    expect(
+      (await harness.request(`/v1/sessions/${opening.sessionId}/units/2?representation=model`))
+        .status,
+    ).toBe(200)
   })
 
   it('a failed catalog build leaves no ready generation, no preview and no partial unit', async () => {
@@ -214,14 +223,17 @@ describe.skipIf(!socketPath)('incremental preview with the real MySQL catalog', 
     let status: Record<string, unknown> = {}
     while (Date.now() < deadline) {
       status = (await (
-        await harness.request(`/v2/sessions/${opening.sessionId}`)
+        await harness.request(`/v1/sessions/${opening.sessionId}`)
       ).json()) as Record<string, unknown>
       if (status.state === 'failed') break
       await new Promise((resolve) => setTimeout(resolve, 10))
     }
     expect(status.state).toBe('failed')
     expect(status.previewable).toBeUndefined()
-    expect((await harness.request(`/v2/sessions/${opening.sessionId}/units/0`)).status).toBe(409)
+    expect(
+      (await harness.request(`/v1/sessions/${opening.sessionId}/units/0?representation=model`))
+        .status,
+    ).toBe(409)
     const [artifacts] = await harness.pool.query<ArtifactRow[]>(
       'SELECT * FROM parse_artifacts WHERE artifact_key = ?',
       [opening.artifactKey],

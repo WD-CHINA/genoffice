@@ -24,7 +24,14 @@ type ArtifactBackend = NonNullable<ParseServerOptions['artifactBackend']>
 type StorageAdmission = NonNullable<ParseServerOptions['storageAdmission']>
 type DeploymentOptions = Pick<
   ParseServerOptions,
-  'artifactBackend' | 'storageAdmission' | 'restoreCheck' | 'asyncSessionsV2'
+  | 'artifactBackend'
+  | 'storageAdmission'
+  | 'restoreCheck'
+  | 'asyncSessions'
+  | 'asyncRolloutPercent'
+  | 'asyncRolloutHeader'
+  | 'asyncRolloutRampPerHour'
+  | 'asyncAutoPauseErrorRate'
 >
 
 const ARTIFACT_BACKENDS: readonly ArtifactBackend[] = ['local', 'catalog']
@@ -54,8 +61,7 @@ function enumSetting<T extends string>(
   const raw = readEnv(env, name)
   if (raw === undefined) return undefined
   const value = raw.toLowerCase()
-  if (!(allowed as readonly string[]).includes(value))
-    throw new Error(`invalid ${label}: ${raw}`)
+  if (!(allowed as readonly string[]).includes(value)) throw new Error(`invalid ${label}: ${raw}`)
   return value as T
 }
 
@@ -105,20 +111,44 @@ function parseManifestText(path: string, text: string): BackupManifest {
   return parsed as BackupManifest
 }
 
+/** Version-neutral switches, with strict legacy aliases for existing deployments. */
+function aliasedSetting<T>(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  legacy: string,
+  parse: (env: NodeJS.ProcessEnv, key: string) => T | undefined,
+): T | undefined {
+  const current = parse(env, name)
+  const previous = parse(env, legacy)
+  if (current !== undefined && previous !== undefined && current !== previous)
+    throw new Error(`conflicting ${name} and deprecated ${legacy}`)
+  return current ?? previous
+}
+
+export function asyncSessionsFromEnv(env: NodeJS.ProcessEnv = process.env): boolean | undefined {
+  return aliasedSetting(
+    env,
+    'PARSE_SERVER_ASYNC_SESSIONS',
+    'PARSE_SERVER_ASYNC_SESSIONS_V2',
+    booleanSetting,
+  )
+}
+/** @deprecated Use asyncSessionsFromEnv. */
+export const asyncSessionsV2FromEnv = asyncSessionsFromEnv
+
+function percentageSetting(env: NodeJS.ProcessEnv, name: string): number | undefined {
+  const raw = readEnv(env, name)
+  if (raw === undefined) return undefined
+  if (!/^\d+$/.test(raw) || Number(raw) > 100)
+    throw new Error(`${name} must be an integer between 0 and 100`)
+  return Number(raw)
+}
+
 /**
  * Reads the recovery-drill switches. Returns undefined only when the drill is
  * completely unconfigured; any toggle without a manifest path is an error so a
  * typo cannot quietly disable a restore gate.
  */
-/**
- * `PARSE_SERVER_ASYNC_SESSIONS_V2`: staged-rollback switch for the v2 async
- * session contract (plan §10). When disabled the v2 session routes answer 404
- * and clients fall back to v1 exactly as they do for older servers.
- */
-export function asyncSessionsV2FromEnv(env: NodeJS.ProcessEnv = process.env): boolean | undefined {
-  return booleanSetting(env, 'PARSE_SERVER_ASYNC_SESSIONS_V2')
-}
-
 export async function restoreCheckFromEnv(
   env: NodeJS.ProcessEnv = process.env,
   readFile: (path: string) => Promise<string> = defaultReadFile,
@@ -156,8 +186,38 @@ export async function deploymentOptionsFromEnv(
   if (artifactBackend !== undefined) options.artifactBackend = artifactBackend
   const storageAdmission = storageAdmissionFromEnv(env)
   if (storageAdmission !== undefined) options.storageAdmission = storageAdmission
-  const asyncSessionsV2 = asyncSessionsV2FromEnv(env)
-  if (asyncSessionsV2 !== undefined) options.asyncSessionsV2 = asyncSessionsV2
+  const asyncSessions = asyncSessionsFromEnv(env)
+  if (asyncSessions !== undefined) options.asyncSessions = asyncSessions
+  const asyncRolloutPercent = aliasedSetting(
+    env,
+    'PARSE_SERVER_ASYNC_ROLLOUT_PERCENT',
+    'PARSE_SERVER_V2_ROLLOUT_PERCENT',
+    percentageSetting,
+  )
+  if (asyncRolloutPercent !== undefined) options.asyncRolloutPercent = asyncRolloutPercent
+  const asyncRolloutRampPerHour = aliasedSetting(
+    env,
+    'PARSE_SERVER_ASYNC_ROLLOUT_RAMP_PER_HOUR',
+    'PARSE_SERVER_V2_ROLLOUT_RAMP_PER_HOUR',
+    percentageSetting,
+  )
+  if (asyncRolloutRampPerHour !== undefined)
+    options.asyncRolloutRampPerHour = asyncRolloutRampPerHour
+  const asyncAutoPauseErrorRate = aliasedSetting(
+    env,
+    'PARSE_SERVER_ASYNC_AUTO_PAUSE_ERROR_RATE',
+    'PARSE_SERVER_V2_AUTO_PAUSE_ERROR_RATE',
+    percentageSetting,
+  )
+  if (asyncAutoPauseErrorRate !== undefined)
+    options.asyncAutoPauseErrorRate = asyncAutoPauseErrorRate
+  const asyncRolloutHeader = aliasedSetting(
+    env,
+    'PARSE_SERVER_ASYNC_ROLLOUT_HEADER',
+    'PARSE_SERVER_V2_ROLLOUT_HEADER',
+    readEnv,
+  )
+  if (asyncRolloutHeader !== undefined) options.asyncRolloutHeader = asyncRolloutHeader
   const restoreCheck = await restoreCheckFromEnv(env)
   if (restoreCheck !== undefined) options.restoreCheck = restoreCheck
   return options

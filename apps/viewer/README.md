@@ -1,16 +1,26 @@
 # GenOffice Web Viewer
 
+接口版本统一为 **v1**。请求模式、迁移和配置说明见 [API v1](../../docs/api-v1.zh-CN.md)。
+
 当前三端说明：[功能与架构](../../docs/runtime-workflows.zh-CN.md) · [运行边界](../../docs/runtime-boundaries.zh-CN.md) · [测试与验收](../../docs/testing-guide.zh-CN.md)。业务回归样本见[南宁天桃实验](../../docs/samples/nanning-tiantao.zh-CN.md)。历史报告保留各自的验证日期与环境。
 
 独立的静态预览页面，支持 `.pptx`、`.pdf`、`.docx` 只读展示和 PPT 放映；可使用浏览器本地解析，或连接独立 parse-server 读取远程模型。当前业务文档修复与验证见 [2026-11-11 修复验收](../../docs/parse-viewer-fixes-validation.zh-CN.md)；容量 / 恢复环境边界见 [Docker 验收报告](../../docs/parse-docker-validation.zh-CN.md)。复杂文档的完整视觉还原仍在验收中。
 
-改动范围仅为 `apps/viewer` 和新增的 `packages/viewer-renderers`、`packages/viewer-services`。现有 app、package、根配置及根锁文件不修改。
+Viewer 使用独立 workspace，复用 `packages/viewer-renderers`、`packages/viewer-services`，根目录提供 Web 与解析服务的联合启动入口。
 
 最新产品范围、三格式能力和界面约束见 [需求文档](REQUIREMENTS.zh-CN.md)。
 
 ## 开发运行
 
-要求 Node ≥22.12.0，以及已有仓库开发依赖。本阶段源码构建复用现有 monorepo 依赖，尚未提供仅安装 Viewer 源码依赖的 staging 安装器。以下命令在 `repo` 下执行，均不会调用其他 app 的启动或构建：
+要求 Node ≥22.12.0，以及已有仓库开发依赖。本阶段源码构建复用现有 monorepo 依赖，尚未提供仅安装 Viewer 源码依赖的 staging 安装器。在仓库根目录同时启动 Web 和解析服务：
+
+```sh
+npm run dev:viewer
+```
+
+Web 默认使用 `11001` 端口，解析服务默认使用 `8787` 端口；按 Ctrl+C 同时停止两端。`PARSE_SERVER_PORT` 可同时调整服务端端口和 Web 代理目标。
+
+只启动 Web：
 
 ```sh
 npm run dev -w @genoffice/viewer
@@ -42,7 +52,7 @@ PPT 左上角“预览”按钮展开悬浮缩略图面板，选页、点击外�
 | `showHeader`    | `1`  | 顶部文件栏，包含品牌、文件名及导入入口                          |
 | `showImport`    | `1`  | 本地“打开文件”入口                                              |
 | `showUrlImport` | `1`  | URL 输入框和“导入 URL”按钮                                      |
-| `showToolbar`   | `1`  | PPT/PDF/Word 操作栏                       |
+| `showToolbar`   | `1`  | PPT/PDF/Word 操作栏                                             |
 | `showSidebar`   | `1`  | PPT 悬浮缩略图入口；设为 `1` 不恢复产品要求隐藏的 PDF/Word 目录 |
 | `showErrors`    | `1`  | 主页面和预览的错误/告警区域，包括字体、媒体错误及 PDF XFA 提示  |
 | `url`           | 无   | 主页面初始化后自动导入该 HTTP/HTTPS 文件直链，无需点击导入按钮  |
@@ -72,9 +82,9 @@ console.log(link.href)
 
 像素级等价演练：`npm run test:pixel -w @genoffice/viewer` 在真实 Chrome 中渲染一张含主题色/组合形状/动画/图片的 slide，重启 parse server 后从同一产物重开并比较 canvas `toDataURL` 哈希；本机通过（before/after 同为 `8b5a01be…`），截图输出 `/tmp/genoffice-slide-pixel-{before,after}.png`。`--width 960|1280` 可跑视口矩阵：960 哈希 `39d89bf7…`、1280 哈希 `cc274e9a…`，四次采样均 equal。`--dpr` 可加 DPR 维度：960@2 与 1280@1.5 的 canvas backing 均为 1920×1080，哈希同为 `3e3ba62d…`，重启前后 equal。`--device` 可跑 Playwright 设备档：Pixel 5（393@2.75）哈希 `75b9e886…`、iPad Mini（768@2）哈希 `3902a9fe…`，均 equal。`--fail-first-part` 会先让首个 part 请求返回 403：viewer 通过 `POST /v1/files/:id/part-url` 刷新签名后重试，1200 宽哈希仍为 `8b5a01be…`，与无故障基线一致。
 
-PPTX 重新打开同一 `fileId` 会从上次停下的幻灯片继续（localStorage，30 天有效；不可用存储时静默跳过）。创建 v2 会话时会把保存的页码作为有界 `layoutPrefs` 回传服务端（服务端已持久化并在 pending/ready 回显）；后续翻页经 heartbeat 增量同步（750 ms 节流，失败静默）。DOCX 以源锚点（unitId/blockIndex/offset）保存在同一存储并在首次布局时恢复，创建会话时作为 `layoutPrefs.anchor` 上报；若锚点不在首个窗口，会按 cursor 继续加载（最多 20 个 chunk，超出则放弃）直到该 unit 出现再跳转；滚动停止后也经 heartbeat 增量同步锚点（750 ms 节流）。
+PPTX 重新打开同一 `fileId` 会从上次停下的幻灯片继续（localStorage，30 天有效；不可用存储时静默跳过）。创建 v1 异步会话时会把保存的页码作为有界 `layoutPrefs` 回传服务端（服务端已持久化并在 pending/ready 回显）；后续翻页经 heartbeat 增量同步（750 ms 节流，失败静默）。DOCX 以源锚点（unitId/blockIndex/offset）保存在同一存储并在首次布局时恢复，创建会话时作为 `layoutPrefs.anchor` 上报；若锚点不在首个窗口，会按 cursor 继续加载（最多 20 个 chunk，超出则放弃）直到该 unit 出现再跳转；滚动停止后也经 heartbeat 增量同步锚点（750 ms 节流）。
 
-DOCX 服务端模式默认使用远程流式模型（分块/首帧/签名刷新）。旧的“整文件下载 + 本地完整排版”只是保真度回退，必须在链接显式加 `docxLocalFallback=1` 且文件不超过 64 MiB 才会启用；阈值与路由集中在 `format-policy.ts`，并按服务端 `/v2/capabilities` 声明的格式与 `thresholds` 下发值工作（缺省 32/64/64 MiB）；无法本地预览的大 DOCX 会在读取文件前提示。
+DOCX 服务端模式默认使用远程流式模型（分块/首帧/签名刷新）。旧的“整文件下载 + 本地完整排版”只是保真度回退，必须在链接显式加 `docxLocalFallback=1` 且文件不超过 64 MiB 才会启用；阈值与路由集中在 `format-policy.ts`，并按服务端 `/v1/capabilities` 声明的格式与 `thresholds` 下发值工作（缺省 32/64/64 MiB）；无法本地预览的大 DOCX 会在读取文件前提示。
 
 ## 独立发布
 

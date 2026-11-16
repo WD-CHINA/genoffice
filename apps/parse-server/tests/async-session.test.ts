@@ -50,15 +50,15 @@ async function setup(options: Partial<ParseServerOptions> = {}) {
     return ((await response.json()) as { fileId: string }).fileId
   }
   const open = (fileId: string) =>
-    request('/v2/sessions', {
+    request('/v1/sessions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
       body: JSON.stringify({ fileId }),
     })
   const ready = async (id: string) => {
     const deadline = Date.now() + 10_000
     while (Date.now() < deadline) {
-      const response = await request(`/v2/sessions/${id}`)
+      const response = await request(`/v1/sessions/${id}`)
       expect(response.status).toBe(200)
       const status = (await response.json()) as { state: string; error?: unknown; model?: unknown }
       if (status.state === 'ready') return status
@@ -86,7 +86,7 @@ it('returns 202 before parsing finishes, shares the job, and keeps the other vie
     const firstResponse = await harness.open(fileId)
     expect(firstResponse.status).toBe(202)
     const first = (await firstResponse.json()) as { sessionId: string; jobId: string }
-    expect(firstResponse.headers.get('Location')).toBe(`/v2/sessions/${first.sessionId}`)
+    expect(firstResponse.headers.get('Location')).toBe(`/v1/sessions/${first.sessionId}`)
     await entered.promise
     const secondResponse = await harness.open(fileId)
     expect(secondResponse.status).toBe(202)
@@ -95,19 +95,22 @@ it('returns 202 before parsing finishes, shares the job, and keeps the other vie
     expect(first.sessionId).not.toBe(second.sessionId)
     expect(first.jobId).toBe(second.jobId)
     expect(parse).toHaveBeenCalledTimes(1)
-    const status = await (await harness.request(`/v2/sessions/${second.sessionId}`)).json()
+    const status = await (await harness.request(`/v1/sessions/${second.sessionId}`)).json()
     expect(status).toMatchObject({ state: 'building' })
-    expect((await harness.request(`/v2/sessions/${second.sessionId}/units/0`)).status).toBe(409)
+    expect(
+      (await harness.request(`/v1/sessions/${second.sessionId}/units/0?representation=model`))
+        .status,
+    ).toBe(409)
     expect((await harness.request(`/v1/files/${fileId}`, { method: 'DELETE' })).status).toBe(409)
     expect(
-      (await harness.request(`/v2/sessions/${first.sessionId}`, { method: 'DELETE' })).status,
+      (await harness.request(`/v1/sessions/${first.sessionId}`, { method: 'DELETE' })).status,
     ).toBe(204)
-    expect((await harness.request(`/v2/sessions/${first.sessionId}`)).status).toBe(404)
+    expect((await harness.request(`/v1/sessions/${first.sessionId}`)).status).toBe(404)
   } finally {
     blocked.resolve()
   }
   await harness.ready(secondId!)
-  expect((await harness.request(`/v2/sessions/${secondId}/layout/slides/0`)).status).toBe(200)
+  expect((await harness.request(`/v1/sessions/${secondId}/layout/slides/0`)).status).toBe(200)
   const hot = await harness.open(fileId)
   expect(hot.status).toBe(201)
   expect(await hot.json()).toMatchObject({ state: 'ready' })
@@ -164,7 +167,7 @@ it('resumes queued durable sessions after shutdown and reuses an artifact comple
   const secondResponse = await first.open(two)
   expect(secondResponse.status).toBe(202)
   const b = (await secondResponse.json()) as { sessionId: string }
-  expect(await (await first.request(`/v2/sessions/${b.sessionId}`)).json()).toMatchObject({
+  expect(await (await first.request(`/v1/sessions/${b.sessionId}`)).json()).toMatchObject({
     state: 'queued',
   })
   const closing = first.server.close()
@@ -174,7 +177,7 @@ it('resumes queued durable sessions after shutdown and reuses an artifact comple
   const second = await setup({ dataDir: first.dataDir })
   await Promise.all([second.ready(a.sessionId), second.ready(b.sessionId)])
   expect(parse).toHaveBeenCalledTimes(1)
-  expect((await second.request(`/v2/sessions/${a.sessionId}/layout/slides/0`)).status).toBe(200)
+  expect((await second.request(`/v1/sessions/${a.sessionId}/layout/slides/0`)).status).toBe(200)
   await second.server.close()
   const journal = new PendingSessionStore(first.dataDir)
   await journal.init(15 * 60_000)
@@ -190,7 +193,7 @@ it('exposes a failed async job and never claims its partial output is ready', as
   let status: any
   const deadline = Date.now() + 5000
   do {
-    status = await (await harness.request(`/v2/sessions/${opened.sessionId}`)).json()
+    status = await (await harness.request(`/v1/sessions/${opened.sessionId}`)).json()
     if (status.state === 'failed') break
     expect(status.state).not.toBe('ready')
     await new Promise((resolve) => setTimeout(resolve, 10))
@@ -199,40 +202,42 @@ it('exposes a failed async job and never claims its partial output is ready', as
     state: 'failed',
     error: { code: 'parse_memory_limit', status: 422 },
   })
-  expect((await harness.request(`/v2/sessions/${opened.sessionId}/units/0`)).status).toBe(409)
   expect(
-    (await harness.request(`/v2/sessions/${opened.sessionId}`, { method: 'DELETE' })).status,
+    (await harness.request(`/v1/sessions/${opened.sessionId}/units/0?representation=model`)).status,
+  ).toBe(409)
+  expect(
+    (await harness.request(`/v1/sessions/${opened.sessionId}`, { method: 'DELETE' })).status,
   ).toBe(204)
-  expect((await harness.request(`/v2/sessions/${opened.sessionId}`)).status).toBe(404)
+  expect((await harness.request(`/v1/sessions/${opened.sessionId}`)).status).toBe(404)
 })
 
-it('exposes v2 file aliases and returns persisted models without starting a layout child', async () => {
+it('exposes legacy file aliases and returns persisted models without starting a layout child', async () => {
   const harness = await setup()
-  const upload = await harness.request('/v2/files', {
+  const upload = await harness.request('/v1/files', {
     method: 'POST',
     body: Buffer.from(await createBlankPptx()),
   })
   expect(upload.status).toBe(201)
   const { fileId } = (await upload.json()) as { fileId: string }
-  expect((await harness.request(`/v2/files/${fileId}`)).status).toBe(200)
+  expect((await harness.request(`/v1/files/${fileId}`)).status).toBe(200)
   const opened = await harness.open(fileId)
   const { sessionId } = (await opened.json()) as { sessionId: string }
   await harness.ready(sessionId)
-  const document = await harness.request(`/v2/sessions/${sessionId}/document`)
+  const document = await harness.request(`/v1/sessions/${sessionId}/document`)
   expect(await document.json()).toMatchObject({
     model: { format: 'pptx' },
     layout: { slideCount: 1 },
   })
-  const model = await harness.request(`/v2/sessions/${sessionId}/units/0`)
+  const model = await harness.request(`/v1/sessions/${sessionId}/units/0?representation=model`)
   expect(await model.json()).toHaveProperty('size')
   const health = (await (await harness.request('/v1/health')).json()) as { activeWorkers: number }
   expect(health.activeWorkers).toBe(0)
-  const signed = (await (await harness.request(`/v2/files/${fileId}/content-url`)).json()) as {
+  const signed = (await (await harness.request(`/v1/files/${fileId}/content-url`)).json()) as {
     url: string
   }
   const content = await fetch(signed.url.replace('/v1/files/', '/v2/files/'), {
     headers: { Range: 'bytes=0-3' },
   })
   expect(content.status).toBe(206)
-  expect((await fetch(`${harness.server.url}/v2/files/${fileId}/content`)).status).toBe(401)
+  expect((await fetch(`${harness.server.url}/v1/files/${fileId}/content`)).status).toBe(401)
 })

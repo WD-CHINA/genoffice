@@ -1,5 +1,9 @@
 # Web / Android / 解析服务整体优化方案
 
+> 文中异步创建均指 `POST /v1/sessions` 携带 `Prefer: respond-async`；省略该请求头时同步创建。模型单元通过 `?representation=model` 读取；默认完整单元接口返回渲染树。
+
+> 本文接口名称与配置按 [API v1](./api-v1.zh-CN.md) 统一整理；历史测量结果保留，不代表新一轮验收。
+
 > 本文保留原设计或当时验证条件；当前三端职责、已知边界与测试入口请参阅[架构主文档](runtime-workflows.zh-CN.md)、[运行边界](runtime-boundaries.zh-CN.md)和[测试指南](testing-guide.zh-CN.md)。历史数字不自动代表当前结果。
 
 日期：2026-11-06，更新：2026-11-10。状态：分阶段实施中，已完成项与验证边界见 [实施进度](parse-optimization-progress.zh-CN.md)，量化完成度与剩余缺口见 [完成度评估](parse-optimization-completion.zh-CN.md)。基线：单机 8 核 CPU、16 GiB 内存，已有本地磁盘及可选 MySQL；Redis 为可选热缓存，不改变真值路径（见 5.1）。
@@ -173,21 +177,21 @@ PDF Range 和持久化产物读取不占重解析名额；另外设置 HTTP 并�
 
 ## 7. HTTP 契约与兼容迁移
 
-v1 现有客户端按同步 201 ready 工作，不能直接把原响应改为 202。新增 `/v2`，capabilities 声明异步任务、模型 schema 和离线包能力；旧 v1 兼容适配层读取新产物，内部等待有明确超时，失败返回明确错误。
+接口统一使用 `/v1`。同步创建保持 201 ready；携带 `Prefer: respond-async` 时启用异步任务，冷解析返回 202、缓存命中返回 201。capabilities 声明异步任务、模型 schema 和离线包能力；内部等待有明确超时，失败返回明确错误。
 
 ```text
-POST   /v2/files                         流式上传，返回 fileId
-POST   /v2/library                       显式保存历史记录（fileId、displayName）
-POST   /v2/sessions                      校验访问；命中返回 201 ready，未命中返回 202 queued/building
-GET    /v2/sessions/:id                  state、artifactKey、progress、pollAfterMs、错误与恢复信息
-GET    /v2/sessions/:id/document         文档共享信息
-GET    /v2/sessions/:id/units?cursor=...  单元列表和可用范围
-GET    /v2/sessions/:id/units/:unitId    模型与当前请求的资源访问描述
-POST   /v2/sessions/:id/heartbeat        仅续期轻量阅读会话
-DELETE /v2/sessions/:id                  只删除阅读状态
-GET    /v2/sessions/:id/bundle-manifest  可版本化的离线下载清单
-GET    /v2/library?cursor=...            历史资源列表
-DELETE /v2/library/:entryId              删除库引用；后台按依赖和策略 GC
+POST   /v1/files                         流式上传，返回 fileId
+POST   /v1/library                       显式保存历史记录（fileId、displayName）
+POST   /v1/sessions                      校验访问；命中返回 201 ready，未命中返回 202 queued/building
+GET    /v1/sessions/:id                  state、artifactKey、progress、pollAfterMs、错误与恢复信息
+GET    /v1/sessions/:id/document         文档共享信息
+GET    /v1/sessions/:id/units?cursor=...  单元列表和可用范围
+GET    /v1/sessions/:id/units/:unitId    模型与当前请求的资源访问描述
+POST   /v1/sessions/:id/heartbeat        仅续期轻量阅读会话
+DELETE /v1/sessions/:id                  只删除阅读状态
+GET    /v1/sessions/:id/bundle-manifest  可版本化的离线下载清单
+GET    /v1/library?cursor=...            历史资源列表
+DELETE /v1/library/:entryId              删除库引用；后台按依赖和策略 GC
 ```
 
 冷访问返回 Location 指向会话状态，客户端遵循 pollAfterMs 带退避轮询；首期不依赖 SSE。相同文件附着已有任务时返回相同 jobId，但 sessionId 独立。会话过期可凭有权限的 fileId 重新打开命中产物，恢复客户端锚点。
@@ -249,7 +253,7 @@ DELETE /v2/library/:entryId              删除库引用；后台按依赖和策
 | --------------- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
 | P0 正确性       | 并发预占、恢复 single-flight、配置默认值校验、DOCX 签名/游标/心跳、自动阈值与下载前分流    | 对应回归通过；保留现有接口行为                                  |
 | P1 持久化基础   | Artifact DTO/Reader/Writer、MySQL 表和文件索引、依赖关系、原子发布、PPTX/DOCX 完整产物落盘 | 新会话和重启命中产物时解析启动数为 0                            |
-| P2 资源解耦     | v2 异步任务、有界队列、租约、子进程 RSS 隔离、会话只引用产物、Web/Android 等待状态适配     | 大任务排队不阻断缓存读取；客户端兼容迁移完成                    |
+| P2 资源解耦     | v1 异步任务、有界队列、租约、子进程 RSS 隔离、会话只引用产物、Web/Android 等待状态适配     | 大任务排队不阻断缓存读取；客户端兼容迁移完成                    |
 | P3 大文件与体验 | DOCX 真流式、前端有界 chunk 缓存、增量首屏、Android 清单/续传/容量管理                     | 大正文和弱网场景达标，记录峰值内存与首屏数据                    |
 | P3.5 可选热缓存 | 预览帧与构建进度的跨实例共享；单机默认 memory，Redis 可关闭                                | 双实例 A 构建/B 读首屏；宕机、清空或变慢不影响 ready 与单元读取 |
 | P4 运维上线     | GC、配额、备份恢复、指标告警、灰度与故障演练                                               | 压测与恢复报告可复查，可回滚                                    |
@@ -258,7 +262,7 @@ P1 的持久化不是 P3 的低峰值解析，两者分别验收。P1 初期仍�
 
 现有原文件保持路径与 fileId。旧 sessions/chunks 不批量直接改名为可信新产物；新访问优先检查新缓存，缺失再构建。可做受队列预算约束的后台历史预热。旧 chunk 仅在版本匹配且结构/依赖校验通过后导入，否则重建。
 
-数据库迁移先加表/列，不直接删除旧列。新功能按 artifactStore、asyncSessionsV2、processWorkers 开关分批启用，保留旧客户端路径。回滚前停止新任务并排空写入；回滚版本必须继续识别库保留标记，或暂停旧 GC，防止旧清扫器删除新历史库的文件。新增产物可留盘，不能为了回滚删除用户原文件。
+数据库迁移先加表/列，不直接删除旧列。新功能按 artifactStore、asyncSessions、processWorkers 开关分批启用，保留旧客户端路径。回滚前停止新任务并排空写入；回滚版本必须继续识别库保留标记，或暂停旧 GC，防止旧清扫器删除新历史库的文件。新增产物可留盘，不能为了回滚删除用户原文件。
 
 建议按阶段拆成独立 PR，P0 可以立即开始；P1 先实现产物编解码与缓存命中，再接调度。具体工期在 DTO 保真与流式 DOCX spike 后估算。
 

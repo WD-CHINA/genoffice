@@ -27,8 +27,10 @@ function argument(name: string, fallback: number): number {
 }
 const sessions = argument('sessions', 500)
 const outIndex = process.argv.indexOf('--out')
-const output = outIndex >= 0 && process.argv[outIndex + 1]
-  ? process.argv[outIndex + 1] : join(tmpdir(), 'genoffice-session-load.json')
+const output =
+  outIndex >= 0 && process.argv[outIndex + 1]
+    ? process.argv[outIndex + 1]
+    : join(tmpdir(), 'genoffice-session-load.json')
 const strict = process.argv.includes('--strict')
 const instances = Math.min(4, argument('instances', 1))
 const useMysql = process.argv.includes('--mysql')
@@ -47,9 +49,16 @@ function rssMb(): number {
 const dataDir = await mkdtemp(join(tmpdir(), 'session-load-'))
 let admin: Connection | undefined
 let database: string | undefined
-let mysqlConfig: {
-  host: string; port: number; user: string; password: string; database: string; socketPath: string
-} | undefined
+let mysqlConfig:
+  | {
+      host: string
+      port: number
+      user: string
+      password: string
+      database: string
+      socketPath: string
+    }
+  | undefined
 if (useMysql) {
   if (!mysqlSocket) {
     console.error('--mysql requires PARSE_TEST_MYSQL_SOCKET')
@@ -59,46 +68,56 @@ if (useMysql) {
   admin = await mysql.createConnection({ socketPath: mysqlSocket, user: 'root' })
   await admin.query(`CREATE DATABASE ${database} CHARACTER SET utf8mb4`)
   mysqlConfig = {
-    host: '127.0.0.1', port: 3306, user: 'root', password: '', database,
+    host: '127.0.0.1',
+    port: 3306,
+    user: 'root',
+    password: '',
+    database,
     socketPath: mysqlSocket,
   }
 }
 const servers = [] as Awaited<ReturnType<typeof createParseServer>>[]
 for (let index = 0; index < instances; index++) {
-  servers.push(await createParseServer({
-    dataDir,
-    maxSessions: sessions + 200,
-    maxParseJobs: 2,
-    sessionTtlMs: 15 * 60_000,
-    parserVersion: '0.1.0',
-    parserFingerprint: 'session-load-drill',
-    ...(mysqlConfig ? { mysql: mysqlConfig } : {}),
-    ...(mysqlConfig && useCatalog ? { artifactBackend: 'catalog' as const } : {}),
-  }))
+  servers.push(
+    await createParseServer({
+      dataDir,
+      maxSessions: sessions + 200,
+      maxParseJobs: 2,
+      sessionTtlMs: 15 * 60_000,
+      parserVersion: '0.1.0',
+      parserFingerprint: 'session-load-drill',
+      ...(mysqlConfig ? { mysql: mysqlConfig } : {}),
+      ...(mysqlConfig && useCatalog ? { artifactBackend: 'catalog' as const } : {}),
+    }),
+  )
 }
-const requestOf = (server: (typeof servers)[number]) =>
-  (path: string, init?: RequestInit) => fetch(server.url + path, init)
+const requestOf = (server: (typeof servers)[number]) => (path: string, init?: RequestInit) =>
+  fetch(server.url + path, init)
 const request = requestOf(servers[0]!)
 const report: Record<string, unknown> = {
-  sessions, instances, strict,
+  sessions,
+  instances,
+  strict,
   backend: useMysql ? (useCatalog ? 'mysql+catalog' : 'mysql') : 'filesystem',
   startedAt: new Date().toISOString(),
 }
 try {
   const uploaded = await request('/v1/files', {
-    method: 'POST', body: Buffer.from(await createBlankPptx()),
+    method: 'POST',
+    body: Buffer.from(await createBlankPptx()),
   })
   if (uploaded.status !== 201) throw new Error(`upload failed: HTTP ${uploaded.status}`)
-  const { fileId } = await uploaded.json() as { fileId: string }
+  const { fileId } = (await uploaded.json()) as { fileId: string }
   // Warm the shared artifact with one ready session so all later sessions attach.
-  const warm = await request('/v2/sessions', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+  const warm = await request('/v1/sessions', {
+    method: 'POST',
+    headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
     body: JSON.stringify({ fileId }),
   })
   const warmId = ((await warm.json()) as { sessionId: string }).sessionId
   const deadline = Date.now() + 60_000
   for (;;) {
-    const body = await (await request(`/v2/sessions/${warmId}`)).json() as { state: string }
+    const body = (await (await request(`/v1/sessions/${warmId}`)).json()) as { state: string }
     if (body.state === 'ready') break
     if (body.state === 'failed') throw new Error('warm build failed')
     if (Date.now() > deadline) throw new Error('warm build timed out')
@@ -109,19 +128,23 @@ try {
   const ids: Array<{ id: string; server: (typeof servers)[number] }> = []
   const concurrency = 16
   for (let offset = 0; offset < sessions; offset += concurrency) {
-    const batch = Array.from({ length: Math.min(concurrency, sessions - offset) }, async (_, inBatch) => {
-      const server = servers[(offset + inBatch) % servers.length]!
-      const started = performance.now()
-      const opened = await requestOf(server)('/v2/sessions', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fileId }),
-      })
-      if (opened.status !== 201 && opened.status !== 202)
-        throw new Error(`session create failed: HTTP ${opened.status}`)
-      const body = await opened.json() as { sessionId: string }
-      createLatencies.push(performance.now() - started)
-      ids.push({ id: body.sessionId, server })
-    })
+    const batch = Array.from(
+      { length: Math.min(concurrency, sessions - offset) },
+      async (_, inBatch) => {
+        const server = servers[(offset + inBatch) % servers.length]!
+        const started = performance.now()
+        const opened = await requestOf(server)('/v1/sessions', {
+          method: 'POST',
+          headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
+          body: JSON.stringify({ fileId }),
+        })
+        if (opened.status !== 201 && opened.status !== 202)
+          throw new Error(`session create failed: HTTP ${opened.status}`)
+        const body = (await opened.json()) as { sessionId: string }
+        createLatencies.push(performance.now() - started)
+        ids.push({ id: body.sessionId, server })
+      },
+    )
     await Promise.all(batch)
   }
   const readyDeadline = Date.now() + 120_000
@@ -130,18 +153,29 @@ try {
   const artifactKeys = new Set<string>()
   for (const { id, server } of ids) {
     for (;;) {
-      const response = await requestOf(server)(`/v2/sessions/${id}`)
-      if (response.status === 404) { failed++; break }
-      const body = await response.json() as {
-        state: string; artifactKey?: string; error?: unknown
+      const response = await requestOf(server)(`/v1/sessions/${id}`)
+      if (response.status === 404) {
+        failed++
+        break
+      }
+      const body = (await response.json()) as {
+        state: string
+        artifactKey?: string
+        error?: unknown
       }
       if (body.state === 'ready') {
         ready++
         if (body.artifactKey) artifactKeys.add(body.artifactKey)
         break
       }
-      if (body.state === 'failed' || body.error) { failed++; break }
-      if (Date.now() > readyDeadline) { failed++; break }
+      if (body.state === 'failed' || body.error) {
+        failed++
+        break
+      }
+      if (Date.now() > readyDeadline) {
+        failed++
+        break
+      }
       await new Promise((resolve) => setTimeout(resolve, 10))
     }
   }
@@ -149,17 +183,23 @@ try {
   for (let index = 0; index < Math.min(100, ids.length); index++) {
     const sampled = ids[(index * 7) % ids.length]!
     const started = performance.now()
-    const response = await requestOf(sampled.server)(`/v2/sessions/${sampled.id}`)
+    const response = await requestOf(sampled.server)(`/v1/sessions/${sampled.id}`)
     await response.arrayBuffer()
     getLatencies.push(performance.now() - started)
   }
-  const healths = await Promise.all(servers.map(async (server) =>
-    await (await requestOf(server)('/v1/health')).json() as {
-      sessions: number; artifacts: { buildsStarted: number }
-    }))
+  const healths = await Promise.all(
+    servers.map(
+      async (server) =>
+        (await (await requestOf(server)('/v1/health')).json()) as {
+          sessions: number
+          artifacts: { buildsStarted: number }
+        },
+    ),
+  )
   const rssAfter = rssMb()
   const metrics = {
-    ready, failed,
+    ready,
+    failed,
     buildsStarted: healths.reduce((sum, health) => sum + health.artifacts.buildsStarted, 0),
     serverSessions: healths.reduce((sum, health) => sum + health.sessions, 0),
     perInstanceSessions: healths.map((health) => health.sessions),
@@ -176,7 +216,8 @@ try {
   const problems: string[] = []
   if (ready !== sessions) problems.push(`ready=${ready}/${sessions}`)
   if (failed > 0) problems.push(`failed=${failed}`)
-  if (metrics.buildsStarted > 1) problems.push(`shared artifact rebuilt: buildsStarted=${metrics.buildsStarted}`)
+  if (metrics.buildsStarted > 1)
+    problems.push(`shared artifact rebuilt: buildsStarted=${metrics.buildsStarted}`)
   if (metrics.sharedArtifactKeys === 0) problems.push('no shared artifactKey reported')
   if (metrics.createP95Ms > 2000) problems.push(`create p95 ${metrics.createP95Ms} ms > 2000`)
   if (metrics.getP95Ms > 500) problems.push(`status p95 ${metrics.getP95Ms} ms > 500`)

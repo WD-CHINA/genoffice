@@ -32,7 +32,7 @@ const OLD_SESSIONS_DDL = `
   ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`
 
 describe.skipIf(!socketPath)('parse_sessions staged migration over real MySQL', () => {
-  it('adds artifact_key/expires_at to an old table, persists them, survives restart and exposes them on v2', async () => {
+  it('adds artifact_key/expires_at to an old table, persists them, survives restart and exposes them on v1', async () => {
     const database = `genoffice_sessions_${randomUUID().replaceAll('-', '')}`
     const admin: Connection = await mysql.createConnection({ socketPath, user: 'root' })
     await admin.query(`CREATE DATABASE ${database} CHARACTER SET utf8mb4`)
@@ -114,7 +114,7 @@ describe.skipIf(!socketPath)('parse_sessions staged migration over real MySQL', 
     expect(before.model).toBeNull()
     expect(before.fonts).toBeNull()
     expect(before.base_url).toBeNull()
-    // ...while v1/v2 responses still return model/fonts by reading the artifact.
+    // ...while v1 responses still return model/fonts by reading the artifact.
     const v1 = (await (await request(first)(`/v1/sessions/${sessionId}`)).json()) as {
       model: { format: string; unitCount: number }
       fonts: unknown[]
@@ -123,18 +123,18 @@ describe.skipIf(!socketPath)('parse_sessions staged migration over real MySQL', 
     expect(v1.model.unitCount).toBeGreaterThan(0)
     expect(Array.isArray(v1.fonts)).toBe(true)
 
-    const v2 = (await (await request(first)(`/v2/sessions/${sessionId}`)).json()) as {
+    const status = (await (await request(first)(`/v1/sessions/${sessionId}`)).json()) as {
       artifactKey: string
       expiresAt: number
       state: string
     }
-    expect(v2).toMatchObject({ state: 'ready', artifactKey: expectedKey })
+    expect(status).toMatchObject({ state: 'ready', artifactKey: expectedKey })
     // The GET itself touches the record, so the deadline only moves forward.
-    expect(v2.expiresAt).toBeGreaterThanOrEqual(Number(before.expires_at))
+    expect(status.expiresAt).toBeGreaterThanOrEqual(Number(before.expires_at))
 
     // A heartbeat/GET touch refreshes last_used and the idle deadline.
     await new Promise((resolve) => setTimeout(resolve, 5))
-    await request(first)(`/v2/sessions/${sessionId}`)
+    await request(first)(`/v1/sessions/${sessionId}`)
     const touched = (
       await rows('SELECT expires_at, last_used FROM parse_sessions WHERE id = ?', [sessionId])
     )[0]
@@ -144,7 +144,7 @@ describe.skipIf(!socketPath)('parse_sessions staged migration over real MySQL', 
     // Restart: the record is reloaded from MySQL with the new columns intact.
     await first.close()
     const second = await start()
-    const restored = (await (await request(second)(`/v2/sessions/${sessionId}`)).json()) as {
+    const restored = (await (await request(second)(`/v1/sessions/${sessionId}`)).json()) as {
       artifactKey: string
       expiresAt: number
       state: string

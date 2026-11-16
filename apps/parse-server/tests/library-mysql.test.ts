@@ -70,10 +70,13 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
         ...init,
         headers: { Authorization: 'Bearer secret', ...init?.headers },
       })
-    const post = (server: ParseServer, path: string, body: unknown) =>
+    const post = (server: ParseServer, path: string, body: unknown, respondAsync = false) =>
       request(server, path, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(respondAsync ? { Prefer: 'respond-async' } : {}),
+        },
         body: JSON.stringify(body),
       })
     return { start, request, post, dataDir }
@@ -93,14 +96,14 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
       expect(uploaded.status).toBe(201)
       const { fileId } = (await uploaded.json()) as { fileId: string }
       const parse = vi.spyOn(ArtifactSession, 'build')
-      const response = await harness.post(first, '/v2/sessions', { fileId })
+      const response = await harness.post(first, '/v1/sessions', { fileId }, true)
       expect(response.status).toBe(202)
       const { sessionId } = (await response.json()) as { sessionId: string }
       await expect
         .poll(
           async () =>
             (
-              (await (await harness.request(first, `/v2/sessions/${sessionId}`)).json()) as {
+              (await (await harness.request(first, `/v1/sessions/${sessionId}`)).json()) as {
                 state: string
               }
             ).state,
@@ -117,7 +120,7 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
         originalStyles = await styles.json()
       }
       expect(parse).toHaveBeenCalledTimes(1)
-      const cached = await harness.post(first, '/v2/sessions', { fileId })
+      const cached = await harness.post(first, '/v1/sessions', { fileId }, true)
       expect(cached.status).toBe(201)
       await cached.json()
       await first.close()
@@ -203,7 +206,7 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
     })
     expect(uploaded.status).toBe(201)
     const { fileId } = (await uploaded.json()) as { fileId: string }
-    const saved = await harness.post(first, '/v2/library', { fileId, displayName: '历史资料' })
+    const saved = await harness.post(first, '/v1/library', { fileId, displayName: '历史资料' })
     expect(saved.status).toBe(201)
     const entry = (await saved.json()) as { id: string }
     await first.db!.pool.query('UPDATE parse_files SET created_at = ? WHERE file_id = ?', [
@@ -219,14 +222,14 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
     await first.close()
     const second = await harness.start()
     await second.gc()
-    expect(await (await harness.request(second, '/v2/library')).json()).toMatchObject({
+    expect(await (await harness.request(second, '/v1/library')).json()).toMatchObject({
       items: [{ id: entry.id, fileId, displayName: '历史资料' }],
     })
     expect(
       (await harness.request(second, `/v1/files/${fileId}`, { method: 'DELETE' })).status,
     ).toBe(409)
     expect(
-      (await harness.request(second, `/v2/library/${entry.id}`, { method: 'DELETE' })).status,
+      (await harness.request(second, `/v1/library/${entry.id}`, { method: 'DELETE' })).status,
     ).toBe(204)
     await second.gc()
     expect(await second.store.pathOf(fileId)).toBeNull()
@@ -254,21 +257,21 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
       const { fileId: nextFile } = (await uploaded.json()) as { fileId: string }
       expect(
         (
-          await harness.post(server, '/v2/library', {
+          await harness.post(server, '/v1/library', {
             fileId: nextFile,
             displayName: `PDF ${index}`,
           })
         ).status,
       ).toBe(201)
     }
-    const page = (await (await harness.request(server, '/v2/library?limit=1')).json()) as {
+    const page = (await (await harness.request(server, '/v1/library?limit=1')).json()) as {
       items: Array<{ id: string }>
       next: string
     }
     expect(page.items).toHaveLength(1)
-    await harness.request(server, `/v2/library/${page.items[0].id}`, { method: 'DELETE' })
+    await harness.request(server, `/v1/library/${page.items[0].id}`, { method: 'DELETE' })
     const rest = (await (
-      await harness.request(server, `/v2/library?limit=2&cursor=${page.next}`)
+      await harness.request(server, `/v1/library?limit=2&cursor=${page.next}`)
     ).json()) as { items: Array<{ id: string }> }
     expect(rest.items).toHaveLength(2)
     expect(rest.items.map((entry) => entry.id)).not.toContain(page.items[0].id)
@@ -283,7 +286,7 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
     })
     expect(uploaded.status).toBe(201)
     const { fileId } = (await uploaded.json()) as { fileId: string }
-    await harness.post(first, '/v2/library', { fileId, displayName: 'Async document' })
+    await harness.post(first, '/v1/library', { fileId, displayName: 'Async document' })
     // Seed the durable boundary left by an interrupted server, then restart before executing it.
     const journal = new PendingSessionStore(harness.dataDir, first.db)
     await journal.init(900_000)
@@ -304,7 +307,7 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
     let state: any
     const deadline = Date.now() + 10_000
     do {
-      state = await (await harness.request(second, `/v2/sessions/${pending.id}`)).json()
+      state = await (await harness.request(second, `/v1/sessions/${pending.id}`)).json()
       if (state.state === 'ready') break
       expect(state.state, JSON.stringify(state)).not.toBe('failed')
       await new Promise((resolve) => setTimeout(resolve, 10))
@@ -315,12 +318,12 @@ describe.skipIf(!socketPath)('saved library with real MySQL', () => {
       model: { format: 'pptx' },
     })
     expect(
-      (await harness.request(second, `/v2/sessions/${pending.id}/layout/slides/0`)).status,
+      (await harness.request(second, `/v1/sessions/${pending.id}/layout/slides/0`)).status,
     ).toBe(200)
     await second.close()
     const third = await harness.start(options)
     expect(
-      (await harness.request(third, `/v2/sessions/${pending.id}/layout/slides/0`)).status,
+      (await harness.request(third, `/v1/sessions/${pending.id}/layout/slides/0`)).status,
     ).toBe(200)
     const health = (await (await harness.request(third, '/v1/health')).json()) as {
       artifacts: { buildsStarted: number }

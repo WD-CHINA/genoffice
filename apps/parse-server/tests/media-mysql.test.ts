@@ -249,7 +249,7 @@ describe.skipIf(!socketPath)('persistent media jobs with real MySQL and FFmpeg',
       expect(first.sha256).toMatch(/^[a-f0-9]{64}$/)
       expect(first.sourceSha256).toBe(first.sha256)
       expect(first.profile).toMatch(/^[a-f0-9]{64}$/)
-      expect((await request(a, '/v2/capabilities')).body.features.mediaPreparationIntegrity).toBe(
+      expect((await request(a, '/v1/capabilities')).body.features.mediaPreparationIntegrity).toBe(
         true,
       )
       const shared = await ready(b, secondId)
@@ -378,7 +378,7 @@ describe.skipIf(!socketPath)('persistent media jobs with real MySQL and FFmpeg',
       expect(invalid.response.status).toBe(400)
       await a.close()
       a = await start(false)
-      expect((await request(a, '/v2/capabilities')).body.features.mediaTranscoding).toBe(false)
+      expect((await request(a, '/v1/capabilities')).body.features.mediaTranscoding).toBe(false)
       const oldUrl = new URL(repaired.url)
       oldUrl.host = new URL(a.url).host
       const afterRollback = await fetch(oldUrl, { headers: { Range: 'bytes=0-31' } })

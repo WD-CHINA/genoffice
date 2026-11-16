@@ -57,28 +57,28 @@ public class BundleDownloaderTest extends AndroidTestSupport {
             new BundleDownloader(server.url(), "", "test-file", store, stages::add).run();
             assertTrue(store.isComplete());
             assertEquals(2, server.polls);
-            assertEquals(0, server.v1Posts);
-            assertEquals("/v2/sessions/test", server.deletedApi);
+            assertEquals(0, server.blockingPosts);
+            assertEquals("/v1/sessions/test", server.deletedApi);
             assertTrue(stages.contains("正在排队等待解析…"));
             assertTrue(stages.contains("正在解析文档…"));
         }
     }
     public void testFallbackDoesNotBypassQueueAdmission() throws Exception {
         try (Fixture server = new Fixture(1024)) {
-            server.rejectV2 = true;
+            server.rejectAsync = true;
             BundleStore store = new BundleStore(root, "test-file");
             new BundleDownloader(server.url(), "", "test-file", store, text -> {}).run();
             assertTrue(store.isComplete());
-            assertEquals(1, server.v1Posts);
+            assertEquals(1, server.blockingPosts);
             assertEquals("/v1/sessions/test", server.deletedApi);
-            server.rejectV2 = false;
+            server.rejectAsync = false;
             server.queueFull = true;
             try {
                 new BundleDownloader(server.url(), "", "test-file", store, text -> {}).run();
                 fail("must preserve queue rejection");
             } catch (IOException expected) {
                 assertTrue(store.isComplete());
-                assertEquals(1, server.v1Posts);
+                assertEquals(1, server.blockingPosts);
             }
         }
     }
@@ -204,7 +204,7 @@ public class BundleDownloaderTest extends AndroidTestSupport {
             catch (IOException expected) { assertTrue(holder[0].isCancelled()); }
             finally { Thread.interrupted(); }
             assertTrue(fixture.deleted);
-            assertEquals("/v2/sessions/test", fixture.deletedApi);
+            assertEquals("/v1/sessions/test", fixture.deletedApi);
             assertEquals(0, fixture.polls);
             assertFalse(store.staging().dir().exists());
             store.verifyIntegrity();
@@ -880,7 +880,7 @@ public class BundleDownloaderTest extends AndroidTestSupport {
         final ServerSocket socket;
         final Thread thread;
         final long bytes;
-        volatile boolean deleted, fail, failPart, async, rejectV2, queueFull, failAsync, slowPart, alwaysQueued, unknownPartLength;
+        volatile boolean deleted, fail, failPart, async, rejectAsync, queueFull, failAsync, slowPart, alwaysQueued, unknownPartLength;
         final java.util.concurrent.CountDownLatch waitingStarted = new java.util.concurrent.CountDownLatch(1);
         final java.util.concurrent.CountDownLatch sessionDeleted = new java.util.concurrent.CountDownLatch(1);
         final java.util.concurrent.CountDownLatch partStarted = new java.util.concurrent.CountDownLatch(1);
@@ -893,7 +893,7 @@ public class BundleDownloaderTest extends AndroidTestSupport {
         volatile int abortAfterBytes, rangeRequests, fullRequests;
         volatile String lastRange, lastIfRange;
         volatile int bundleStatus = 200, bundleVersion = 1;
-        volatile int polls, v1Posts, layoutRequests, bundleResourceRequests;
+        volatile int polls, blockingPosts, layoutRequests, bundleResourceRequests;
         volatile String deletedApi;
         static final String WRONG_ETAG = "\"0000000000000000000000000000000000000000000000000000000000000000\"";
         Fixture(long bytes) throws IOException {
@@ -925,16 +925,16 @@ public class BundleDownloaderTest extends AndroidTestSupport {
             String path = request[1];
             if (fail) { json(out, 500, "failed"); return; }
             if (request[0].equals("DELETE")) { deleted = true; deletedApi = path; json(out, 200, "{}"); sessionDeleted.countDown(); }
-            else if (path.equals("/v2/capabilities") && preparedResponse != null) {
+            else if (path.equals("/v1/capabilities") && preparedResponse != null) {
                 json(out, 200, "{\"features\":{\"mediaTranscoding\":true,\"mediaPreparationIntegrity\":true}}");
             }
             else if (path.startsWith("/v1/files/test-file/media") && preparedResponse != null) {
                 mediaStarted.countDown(); json(out, 200, preparedResponse);
             }
-            else if (path.equals("/v2/sessions") && rejectV2) { json(out, 404, "{}"); }
-            else if (path.equals("/v2/sessions") && queueFull) { json(out, 429, "{}"); }
-            else if (path.equals("/v2/sessions") && async) { waitingStarted.countDown(); json(out, 202, "{\"sessionId\":\"test\",\"state\":\"queued\",\"pollAfterMs\":1}"); }
-            else if (path.equals("/v2/sessions/test") && async) {
+            else if (path.equals("/v1/sessions") && "respond-async".equals(headers.get("prefer")) && rejectAsync) { json(out, 404, "{}"); }
+            else if (path.equals("/v1/sessions") && "respond-async".equals(headers.get("prefer")) && queueFull) { json(out, 429, "{}"); }
+            else if (path.equals("/v1/sessions") && "respond-async".equals(headers.get("prefer")) && async) { waitingStarted.countDown(); json(out, 202, "{\"sessionId\":\"test\",\"state\":\"queued\",\"pollAfterMs\":1}"); }
+            else if (path.equals("/v1/sessions/test") && async) {
                 polls++;
                 String state = alwaysQueued ? "queued" : polls == 1 ? "building" : failAsync ? "failed" : "ready";
                 json(out, 200, "{\"sessionId\":\"test\",\"state\":\"" + state + "\",\"pollAfterMs\":1,\"fonts\":[],\"error\":{\"message\":\"parse failed\"}}");
@@ -982,7 +982,7 @@ public class BundleDownloaderTest extends AndroidTestSupport {
                 else out.write(data);
                 out.flush();
             }
-            else if (path.equals("/v1/sessions")) { v1Posts++; json(out, 200, "{\"sessionId\":\"test\",\"fonts\":[]}"); }
+            else if (path.equals("/v1/sessions")) { if (!"respond-async".equals(headers.get("prefer"))) blockingPosts++; json(out, 200, "{\"sessionId\":\"test\",\"fonts\":[]}"); }
             else if (path.endsWith("/layout/slides/0")) {
                 json(out, 200, "{\"media\":[[\"video\",\"" + url() + "/v1/files/test-file/parts/ppt/media/video.mp4\"]]}");
             } else if (path.endsWith("/layout")) { layoutRequests++; json(out, 200, "{\"slideCount\":1,\"fonts\":[]}"); }

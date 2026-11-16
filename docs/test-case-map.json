@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "asOf": "2026-11-12",
   "baselineCommit": "e2d81db75c09ee8d9424297188b1714e4b759903",
-  "purpose": "Case-level before/after mapping; scenario names describe the covered behavior. This snapshot does not measure percentage code coverage.",
+  "purpose": "Case-level before/after mapping; scenario names describe the covered behavior. This snapshot does not measure percentage code coverage. API and scenario names use the current v1 terminology; recorded dates, results and assertion line numbers remain historical.",
   "cases": [
     {
       "side": "android",
@@ -1843,7 +1843,7 @@
     },
     {
       "side": "server",
-      "name": "v2 incremental first frame a cached hit has no previewable state and configuration is validated",
+      "name": "v1 incremental first frame a cached hit has no previewable state and configuration is validated",
       "before": "apps/parse-server/tests/artifact-incremental-preview.test.ts",
       "after": "apps/parse-server/tests/artifact-incremental-preview.test.ts",
       "result": "passed",
@@ -1857,7 +1857,7 @@
     },
     {
       "side": "server",
-      "name": "v2 incremental first frame drops the preview on build failure and never reports a partial document as ready",
+      "name": "v1 incremental first frame drops the preview on build failure and never reports a partial document as ready",
       "before": "apps/parse-server/tests/artifact-incremental-preview.test.ts",
       "after": "apps/parse-server/tests/artifact-incremental-preview.test.ts",
       "result": "passed",
@@ -1871,7 +1871,7 @@
     },
     {
       "side": "server",
-      "name": "v2 incremental first frame exposes previewable building state, never ready, and keeps offline bundles closed",
+      "name": "v1 incremental first frame exposes previewable building state, never ready, and keeps offline bundles closed",
       "before": "apps/parse-server/tests/artifact-incremental-preview.test.ts",
       "after": "apps/parse-server/tests/artifact-incremental-preview.test.ts",
       "result": "passed",
@@ -1886,7 +1886,7 @@
     },
     {
       "side": "server",
-      "name": "v2 incremental first frame returns the committed unit, 202 pending for uncommitted ones, and never a partial document",
+      "name": "v1 incremental first frame returns the committed unit, 202 pending for uncommitted ones, and never a partial document",
       "before": "apps/parse-server/tests/artifact-incremental-preview.test.ts",
       "after": "apps/parse-server/tests/artifact-incremental-preview.test.ts",
       "result": "passed",
@@ -1901,7 +1901,7 @@
     },
     {
       "side": "server",
-      "name": "v2 incremental first frame serves document, available units and explicit pending ranges while building",
+      "name": "v1 incremental first frame serves document, available units and explicit pending ranges while building",
       "before": "apps/parse-server/tests/artifact-incremental-preview.test.ts",
       "after": "apps/parse-server/tests/artifact-incremental-preview.test.ts",
       "result": "passed",
@@ -3590,7 +3590,7 @@
     },
     {
       "side": "server",
-      "name": "exposes v2 file aliases and returns persisted models without starting a layout child",
+      "name": "exposes legacy file aliases and returns persisted models without starting a layout child",
       "before": "apps/parse-server/tests/async-session.test.ts",
       "after": "apps/parse-server/tests/async-session.test.ts",
       "result": "passed",
@@ -3651,7 +3651,7 @@
     },
     {
       "side": "server",
-      "name": "disabling v2 async sessions falls back to the v1 contract like an older server",
+      "name": "disabling async mode falls back to synchronous creation like an older server",
       "before": "apps/parse-server/tests/async-sessions-switch.test.ts",
       "after": "apps/parse-server/tests/async-sessions-switch.test.ts",
       "result": "passed",
@@ -3665,7 +3665,7 @@
     },
     {
       "side": "server",
-      "name": "keeps v2 enabled by default and rejects a non-boolean switch value",
+      "name": "keeps async mode enabled by default and rejects a non-boolean switch value",
       "before": "apps/parse-server/tests/async-sessions-switch.test.ts",
       "after": "apps/parse-server/tests/async-sessions-switch.test.ts",
       "result": "passed",
@@ -4723,7 +4723,7 @@
     },
     {
       "side": "server",
-      "name": "rebases and signs nested header images on a v2 warm-cache open and after restart",
+      "name": "rebases and signs nested header images on a v1 warm-cache open and after restart",
       "before": "apps/parse-server/tests/docx-reading-context.test.ts",
       "after": "apps/parse-server/tests/docx-reading-context.test.ts",
       "result": "passed",
@@ -4866,7 +4866,7 @@
     },
     {
       "side": "server",
-      "name": "marks v2 DTO envelopes/headers with an independent version",
+      "name": "marks canonical v1 DTO envelopes and compatibility headers with one version",
       "before": "apps/parse-server/tests/dto-version.test.ts",
       "after": "apps/parse-server/tests/dto-version.test.ts",
       "result": "passed",
@@ -5622,7 +5622,7 @@
     },
     {
       "side": "server",
-      "name": "exposes an opaque layoutKey on v2 ready views and varies by width",
+      "name": "exposes an opaque layoutKey on v1 ready views and varies by width",
       "before": "apps/parse-server/tests/layout-key.test.ts",
       "after": "apps/parse-server/tests/layout-key.test.ts",
       "result": "passed",
@@ -5655,7 +5655,7 @@
     },
     {
       "side": "server",
-      "name": "carries layout preferences through the v2 waiter into the ready view",
+      "name": "carries layout preferences through the async waiter into the ready view",
       "before": "apps/parse-server/tests/layout-prefs.test.ts",
       "after": "apps/parse-server/tests/layout-prefs.test.ts",
       "result": "passed",
@@ -7624,7 +7624,7 @@
     },
     {
       "side": "server",
-      "name": "parse_sessions staged migration over real MySQL adds artifact_key/expires_at to an old table, persists them, survives restart and exposes them on v2",
+      "name": "parse_sessions staged migration over real MySQL adds artifact_key/expires_at to an old table, persists them, survives restart and exposes them on v1",
       "before": "apps/parse-server/tests/session-record-mysql.test.ts",
       "after": "apps/parse-server/tests/session-record-mysql.test.ts",
       "result": "passed",
@@ -8160,8 +8160,8 @@
     {
       "side": "server",
       "name": "bundle-manifest aliases the existing bundle route without sub-resources",
-      "before": "apps/parse-server/tests/v2-contract.test.ts",
-      "after": "apps/parse-server/tests/v2-contract.test.ts",
+      "before": "apps/parse-server/tests/async-contract.test.ts",
+      "after": "apps/parse-server/tests/async-contract.test.ts",
       "result": "passed",
       "coverage": {
         "inputAndFailureSetupLines": [155, 169],
@@ -8174,8 +8174,8 @@
     {
       "side": "server",
       "name": "heartbeat renews a lightweight reading session and rejects unknown ids",
-      "before": "apps/parse-server/tests/v2-contract.test.ts",
-      "after": "apps/parse-server/tests/v2-contract.test.ts",
+      "before": "apps/parse-server/tests/async-contract.test.ts",
+      "after": "apps/parse-server/tests/async-contract.test.ts",
       "result": "passed",
       "coverage": {
         "inputAndFailureSetupLines": [91, 116],
@@ -8189,8 +8189,8 @@
     {
       "side": "server",
       "name": "replays an Idempotency-Key create instead of opening a second waiter",
-      "before": "apps/parse-server/tests/v2-contract.test.ts",
-      "after": "apps/parse-server/tests/v2-contract.test.ts",
+      "before": "apps/parse-server/tests/async-contract.test.ts",
+      "after": "apps/parse-server/tests/async-contract.test.ts",
       "result": "passed",
       "coverage": {
         "inputAndFailureSetupLines": [118, 153],
@@ -8203,9 +8203,9 @@
     },
     {
       "side": "server",
-      "name": "v2 ready view exposes the artifact identity and terminal progress; v1 stays unchanged",
-      "before": "apps/parse-server/tests/v2-contract.test.ts",
-      "after": "apps/parse-server/tests/v2-contract.test.ts",
+      "name": "v1 ready view exposes artifact identity and terminal progress consistently",
+      "before": "apps/parse-server/tests/async-contract.test.ts",
+      "after": "apps/parse-server/tests/async-contract.test.ts",
       "result": "passed",
       "coverage": {
         "inputAndFailureSetupLines": [59, 89],
@@ -8218,8 +8218,8 @@
     {
       "side": "server",
       "name": "buckets by a configured tenant header while keeping file fallback",
-      "before": "apps/parse-server/tests/v2-rollout.test.ts",
-      "after": "apps/parse-server/tests/v2-rollout.test.ts",
+      "before": "apps/parse-server/tests/async-rollout.test.ts",
+      "after": "apps/parse-server/tests/async-rollout.test.ts",
       "result": "passed",
       "coverage": {
         "inputAndFailureSetupLines": [92, 122],
@@ -8234,8 +8234,8 @@
     {
       "side": "server",
       "name": "rejects out-of-range rollout values before startup",
-      "before": "apps/parse-server/tests/v2-rollout.test.ts",
-      "after": "apps/parse-server/tests/v2-rollout.test.ts",
+      "before": "apps/parse-server/tests/async-rollout.test.ts",
+      "after": "apps/parse-server/tests/async-rollout.test.ts",
       "result": "passed",
       "coverage": {
         "inputAndFailureSetupLines": [84, 90],
@@ -8244,9 +8244,9 @@
     },
     {
       "side": "server",
-      "name": "rolls the v2 contract out deterministically per file and can be disabled entirely",
-      "before": "apps/parse-server/tests/v2-rollout.test.ts",
-      "after": "apps/parse-server/tests/v2-rollout.test.ts",
+      "name": "rolls the async mode out deterministically per file and can be disabled entirely",
+      "before": "apps/parse-server/tests/async-rollout.test.ts",
+      "after": "apps/parse-server/tests/async-rollout.test.ts",
       "result": "passed",
       "coverage": {
         "inputAndFailureSetupLines": [52, 82],
@@ -8261,8 +8261,8 @@
     {
       "side": "server",
       "name": "time-based auto ramp starts from zero and rejects invalid ramp values",
-      "before": "apps/parse-server/tests/v2-rollout.test.ts",
-      "after": "apps/parse-server/tests/v2-rollout.test.ts",
+      "before": "apps/parse-server/tests/async-rollout.test.ts",
+      "after": "apps/parse-server/tests/async-rollout.test.ts",
       "result": "passed",
       "coverage": {
         "inputAndFailureSetupLines": [124, 135],
@@ -9721,7 +9721,7 @@
     },
     {
       "side": "web",
-      "name": "a missing capabilities route keeps the current v2 behaviour",
+      "name": "a missing capabilities route keeps the async-first behaviour",
       "before": "apps/viewer/tests/server-capabilities.test.ts",
       "after": "apps/viewer/tests/server-capabilities.test.ts",
       "result": "passed",
@@ -9732,7 +9732,7 @@
     },
     {
       "side": "web",
-      "name": "a saved reading position is sent as layoutPrefs to the v2 contract",
+      "name": "a saved reading position is sent as layoutPrefs to the v1 session contract",
       "before": "apps/viewer/tests/server-capabilities.test.ts",
       "after": "apps/viewer/tests/server-capabilities.test.ts",
       "result": "passed",
@@ -9743,7 +9743,7 @@
     },
     {
       "side": "web",
-      "name": "an explicit asyncSessions=false capability forces the v1 contract",
+      "name": "an explicit asyncSessions=false capability forces synchronous v1 creation",
       "before": "apps/viewer/tests/server-capabilities.test.ts",
       "after": "apps/viewer/tests/server-capabilities.test.ts",
       "result": "passed",
@@ -9842,7 +9842,7 @@
     },
     {
       "side": "web",
-      "name": "older and offline servers fall back to v1 only when v2 is unsupported",
+      "name": "older and offline servers retry synchronously only when async mode is unsupported",
       "before": "apps/viewer/tests/server-session.test.ts",
       "after": "apps/viewer/tests/server-session.test.ts",
       "result": "passed",
@@ -9864,7 +9864,7 @@
     },
     {
       "side": "web",
-      "name": "queue saturation does not retry through v1 and bypass admission",
+      "name": "queue saturation does not retry synchronously and bypass admission",
       "before": "apps/viewer/tests/server-session.test.ts",
       "after": "apps/viewer/tests/server-session.test.ts",
       "result": "passed",

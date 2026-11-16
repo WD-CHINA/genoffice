@@ -94,9 +94,9 @@ describe.skipIf(!socketPath)('crash takeover of a remote pending waiter over rea
         body: Buffer.from(await createBlankPptx()),
       })
       const { fileId } = (await uploaded.json()) as { fileId: string }
-      const opened = await request(a)('/v2/sessions', {
+      const opened = await request(a)('/v1/sessions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...{ 'Content-Type': 'application/json' }, Prefer: 'respond-async' },
         body: JSON.stringify({ fileId }),
       })
       expect(opened.status).toBe(202)
@@ -110,7 +110,7 @@ describe.skipIf(!socketPath)('crash takeover of a remote pending waiter over rea
       // B sees the shared waiter while A is still alive and does not take over.
       // The remote journal does not carry A's in-process building flag, so a
       // queued/building view is both valid; the decisive check is buildsStarted.
-      const during = await request(b)(`/v2/sessions/${sessionId}`)
+      const during = await request(b)(`/v1/sessions/${sessionId}`)
       expect(during.status).toBe(200)
       expect(['queued', 'building']).toContain(((await during.json()) as { state: string }).state)
       expect(await buildsStarted(b)).toBe(0)
@@ -123,7 +123,7 @@ describe.skipIf(!socketPath)('crash takeover of a remote pending waiter over rea
       const deadline = Date.now() + 30_000
       let state = ''
       while (Date.now() < deadline) {
-        const response = await request(b)(`/v2/sessions/${sessionId}`)
+        const response = await request(b)(`/v1/sessions/${sessionId}`)
         if (response.status === 200) {
           const body = (await response.json()) as { state: string }
           state = body.state
@@ -134,7 +134,9 @@ describe.skipIf(!socketPath)('crash takeover of a remote pending waiter over rea
       }
       expect(state).toBe('ready')
       expect(await buildsStarted(b)).toBe(1)
-      expect((await request(b)(`/v2/sessions/${sessionId}/units/0`)).status).toBe(200)
+      expect(
+        (await request(b)(`/v1/sessions/${sessionId}/units/0?representation=model`)).status,
+      ).toBe(200)
     } finally {
       pause.blocked.resolve()
     }

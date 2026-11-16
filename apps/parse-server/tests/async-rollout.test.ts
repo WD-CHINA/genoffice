@@ -15,41 +15,44 @@ afterEach(async () => {
 })
 
 async function start(
-  v2RolloutPercent?: number,
-  v2RolloutHeader?: string,
-  v2RolloutRampPerHour?: number,
+  asyncRolloutPercent?: number,
+  asyncRolloutHeader?: string,
+  asyncRolloutRampPerHour?: number,
 ): Promise<ParseServer> {
-  const dataDir = await mkdtemp(join(tmpdir(), 'v2-rollout-'))
+  const dataDir = await mkdtemp(join(tmpdir(), 'async-rollout-'))
   dirs.push(dataDir)
   const server = await createParseServer({
     dataDir,
-    ...(v2RolloutPercent !== undefined ? { v2RolloutPercent } : {}),
-    ...(v2RolloutHeader ? { v2RolloutHeader } : {}),
-    ...(v2RolloutRampPerHour !== undefined ? { v2RolloutRampPerHour } : {}),
+    ...(asyncRolloutPercent !== undefined ? { asyncRolloutPercent } : {}),
+    ...(asyncRolloutHeader ? { asyncRolloutHeader } : {}),
+    ...(asyncRolloutRampPerHour !== undefined ? { asyncRolloutRampPerHour } : {}),
   })
   servers.push(server)
   return server
 }
-const fakeFileId = (seed: number): string =>
-  createHash('sha256').update(String(seed)).digest('hex')
+const fakeFileId = (seed: number): string => createHash('sha256').update(String(seed)).digest('hex')
 function bucket(fileId: string): number {
   return Number.parseInt(fileId.slice(0, 4), 16) % 100
 }
-async function create(server: ParseServer, fileId: string): Promise<{
+async function create(
+  server: ParseServer,
+  fileId: string,
+): Promise<{
   status: number
   body: { code?: string; message?: string }
 }> {
-  const response = await fetch(server.url + '/v2/sessions', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
+  const response = await fetch(server.url + '/v1/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Prefer: 'respond-async' },
     body: JSON.stringify({ fileId }),
   })
   return {
     status: response.status,
-    body: await response.json() as { code?: string; message?: string },
+    body: (await response.json()) as { code?: string; message?: string },
   }
 }
 
-it('rolls the v2 contract out deterministically per file and can be disabled entirely', async () => {
+it('rolls the async mode out deterministically per file and can be disabled entirely', async () => {
   const off = await start(0)
   for (let seed = 0; seed < 5; seed++) {
     const result = await create(off, fakeFileId(seed))
@@ -64,9 +67,10 @@ it('rolls the v2 contract out deterministically per file and can be disabled ent
     expect(result.status).toBe(404)
     expect(result.body.code).toBe('not_found')
     // Accepted files reach the missing-content check; rolled-out files do not.
-    const expected = bucket(fileId) < 50
-      ? 'file content is missing'
-      : 'v2 sessions are not enabled for this file'
+    const expected =
+      bucket(fileId) < 50
+        ? 'file content is missing'
+        : 'async sessions are not enabled for this file'
     expect(result.body.message, fileId).toBe(expected)
     messages.add(expected)
   }
@@ -74,18 +78,22 @@ it('rolls the v2 contract out deterministically per file and can be disabled ent
 
   const all = await start(100)
   const uploaded = await fetch(all.url + '/v1/files', {
-    method: 'POST', body: Buffer.from(await createBlankPptx()),
+    method: 'POST',
+    body: Buffer.from(await createBlankPptx()),
   })
-  const { fileId } = await uploaded.json() as { fileId: string }
+  const { fileId } = (await uploaded.json()) as { fileId: string }
   const opened = await create(all, fileId)
   expect([201, 202]).toContain(opened.status)
 })
 
 it('rejects out-of-range rollout values before startup', () => {
   for (const value of [-1, 101, 1.5, Number.NaN]) {
-    expect(() => validateRuntimeOptions({
-      dataDir: '/unused', v2RolloutPercent: value,
-    })).toThrow(/v2RolloutPercent/)
+    expect(() =>
+      validateRuntimeOptions({
+        dataDir: '/unused',
+        asyncRolloutPercent: value,
+      }),
+    ).toThrow(/asyncRolloutPercent/)
   }
 })
 
@@ -93,12 +101,15 @@ it('buckets by a configured tenant header while keeping file fallback', async ()
   const server = await start(50, 'x-tenant-id')
   const fileId = fakeFileId(999)
   const createAs = async (tenant: string) => {
-    const response = await fetch(server.url + '/v2/sessions', {
+    const response = await fetch(server.url + '/v1/sessions', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-tenant-id': tenant },
+      headers: {
+        ...{ 'Content-Type': 'application/json', 'x-tenant-id': tenant },
+        Prefer: 'respond-async',
+      },
       body: JSON.stringify({ fileId }),
     })
-    return { status: response.status, body: await response.json() as { message?: string } }
+    return { status: response.status, body: (await response.json()) as { message?: string } }
   }
   const outcomes = new Set<string>()
   for (let index = 0; index < 60; index++) {
@@ -112,13 +123,18 @@ it('buckets by a configured tenant header while keeping file fallback', async ()
   expect(outcomes.size).toBe(2)
   // Without the header the file bucket decides, just like the file canary.
   const withoutHeader = await create(server, fileId)
-  expect(withoutHeader.body.message).toBe(bucket(fileId) < 50
-    ? 'file content is missing'
-    : 'v2 sessions are not enabled for this file')
+  expect(withoutHeader.body.message).toBe(
+    bucket(fileId) < 50
+      ? 'file content is missing'
+      : 'async sessions are not enabled for this file',
+  )
   // Header name is validated before startup.
-  expect(() => validateRuntimeOptions({
-    dataDir: '/unused', v2RolloutHeader: 'Bad Header',
-  })).toThrow(/v2RolloutHeader/)
+  expect(() =>
+    validateRuntimeOptions({
+      dataDir: '/unused',
+      asyncRolloutHeader: 'Bad Header',
+    }),
+  ).toThrow(/asyncRolloutHeader/)
 })
 
 it('time-based auto ramp starts from zero and rejects invalid ramp values', async () => {
@@ -126,10 +142,13 @@ it('time-based auto ramp starts from zero and rejects invalid ramp values', asyn
   const fileId = fakeFileId(7)
   const early = await create(ramped, fileId)
   expect(early.status).toBe(404)
-  expect(early.body.message).toBe('v2 sessions are not enabled for this file')
+  expect(early.body.message).toBe('async sessions are not enabled for this file')
   for (const value of [-1, 101, 1.5]) {
-    expect(() => validateRuntimeOptions({
-      dataDir: '/unused', v2RolloutRampPerHour: value,
-    })).toThrow(/v2RolloutRampPerHour/)
+    expect(() =>
+      validateRuntimeOptions({
+        dataDir: '/unused',
+        asyncRolloutRampPerHour: value,
+      }),
+    ).toThrow(/asyncRolloutRampPerHour/)
   }
 })

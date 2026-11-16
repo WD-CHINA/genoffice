@@ -3,8 +3,16 @@ import { CanaryGuard } from '../src/canary-guard'
 
 it('pauses only after the minimum sample and threshold are met', () => {
   let now = 1_000_000
-  const guard = new CanaryGuard({ errorRatePercent: 50, minRequests: 4, windowMs: 60_000, cooldownMs: 10_000, now: () => now })
-  guard.record(true); guard.record(false); guard.record(false)
+  const guard = new CanaryGuard({
+    errorRatePercent: 50,
+    minRequests: 4,
+    windowMs: 60_000,
+    cooldownMs: 10_000,
+    now: () => now,
+  })
+  guard.record(true)
+  guard.record(false)
+  guard.record(false)
   expect(guard.paused()).toBe(false)
   guard.record(false) // 3/4 failures = 75%
   expect(guard.paused()).toBe(true)
@@ -17,8 +25,15 @@ it('pauses only after the minimum sample and threshold are met', () => {
 
 it('ignores client successes and expires old samples', () => {
   let now = 5_000_000
-  const guard = new CanaryGuard({ errorRatePercent: 10, minRequests: 3, windowMs: 5_000, cooldownMs: 1_000, now: () => now })
-  guard.record(false); guard.record(false)
+  const guard = new CanaryGuard({
+    errorRatePercent: 10,
+    minRequests: 3,
+    windowMs: 5_000,
+    cooldownMs: 1_000,
+    now: () => now,
+  })
+  guard.record(false)
+  guard.record(false)
   now += 6_000
   guard.record(true)
   expect(guard.snapshot().samples).toBe(1)
@@ -27,12 +42,16 @@ it('ignores client successes and expires old samples', () => {
 
 it('is disabled by default and rejects invalid options', () => {
   const disabled = new CanaryGuard({ now: () => 0 })
-  disabled.record(false); disabled.record(false)
+  disabled.record(false)
+  disabled.record(false)
   expect(disabled.paused()).toBe(false)
   expect(disabled.snapshot().enabled).toBe(false)
   for (const options of [
-    { errorRatePercent: -1 }, { errorRatePercent: 101 }, { minRequests: 0 },
-    { windowMs: 10 }, { cooldownMs: 10 },
+    { errorRatePercent: -1 },
+    { errorRatePercent: 101 },
+    { minRequests: 0 },
+    { windowMs: 10 },
+    { cooldownMs: 10 },
   ]) {
     expect(() => new CanaryGuard(options)).toThrow(/invalid canary/)
   }
@@ -47,16 +66,19 @@ it('exposes the guard in health and rejects invalid thresholds at startup', asyn
   const dataDir = await mkdtemp(join(tmpdir(), 'canary-guard-'))
   let server: ParseServer | undefined
   try {
-    server = await createParseServer({ dataDir, v2AutoPauseErrorRate: 25 })
-    const health = await (await fetch(server.url + '/v1/health')).json() as {
+    server = await createParseServer({ dataDir, asyncAutoPauseErrorRate: 25 })
+    const health = (await (await fetch(server.url + '/v1/health')).json()) as {
       canaryGuard: { enabled: boolean; paused: boolean; thresholdPercent: number }
     }
     expect(health.canaryGuard).toMatchObject({
-      enabled: true, paused: false, thresholdPercent: 25,
+      enabled: true,
+      paused: false,
+      thresholdPercent: 25,
     })
     for (const value of [-1, 101, 1.5]) {
-      await expect(createParseServer({ dataDir, v2AutoPauseErrorRate: value }))
-        .rejects.toThrow(/v2AutoPauseErrorRate/)
+      await expect(createParseServer({ dataDir, asyncAutoPauseErrorRate: value })).rejects.toThrow(
+        /asyncAutoPauseErrorRate/,
+      )
     }
   } finally {
     await server?.close().catch(() => undefined)

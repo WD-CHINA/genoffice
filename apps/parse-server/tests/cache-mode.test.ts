@@ -21,7 +21,7 @@ async function start(): Promise<ParseServer> {
 
 it('keeps the in-process cache by default and reports it as disabled', async () => {
   const server = await start()
-  const health = await (await fetch(server.url + '/v1/health')).json() as {
+  const health = (await (await fetch(server.url + '/v1/health')).json()) as {
     cache: {
       mode: string
       enabled: boolean
@@ -53,7 +53,7 @@ it('keeps the in-process cache by default and reports it as disabled', async () 
   expect(health.cache.latency.buckets).toHaveLength(CACHE_DEFAULTS.latencyBuckets.length + 1)
   // A disabled cache must never pretend to be open to clients, and the local
   // incremental preview stats remain available for compatibility.
-  const capabilities = await (await fetch(server.url + '/v2/capabilities')).json() as {
+  const capabilities = (await (await fetch(server.url + '/v1/capabilities')).json()) as {
     features: Record<string, boolean>
   }
   expect(capabilities.features.incrementalPreview).toBe(true)
@@ -77,7 +77,5 @@ it('exposes cache gauges and counters on the Prometheus endpoint', async () => {
 it('refuses a half-configured redis mode before creating any server resource', async () => {
   const dataDir = await mkdtemp(join(tmpdir(), 'cache-mode-'))
   dirs.push(dataDir)
-  await expect(createParseServer({ dataDir, cacheMode: 'redis' })).rejects.toThrow(
-    'requires mysql',
-  )
+  await expect(createParseServer({ dataDir, cacheMode: 'redis' })).rejects.toThrow('requires mysql')
 })

@@ -1,13 +1,15 @@
 # Office Viewer Android demo
 
+接口版本统一为 **v1**。请求模式、迁移和配置说明见 [API v1](../../../docs/api-v1.zh-CN.md)。
+
 当前三端说明：[功能与架构](../../../docs/runtime-workflows.zh-CN.md) · [运行边界](../../../docs/runtime-boundaries.zh-CN.md) · [测试与验收](../../../docs/testing-guide.zh-CN.md)。历史报告保留各自的验证日期与环境。
 
 把 `apps/viewer` 的 Web Viewer 嵌进 WebView，支持 PPTX / DOCX / PDF 在线预览和下载后断网阅读。
 
 ## 工作方式
 
-1. **下载**：设置页填写解析服务地址和文件 ID（sha256）。创建 v2 异步会话并等待 ready，
-   仅 404/405 回退 v1。优先读取 `/v2/sessions/<id>/bundle` 权威清单，按声明的大小和
+1. **下载**：设置页填写解析服务地址和文件 ID（sha256）。创建 v1 异步会话（`Prefer: respond-async`）并等待 ready，
+   异步模式仅在 404/405 时移除 Prefer 头并同步重试同一 v1 地址。优先读取 `/v1/sessions/<id>/bundle` 权威清单，按声明的大小和
    SHA-256 下载模型、嵌入字体及全部文档媒体（PPTX 的 `ppt/media`，DOCX 的 `word/media` / `word/embeddings`），逐文件验证后
    原子发布到按 artifactKey 区分的版本目录（见「版本目录与缓存配额」）。现代包保留模型内部路径，字体按 `resourcePath`
    定位；PPTX 仅清单接口 404/405 时使用旧版资源发现及 URL 改写流程，DOCX 要求新版权威清单。

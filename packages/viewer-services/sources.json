@@ -1,5 +1,5 @@
 {
-  "sourceCommit": "8c170596b6c2a5fc92a858dfd6f064c7762d835e",
+  "sourceCommit": "ac19c54111849d9d8fb2c508223a0389b805c247",
   "runtimeFiles": [
     "apps/slides/src/main/fonts.ts",
     "apps/slides/src/shared/cjk-script.ts",
@@ -19,5 +19,9 @@
     "session-state.ts": "Only the original retintThemedSvg and makeMediaResolver helpers were copied.",
     "docs-main.ts": "Only the original DOCX password decryption helpers were copied.",
     "playwright.ts": "Chrome lookup accepts VIEWER_CHROME_PATH."
-  }
+  },
+  "sourceTag": "v0.13.18",
+  "adaptations": [
+    "Only media/decryption helpers are extracted from their original main modules."
+  ]
 }

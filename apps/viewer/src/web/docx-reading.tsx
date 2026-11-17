@@ -1,15 +1,16 @@
+import { cssFontFamily } from '@genoffice/viewer-renderers/docs/renderer/text-layout/font-rules'
 import React, { useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import {
   PAGE_MARK,
   TOTAL_PAGES_MARK,
+  SECTION_PAGES_MARK,
   type DocxReadingContext,
   type NoteInfo,
 } from '@genoffice/docx-engine'
 import { HeaderFooterArea } from '@genoffice/viewer-renderers/docs/renderer/components/HeaderFooterArea'
 import { appendNoteRuns } from '@genoffice/viewer-renderers/docs/renderer/viewer-layout'
 import {
-  cssFontFamily,
   resolveNoteStyle,
   noteRunStyle,
 } from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
@@ -93,6 +94,7 @@ export function DocxReadingHf({
   const label = part.text
     .replaceAll(PAGE_MARK, '')
     .replaceAll(TOTAL_PAGES_MARK, '')
+    .replaceAll(SECTION_PAGES_MARK, '')
     .replace(/page|of|第|页|共|[\d\s,，/—–-]/gi, '')
   if (part.hasPageNumber && !label && !part.images?.length) return null
   return (

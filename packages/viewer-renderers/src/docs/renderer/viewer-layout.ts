@@ -1,3 +1,4 @@
+import { cssFontFamily } from './text-layout/font-rules'
 import { readSectionSettings, readSections } from '@genoffice/docx-engine'
 // Read-only page-preview calculations excerpted from App.tsx and re-synced with the
 // 2026-10-22 upstream snapshot (v0.12.29): the note helpers, noteRenderInfoOf,
@@ -18,7 +19,6 @@ import {
   type PageSlice,
 } from './pagination'
 import {
-  cssFontFamily,
   estimateFootnoteHeight,
   resolveNoteStyle,
   noteRunStyle,

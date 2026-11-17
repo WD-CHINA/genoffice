@@ -25,6 +25,7 @@ export async function connectAndroidWebView(cdpPort = 19224) {
         contexts.set(m.params.context.id, m.params.context)
       if (m.method === 'Runtime.executionContextDestroyed')
         contexts.delete(m.params.executionContextId)
+      if (m.method === 'Runtime.executionContextsCleared') contexts.clear()
       events.push(m)
     }
   }

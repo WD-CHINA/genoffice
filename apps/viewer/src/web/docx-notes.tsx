@@ -1,3 +1,4 @@
+import { cssFontFamily } from '@genoffice/viewer-renderers/docs/renderer/text-layout/font-rules'
 import React, { useLayoutEffect, useRef } from 'react'
 import type { DocxReadingContext } from '@genoffice/docx-engine'
 import type { PageNoteItem } from '@genoffice/viewer-renderers/docs/renderer/pagination-types'
@@ -5,12 +6,7 @@ import {
   appendNoteRuns,
   measureNoteHeightDom,
 } from '@genoffice/viewer-renderers/docs/renderer/viewer-layout'
-import {
-  cssFontFamily,
-  noteLineHeightPx,
-  noteRunStyle,
-  resolveNoteStyle,
-} from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
+import { noteLineHeightPx, noteRunStyle, resolveNoteStyle } from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
 import { measureBlockGeometry } from './docx-fragments'
 
 export interface RemoteNote extends PageNoteItem {

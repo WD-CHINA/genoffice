@@ -104,3 +104,20 @@ test('section grids use the same CSS units for probes and displayed pages', () =
   const context = reviveDocxStyles(base(), { sections: [section] } as any)
   assert.match(context.css, /--doc-line-grid:/)
 })
+
+test('remote editor initialization retains document-specific note numbering', () => {
+  const reading = {
+    sections: [],
+    hfParts: {},
+    evenAndOddHeaders: false,
+    mirrorMargins: false,
+    footnotes: [],
+    endnotes: [],
+    noteNumbers: {},
+    footnoteProps: { numFmt: 'upperRoman' },
+    endnoteProps: { numFmt: 'decimal' },
+  }
+  const context = reviveDocxStyles(base(), reading)
+  assert.deepEqual(context.footnoteProps, reading.footnoteProps)
+  assert.deepEqual(context.endnoteProps, reading.endnoteProps)
+})

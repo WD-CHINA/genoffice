@@ -11,14 +11,20 @@ const root = resolve(import.meta.dirname, '../../..')
 
 function textOf(slide: { nodes: readonly unknown[] }) {
   return slide.nodes
-    .flatMap((node) => (node as { text?: { lines?: Array<{ runs?: Array<{ text?: string }> }> } }).text?.lines || [])
+    .flatMap(
+      (node) =>
+        (node as { text?: { lines?: Array<{ runs?: Array<{ text?: string }> }> } }).text?.lines ||
+        [],
+    )
     .flatMap((line) => line.runs || [])
     .map((run) => run.text || '')
     .join('')
 }
 
 test('bundled metrics keep fixture slides and Calibri maps to Carlito', async () => {
-  const bytes = new Uint8Array(readFileSync(resolve(root, 'packages/pptx-engine/tests/fixtures/01_standard_business.pptx')))
+  const bytes = new Uint8Array(
+    readFileSync(resolve(root, 'packages/pptx-engine/tests/fixtures/01_standard_business.pptx')),
+  )
   const file = readFileSync(resolve(root, 'packages/ui/src/fonts/Carlito-Regular.ttf'))
   const font = opentype.parse(file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength))
   const bundled = createBundledMetrics([
@@ -58,5 +64,23 @@ test('bundled metrics keep fixture slides and Calibri maps to Carlito', async ()
     }),
   )
   assert.equal(again.map(textOf).join(''), text)
-  assert.equal(again.map((slide) => slide.nodes.length).join(','), slides.map((slide) => slide.nodes.length).join(','))
+  assert.equal(
+    again.map((slide) => slide.nodes.length).join(','),
+    slides.map((slide) => slide.nodes.length).join(','),
+  )
+})
+
+test('browser width feedback keeps kerned and unkerned text separate', () => {
+  const metrics = createBundledMetrics([])
+  const style = { fontFamily: 'Arial', fontSizePx: 20, bold: false, italic: false }
+  metrics.provider.measure('AV', { ...style, kerning: true })
+  metrics.provider.measure('AV', { ...style, kerning: false })
+  const requests = metrics.pendingWidthMeasurements()
+  assert.equal(requests.length, 2)
+  const on = requests.find((item) => item.kerning === true)!
+  const off = requests.find((item) => item.kerning === false)!
+  assert.notEqual(on.key, off.key)
+  metrics.acceptWidthMeasurements({ [on.key]: 100, [off.key]: 120 })
+  assert.equal(metrics.provider.measure('AV', { ...style, kerning: true }), 20)
+  assert.equal(metrics.provider.measure('AV', { ...style, kerning: false }), 24)
 })

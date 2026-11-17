@@ -36,9 +36,15 @@ importers:
       globals:
         specifier: ^17.8.0
         version: 17.14.0
+      harfbuzzjs:
+        specifier: ^0.10.3
+        version: 0.10.3
       jszip:
         specifier: ^3.10.2
         version: 3.10.2
+      pdfjs-dist:
+        specifier: 6.2.108
+        version: 6.2.108
       pixelmatch:
         specifier: ^7.2.0
         version: 7.2.0
@@ -51,6 +57,9 @@ importers:
       prettier:
         specifier: ^3.9.6
         version: 3.9.10
+      tsx:
+        specifier: ^4.23.15
+        version: 4.23.15
       typescript-eslint:
         specifier: ^8.65.0
         version: 8.72.1(eslint@10.14.0(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)
@@ -869,6 +878,9 @@ importers:
       '@genoffice/docx-engine':
         specifier: '*'
         version: link:../../packages/docx-engine
+      '@genoffice/parse-contract':
+        specifier: '*'
+        version: link:../../packages/parse-contract
       '@genoffice/pptx-engine':
         specifier: '*'
         version: link:../../packages/pptx-engine
@@ -933,6 +945,9 @@ importers:
       '@types/node':
         specifier: 24.10.1
         version: 24.10.1
+      '@types/opentype.js':
+        specifier: ^1.3.10
+        version: 1.3.10
       '@types/react':
         specifier: 19.2.14
         version: 19.2.14
@@ -1530,6 +1545,9 @@ importers:
       '@genoffice/pptx-render':
         specifier: '*'
         version: link:../pptx-render
+      '@genoffice/ui':
+        specifier: '*'
+        version: link:../ui
       '@tiptap/core':
         specifier: 3.31.0
         version: 3.31.0(@tiptap/pm@3.31.0)
@@ -1553,7 +1571,14 @@ importers:
         version: 19.2.4(react@19.2.4)
       react-konva:
         specifier: 19.0.10
-        version: 19.0.10(@types/react@19.2.14)(konva@9.3.20)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        version: 19.0.10(@types/react@19.3.0)(konva@9.3.20)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.2.14
+        version: 19.3.0
+      '@types/react-dom':
+        specifier: ^19.2.3
+        version: 19.3.0(@types/react@19.3.0)
 
   packages/viewer-services:
     dependencies:
@@ -1584,6 +1609,10 @@ importers:
       utif2:
         specifier: ^4.1.0
         version: 4.1.0
+    devDependencies:
+      '@types/opentype.js':
+        specifier: ^1.3.10
+        version: 1.3.10
 
   packages/xlsx-gateway:
     dependencies:
@@ -8568,6 +8597,10 @@ snapshots:
     dependencies:
       '@types/react': 19.2.14
 
+  '@types/react-reconciler@0.32.3(@types/react@19.3.0)':
+    dependencies:
+      '@types/react': 19.3.0
+
   '@types/react-reconciler@0.34.0(@types/react@19.3.0)':
     dependencies:
       '@types/react': 19.3.0
@@ -10985,6 +11018,13 @@ snapshots:
     transitivePeerDependencies:
       - '@types/react'
 
+  its-fine@2.1.1(@types/react@19.3.0)(react@19.2.4):
+    dependencies:
+      '@types/react-reconciler': 0.28.9(@types/react@19.3.0)
+      react: 19.2.4
+    transitivePeerDependencies:
+      - '@types/react'
+
   its-fine@2.1.1(@types/react@19.3.0)(react@19.3.1):
     dependencies:
       '@types/react-reconciler': 0.28.9(@types/react@19.3.0)
@@ -11682,6 +11722,18 @@ snapshots:
     dependencies:
       '@types/react-reconciler': 0.32.3(@types/react@19.2.14)
       its-fine: 2.1.1(@types/react@19.2.14)(react@19.2.4)
+      konva: 9.3.20
+      react: 19.2.4
+      react-dom: 19.2.4(react@19.2.4)
+      react-reconciler: 0.32.0(react@19.2.4)
+      scheduler: 0.26.0
+    transitivePeerDependencies:
+      - '@types/react'
+
+  react-konva@19.0.10(@types/react@19.3.0)(konva@9.3.20)(react-dom@19.2.4(react@19.2.4))(react@19.2.4):
+    dependencies:
+      '@types/react-reconciler': 0.32.3(@types/react@19.3.0)
+      its-fine: 2.1.1(@types/react@19.3.0)(react@19.2.4)
       konva: 9.3.20
       react: 19.2.4
       react-dom: 19.2.4(react@19.2.4)

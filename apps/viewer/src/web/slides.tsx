@@ -1,3 +1,4 @@
+import { installCanvasKerning } from '@genoffice/viewer-renderers/slides/renderer/canvas-kerning'
 import React, { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { SlideThumb } from '@genoffice/viewer-renderers/slides/renderer/SlideThumb'
 import { PreviewMediaLayer } from '@genoffice/viewer-renderers/slides/renderer/components/PreviewMediaLayer'
@@ -42,6 +43,8 @@ function isMediaUrl(value: string) {
   return value.startsWith('data:image/') || PART_URL.test(value)
 }
 
+installCanvasKerning()
+
 function imageUrls(data: unknown, urls = new Set<string>()) {
   if (typeof data === 'string' && isMediaUrl(data)) urls.add(data)
   else if (Array.isArray(data)) for (const value of data) imageUrls(value, urls)
@@ -69,6 +72,7 @@ async function measureWidths(
         '100px "' +
         item.family +
         "\", 'PingFang SC', 'Microsoft YaHei', 'Yu Gothic', 'Malgun Gothic', sans-serif"
+      ctx.fontKerning = item.kerning === false ? 'none' : 'normal'
       widths[item.key] = ctx.measureText(item.text).width
     }
     if (Object.keys(widths).length) data = await session.measure(widths)
@@ -171,8 +175,8 @@ export function Slides({
     [thumbs, setThumbs] = useState(new Map<string, HTMLImageElement>()),
     // Resume the last slide for this file; the server session preference is the
     // durable contract, this local hint keeps reopening a deck seamless.
-    [page, setPage] = useState<number>(() =>
-      (fileId ? loadReadingPosition(fileId)?.page : undefined) ?? 0,
+    [page, setPage] = useState<number>(
+      () => (fileId ? loadReadingPosition(fileId)?.page : undefined) ?? 0,
     ),
     [show, setShow] = useState(false),
     [showPage, setShowPage] = useState(0),
@@ -379,8 +383,14 @@ export function Slides({
       }
     }
     const imageMime = (url: string) => mimeOf(keyOf.current.get(url) ?? url)
-    const loader = createImageLoader(applyImages, 16, 100, 3, async (url) =>
-      server ? await refreshSignedPartUrl(url, { server, token }) : null, imageMime)
+    const loader = createImageLoader(
+      applyImages,
+      16,
+      100,
+      3,
+      async (url) => (server ? await refreshSignedPartUrl(url, { server, token }) : null),
+      imageMime,
+    )
     const thumbLoader = createImageLoader(applyImages, 4, 100, 1, undefined, imageMime)
     loaderRef.current = loader
     const session =
@@ -698,8 +708,13 @@ export function Slides({
     getMediaData: async (i, id, options) => {
       const media = await pptx.current?.media(i, id)
       if (!media) return null
-      const value = { kind: media.kind === 'audio' ? 'audio' as const : 'video' as const, dataUrl: media.dataUrl }
-      return server && fileId ? prepareRemoteMedia({ server, fileId, token, media: value, options }) : value
+      const value = {
+        kind: media.kind === 'audio' ? ('audio' as const) : ('video' as const),
+        dataUrl: media.dataUrl,
+      }
+      return server && fileId
+        ? prepareRemoteMedia({ server, fileId, token, media: value, options })
+        : value
     },
   }
   const navigate = (index: number) => {

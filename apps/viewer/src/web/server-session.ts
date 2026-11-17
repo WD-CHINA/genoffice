@@ -70,6 +70,8 @@ export async function updateSessionLayoutPrefs(
   token?: string,
   signal?: AbortSignal,
 ): Promise<void> {
+  // Local replay has no remote lease or preference store; anchors live in localStorage.
+  if (sessionId === 'local') return
   const response = await fetch(
     `${server.replace(/\/+$/, '')}/v1/sessions/${encodeURIComponent(sessionId)}/heartbeat`,
     {

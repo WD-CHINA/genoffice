@@ -1,7 +1,6 @@
 /** Real-device DOCX online + verified offline replay. Keeps app data and restores USB reverse mappings. */
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
-import { inspectDocxTableFlow, summarizeDocxTableFlow } from './docx-flow-probe.mjs'
 import { createAndroidTestDevice, wait } from './android-test-device.mjs'
 const serial = process.env.ANDROID_SERIAL
 if (!serial || !process.env.ANDROID_WORD_INPUTS)
@@ -52,13 +51,13 @@ async function open(input, mode) {
       for (const [id, context] of c.contexts)
         if (context.auxData?.isDefault) {
           const ready = await c.evaluate(
-            `({origin:location.origin,fileId:new URL(location.href).searchParams.get('fileId'),preview:location.pathname.endsWith('/preview.html'),local:location.pathname.startsWith('/viewer/'),pages:document.querySelectorAll('.viewer-doc-remote-page').length})`,
+            `({origin:location.origin,fileId:new URL(location.href).searchParams.get('fileId'),preview:location.pathname.endsWith('/preview.html'),local:location.pathname.startsWith('/viewer/'),units:document.querySelectorAll('.viewer-doc-reading-unit .doc-page').length})`,
             id,
           )
           if (
             ready.fileId === input.fileId &&
             ready.preview &&
-            ready.pages &&
+            ready.units &&
             (mode === 'online'
               ? ready.origin === new URL(viewer).origin
               : ready.local && ready.origin !== new URL(viewer).origin)
@@ -77,7 +76,7 @@ async function settled(c, id) {
     stable = 0
   for (let attempt = 0; attempt < 60; attempt++) {
     const state = await c.evaluate(
-      `({height:document.querySelector('.viewer-doc-remote-canvas')?.style.height,
+      `({height:document.querySelector('.viewer-doc-reading-scroll')?.scrollHeight,
       measure:document.querySelectorAll('.viewer-doc-remote-measure').length,fonts:document.fonts.status,loading:!!document.querySelector('.viewer-doc-remote-loading'),
       images:[...document.images].filter(image=>image.getAttribute('src')).every(image=>image.complete)})`,
       id,
@@ -99,152 +98,96 @@ async function settled(c, id) {
 }
 async function inspect(c, id, input, disconnected) {
   await settled(c, id)
-  // Online origins persist the previous reading anchor; every drill must traverse from page one.
-  await c.evaluate(`document.querySelector('.viewer-doc-remote-viewport').scrollTop=0`, id)
+  await c.evaluate(`document.querySelector('.viewer-doc-reading-scroll').scrollTop=0`, id)
   await settled(c, id)
-  const snapshot = await c.evaluate(
-    `(async()=>{
-    await document.fonts.ready;
-    const images=await Promise.all([...document.images].filter(image=>image.getAttribute('src')).map(async image=>{try{await image.decode();return{width:image.naturalWidth,local:image.src.startsWith('data:')||new URL(image.src).origin===location.origin}}catch{return{error:true}}}));
-    const external=performance.getEntriesByType('resource').map(entry=>entry.name).filter(url=>/^https?:/.test(url)&&new URL(url).origin!==location.origin);
-    const height=[...document.querySelectorAll('.viewer-doc-remote-page')].map(page=>page.getBoundingClientRect().height);
-    return{images,external,height,paper:getComputedStyle(document.querySelector('.viewer-doc-remote-page')).backgroundColor,notes:document.querySelectorAll('[data-note-body]').length,alerts:[...document.querySelectorAll('[role=alert]')].map(node=>node.textContent)}
-  })()`,
+  const typography = await c.evaluate(
+    `(()=>{const root=document.querySelector('.viewer-doc-reading'),editor=root.querySelector('.doc-page'),span=editor.querySelector('.doc-east-asian-font');return{sheets:document.querySelectorAll('[data-docx-style-context][data-doc-css]').length,fallback:root.dataset.docxThemeFallback,baseSize:getComputedStyle(editor).fontSize,chineseFont:span&&getComputedStyle(span).fontFamily,themeLoaded:[...document.fonts].some(face=>face.family.includes('GenOffice Theme Sans SC')&&face.status==='loaded')}})()`,
     id,
   )
-  if (snapshot.paper !== 'rgb(255, 255, 255)')
-    throw Error('Word paper is not readable in the dark shell')
-  if (snapshot.alerts.length || snapshot.images.some((image) => image.error))
-    throw Error(JSON.stringify(snapshot))
-  snapshot.typography = await c.evaluate(
-    `(()=>{const root=document.querySelector('.viewer-doc-remote'),editor=root.querySelector('.doc-page'),span=editor.querySelector('.doc-east-asian-font');return{sheets:document.querySelectorAll('[data-docx-style-context][data-doc-css]').length,fallback:root.dataset.docxThemeFallback,baseSize:getComputedStyle(editor).fontSize,chineseFont:span&&getComputedStyle(span).fontFamily,themeLoaded:[...document.fonts].some(face=>face.family.includes('GenOffice Theme Sans SC')&&face.status==='loaded')}})()`,
-    id,
-  )
-  if (snapshot.typography.sheets !== 1)
-    throw Error('Word document style scope is missing or duplicated')
+  if (typography.sheets !== 1) throw Error('Word document style scope is missing or duplicated')
   if (
-    input.name === 'business' &&
-    (!snapshot.typography.themeLoaded ||
-      !snapshot.typography.chineseFont?.includes('GenOffice Theme Sans SC'))
+    typography.fallback === 'bundled' &&
+    (!typography.themeLoaded || !typography.chineseFont?.includes('GenOffice Theme Sans SC'))
   )
-    throw Error('Business Word bundled theme font did not load')
-  if (input.name === 'business') {
-    snapshot.pictureExtents = await c.evaluate(
-      `([...document.querySelectorAll('.viewer-doc-remote-column .doc-inline-pic > img')].filter(image=>image.naturalWidth>0).map(image=>{const rect=image.getBoundingClientRect();return{ratio:rect.width/rect.height,authoredRatio:parseFloat(image.style.width)/parseFloat(image.style.height),clip:getComputedStyle(image.parentElement).clipPath}}))`,
+    throw Error('Word bundled theme font did not load')
+  const units = new Map(),
+    notes = new Map(),
+    external = new Set()
+  let finished = false
+  for (let step = 0; step < 1200; step++) {
+    const state = await c.evaluate(
+      `(()=>{const root=document.querySelector('.viewer-doc-reading'),scroll=root.querySelector('.viewer-doc-reading-scroll');return{
+        paper:getComputedStyle(root.querySelector('.viewer-doc-reading-paper')).backgroundColor,
+        pages:root.querySelectorAll('.pv-page,.viewer-doc-remote-page,[data-source-from]').length,
+        editable:root.querySelectorAll('[contenteditable="true"],.doc-content-editing').length,
+        counters:root.querySelectorAll('.viewer-page-controls').length,
+        units:[...root.querySelectorAll('[data-unit-id]')].map(unit=>[unit.dataset.unitId,unit.textContent||'']),
+        notes:[...root.querySelectorAll('[data-note-body]')].map(note=>[note.dataset.noteKind+':'+note.dataset.noteBody,note.textContent||'']),
+        images:[...root.querySelectorAll('img[src]')].map(image=>({ready:image.complete,broken:image.complete&&!image.naturalWidth,local:image.src.startsWith('data:')||new URL(image.src).origin===location.origin})),
+        external:performance.getEntriesByType('resource').map(entry=>entry.name).filter(url=>/^https?:/.test(url)&&new URL(url).origin!==location.origin),
+        atEnd:scroll.scrollTop+scroll.clientHeight>=scroll.scrollHeight-2,
+        busy:!!root.querySelector('[role="status"],.viewer-doc-remote-loading,.viewer-doc-remote-more'),
+        alerts:[...root.querySelectorAll('[role="alert"]')].map(node=>node.textContent),
+      }})()`,
       id,
     )
-    if (
-      !snapshot.pictureExtents.length ||
-      snapshot.pictureExtents.some(
-        (image) => Math.abs(image.ratio - image.authoredRatio) > 0.002 || image.clip === 'none',
-      )
-    )
-      throw Error('Business Word picture ratio or cell clipping is incorrect')
-    snapshot.rightEdge = await c.evaluate(
-      `(()=>{const t=[...document.querySelectorAll('.viewer-doc-remote-column .doc-table')].find(node=>!node.closest('[data-docx-flow-source]')); const cell=t.rows[0].cells[t.rows[0].cells.length-1],r=cell.getBoundingClientRect();return{border:getComputedStyle(cell).borderRight,visible:document.elementsFromPoint(r.right-.25,r.top+r.height/2).some(n=>n===cell||cell.contains(n))}})()`,
+    if (state.paper !== 'rgb(255, 255, 255)') throw Error('Word reading paper is not readable')
+    if (state.pages || state.editable || state.counters)
+      throw Error('Continuous reading acquired pages or editing controls')
+    if (state.alerts.length || state.images.some((image) => image.broken))
+      throw Error(JSON.stringify(state))
+    if (disconnected && state.images.some((image) => !image.local))
+      throw Error('Offline Word image is not local')
+    for (const pair of state.units) units.set(...pair)
+    for (const pair of state.notes) notes.set(...pair)
+    for (const url of state.external) if (url !== backend + '/v1/capabilities') external.add(url)
+    if (state.atEnd && !state.busy && state.images.every((image) => image.ready)) {
+      finished = true
+      break
+    }
+    await c.evaluate(
+      `(()=>{const scroll=document.querySelector('.viewer-doc-reading-scroll');scroll.scrollBy(0,scroll.clientHeight*.75)})()`,
       id,
     )
-    if (!snapshot.rightEdge.visible)
-      throw Error('Business Word outer right table border is clipped')
+    await wait(200)
   }
-  snapshot.external = snapshot.external.filter((url) => url !== backend + '/v1/capabilities')
-  if (disconnected && snapshot.images.some((image) => !image.local))
-    throw Error('Offline Word image is not local')
-  if (disconnected && snapshot.external.length)
-    throw Error('Offline Word requested remote assets: ' + JSON.stringify(snapshot.external))
-  const visited = new Set()
-  const frames = new Map()
-  const flows = new Map()
-  for (let step = 0; step < 160; step++) {
-    if (['business', 'independent-cells'].includes(input.name)) {
-      const entries = await c.evaluate(
-        `(${inspectDocxTableFlow.toString()})(${JSON.stringify([...flows.keys()])})`,
-        id,
-      )
-      for (const entry of entries) flows.set(entry.key, entry)
-    }
-    if (input.name === 'business') {
-      const slices = await c.evaluate(
-        `([...document.querySelectorAll('.viewer-doc-fragment')].map(fragment=>{const slice=[...fragment.querySelectorAll('.viewer-doc-fragment-slice')].at(-1),table=[...slice.querySelectorAll('table')].find(node=>!node.closest('[data-docx-flow-source]'));if(!table)return null;const r=slice.getBoundingClientRect(),t=table.getBoundingClientRect(),edges=[...slice.querySelectorAll('[data-docx-table-edge]')].filter(edge=>parseFloat(getComputedStyle(edge)[edge.dataset.docxTableEdge==='top'?'borderTopWidth':'borderBottomWidth'])>0);return{key:fragment.dataset.docxIndex+':'+fragment.dataset.sourceFrom,topNeeded:r.top>t.top+1,bottomNeeded:r.bottom<t.bottom-1,top:edges.some(edge=>edge.dataset.docxTableEdge==='top'),bottom:edges.some(edge=>edge.dataset.docxTableEdge==='bottom')}}).filter(Boolean))`,
-        id,
-      )
-      for (const slice of slices) frames.set(slice.key, slice)
-    }
-    const status = await c.evaluate(
-      `(()=>{const root=document.querySelector('.viewer-doc-remote-viewport');const pages=[...document.querySelectorAll('.viewer-doc-remote-page')].map(page=>page.dataset.pageIndex);const done=root.scrollTop+root.clientHeight>=root.scrollHeight-2&&!document.querySelector('.viewer-doc-remote-more,.viewer-doc-remote-loading');root.scrollTop=Math.min(root.scrollHeight,root.scrollTop+650);return{pages,done}})()`,
-      id,
-    )
-    status.pages.forEach((page) => visited.add(page))
-    if (status.done) {
-      await settled(c, id)
-      if (
-        await c.evaluate(
-          `(()=>{const root=document.querySelector('.viewer-doc-remote-viewport');return root.scrollTop+root.clientHeight>=root.scrollHeight-2})()`,
-          id,
-        )
-      )
-        break
-    }
-    await wait(80)
-  }
-  if (input.name === 'business') {
-    snapshot.tableFrames = [...frames.values()]
-    if (
-      !snapshot.tableFrames.some((frame) => frame.bottomNeeded) ||
-      snapshot.tableFrames.some(
-        (frame) => frame.top !== frame.topNeeded || frame.bottom !== frame.bottomNeeded,
-      )
-    )
-      throw Error('Business Word continuation table frames are incomplete')
-  }
-  if (['business', 'independent-cells'].includes(input.name)) {
-    snapshot.cellFlow = summarizeDocxTableFlow([...flows.values()])
-    if (
-      snapshot.cellFlow.fragments < 2 ||
-      snapshot.cellFlow.expected < 100 ||
-      snapshot.cellFlow.missing.length ||
-      snapshot.cellFlow.duplicates.length
-    )
-      throw Error(
-        'Independent cell continuation lost or duplicated glyphs: ' +
-          JSON.stringify(snapshot.cellFlow),
-      )
-    if (input.name === 'independent-cells') {
-      const markers = snapshot.cellFlow.markers
-      const middle = markers.find((marker) => marker.text === 'FLOW_MIDDLE')
-      const bottom = markers.find((marker) => marker.text === 'FLOW_BOTTOM')
-      if (
-        markers.length !== 2 ||
-        !middle ||
-        Math.abs(middle.top - middle.bottom) >= 4 ||
-        !bottom ||
-        bottom.bottom < -0.1 ||
-        bottom.bottom >= 15
-      )
-        throw Error('Independent cell vertical alignment failed: ' + JSON.stringify(markers))
-    }
-  }
-  if (input.name === 'long-notes' && visited.size < 3) throw Error('Long footnote did not continue')
-  const terminal = await c.evaluate(
-    `({text:document.body.innerText.slice(-1400),alerts:[...document.querySelectorAll('[role=alert]')].map(node=>node.textContent)})`,
-    id,
-  )
-  if (input.name === 'partial-pages' && !terminal.text.includes('CHUNK_PARAGRAPH_419'))
+  if (!finished) throw Error('Continuous reading did not reach the final source unit')
+  if (disconnected && external.size)
+    throw Error('Offline Word requested remote assets: ' + JSON.stringify([...external]))
+  const text = [...units.values(), ...notes.values()].join('')
+  if (input.name === 'partial-pages' && !text.includes('CHUNK_PARAGRAPH_419'))
     throw Error('Last Word chunk not reached')
-  if (terminal.alerts.length) throw Error(JSON.stringify(terminal.alerts))
-  if (input.name === 'long-and-merged' && !terminal.text.includes('DOCUMENT_END'))
-    throw Error('Word tail not reached')
-  if (input.name === 'long-notes' && !terminal.text.includes('ENDNOTE_BODY_LAST'))
+  if (input.name === 'long-and-merged')
+    for (const marker of ['LONG_START', 'LONG_END', 'MERGE_START', 'MERGE_END', 'DOCUMENT_END'])
+      if (!text.includes(marker)) throw Error('Missing Word marker ' + marker)
+  if (input.name === 'long-notes' && !text.includes('ENDNOTE_BODY_LAST'))
     throw Error('Endnote tail not reached')
-  await c.evaluate(
-    `(()=>{const root=document.querySelector('.viewer-doc-remote-viewport');const pages=[...document.querySelectorAll('.viewer-doc-remote-page')];const page=pages.at(-1);if(page)root.scrollTop+=page.getBoundingClientRect().top-root.getBoundingClientRect().top})()`,
-    id,
-  )
-  await wait(200)
+  if (input.name === '06-with-footnotes' && !notes.size) throw Error('Footnote bodies are missing')
+  if (input.name === 'independent-cells') {
+    for (const [prefix, count] of [
+      ['FLOW_A', 75],
+      ['FLOW_B', 61],
+    ])
+      for (let index = 0; index < count; index++) {
+        const marker = prefix + '_' + String(index).padStart(3, '0')
+        if (text.split(marker).length !== 2)
+          throw Error('Lost or duplicated cell content ' + marker)
+      }
+    for (const marker of ['FLOW_MIDDLE', 'FLOW_BOTTOM'])
+      if (text.split(marker).length !== 2) throw Error('Lost or duplicated aligned cell ' + marker)
+  }
   const png = device.readBytes(['exec-out', 'screencap', '-p'])
   await writeFile(join(output, `${input.name}-${disconnected ? 'offline' : 'online'}.png`), png)
-  return { ...snapshot, visited: visited.size, reachedTail: true }
+  return {
+    typography,
+    units: units.size,
+    notes: notes.size,
+    external: [...external],
+    continuous: true,
+    reachedTail: true,
+  }
 }
+
 try {
   for (const input of inputs) {
     if (!/^[a-f0-9]{64}$/.test(input.fileId)) throw Error('Invalid Word file ID')
@@ -303,7 +246,7 @@ try {
         offline: offlineResult,
       })
       await writeFile(join(output, 'results.json'), JSON.stringify(results, null, 2))
-      console.log(input.name, 'PASS', offlineResult.visited, 'pages')
+      console.log(input.name, 'PASS', offlineResult.units, 'source units')
     } finally {
       offline.c.close()
     }

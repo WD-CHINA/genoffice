@@ -27,6 +27,7 @@ export interface WidthItem {
   text: string
   bold: boolean
   italic: boolean
+  kerning?: boolean
 }
 
 function norm(name: string) {
@@ -90,11 +91,18 @@ export function createBundledMetrics(
       const family = found?.face.family || style.fontFamily
       if (found?.substituted) fallbacks.add(style.fontFamily)
       if (text) {
-        const key = `${style.bold ? 'b' : ''}${style.italic ? 'i' : ''}|${family}|${text}`
+        const key = `${style.bold ? 'b' : ''}${style.italic ? 'i' : ''}${style.kerning === false ? 'n' : ''}|${family}|${text}`
         onMeasure?.(key)
         const known = cache.get(key)
         if (known != null) return (known / 100) * style.fontSizePx
-        pending.set(key, { key, family, text, bold: style.bold, italic: style.italic })
+        pending.set(key, {
+          key,
+          family,
+          text,
+          bold: style.bold,
+          italic: style.italic,
+          kerning: style.kerning,
+        })
       }
       if (!found) return inner.measure(text, style)
       return inner.measure(text, { ...style, fontFamily: found.face.family })

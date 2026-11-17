@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   openServerSession,
+  updateSessionLayoutPrefs,
   openingStateText,
   type PreviewNotice,
 } from '../src/web/server-session.ts'
@@ -348,4 +349,20 @@ test('a failed first-frame prefetch never fails the authoritative ready path', a
     session.close()
     context.mock.timers.reset()
   }
+})
+
+test('offline replay keeps layout preferences local while remote sessions still send authenticated heartbeats', async (context) => {
+  const calls: Array<{ url: string; init: RequestInit }> = []
+  context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    calls.push({ url, init })
+    return new Response(null, { status: 204 })
+  })
+  const prefs = { page: 2 }
+  await updateSessionLayoutPrefs('http://127.0.0.1', 'local', prefs)
+  assert.equal(calls.length, 0)
+  await updateSessionLayoutPrefs('http://parse/', 'remote-session', prefs, 'secret')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, 'http://parse/v1/sessions/remote-session/heartbeat')
+  assert.equal(new Headers(calls[0].init.headers).get('Authorization'), 'Bearer secret')
+  assert.deepEqual(JSON.parse(calls[0].init.body as string), { layoutPrefs: prefs })
 })

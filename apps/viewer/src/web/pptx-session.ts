@@ -1,7 +1,14 @@
 export interface PptxDeck {
   slides: any[]
   playback: any[]
-  measurements: Array<{ key: string; family: string; text: string; bold: boolean; italic: boolean }>
+  measurements: Array<{
+    key: string
+    family: string
+    text: string
+    bold: boolean
+    italic: boolean
+    kerning?: boolean
+  }>
   fonts: Array<{
     id: string
     family: string

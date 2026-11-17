@@ -48,6 +48,7 @@ interface WidthItem {
   text: string
   bold: boolean
   italic: boolean
+  kerning?: boolean
 }
 
 async function readError(response: Response): Promise<string> {
@@ -340,8 +341,7 @@ export function createModelPptxSession(target: ModelTarget) {
       const now = Date.now()
       if (now - lastPrefAt < 750) return
       lastPrefAt = now
-      void updateSessionLayoutPrefs(base, sessionId, { page }, target.token)
-        .catch(() => undefined)
+      void updateSessionLayoutPrefs(base, sessionId, { page }, target.token).catch(() => undefined)
     },
     close(): void {
       closed = true

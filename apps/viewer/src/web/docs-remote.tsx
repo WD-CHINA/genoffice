@@ -1,3 +1,4 @@
+import { applyDocLayoutSettings } from '@genoffice/viewer-renderers/docs/renderer/viewer-initialize'
 import type { DocxBlockGeometry } from './docx-fragments'
 import { openingStateText } from './server-session'
 import { combineAbortSignals } from './abort-signals'
@@ -82,6 +83,7 @@ function ReadingUnit({
     storage.styles = doc.styles
     storage.docDefaults = doc.docDefaults
     storage.defs = doc.numbering
+    applyDocLayoutSettings(editor, doc as unknown as import('@genoffice/docx-engine').ParsedDocFull)
     editor.commands.setContent(blocksToPmDoc(blocks, undefined, pmDocOptions(doc)), {
       emitUpdate: false,
     })

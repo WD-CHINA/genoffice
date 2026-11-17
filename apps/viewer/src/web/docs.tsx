@@ -1,3 +1,4 @@
+import { setDocFontTable } from '@genoffice/viewer-renderers/docs/renderer/text-layout/font-rules'
 import React, { useEffect, useState, useRef, useMemo } from 'react'
 import { EditorContent, useEditor } from '@tiptap/react'
 import { parseLazyMediaUrl } from '@genoffice/docx-engine/lazy-media'
@@ -22,7 +23,7 @@ import {
   pmDocOptions,
 } from '@genoffice/viewer-renderers/docs/renderer/editor/convert'
 import { adoptEmbeddedFonts } from '@genoffice/viewer-renderers/docs/renderer/embedded-fonts'
-import { setDocFontTable } from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
+
 import { applyDocLayoutSettings } from '@genoffice/viewer-renderers/docs/renderer/viewer-initialize'
 import {
   docStyleCss,

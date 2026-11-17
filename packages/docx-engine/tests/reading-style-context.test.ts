@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseDocx, readDocxStyleContext } from '../src/index'
+import { parseDocx, readDocxStyleContext, createDocxBlockParser } from '../src/index'
 import { buildDocx } from './helpers/build-docx'
 
 describe('remote reading typography context', () => {
@@ -34,4 +34,24 @@ describe('remote reading typography context', () => {
     expect(context.adjustLineHeightInTable).toBe(true)
     expect(context.fontTable?.[0].altName).toBe('Arial')
   })
+})
+
+it('streamed reading context retains full-parser notes and separator rules', async () => {
+  const bytes = await buildDocx({
+    bodyXml: '<w:p><w:r><w:t>Body</w:t><w:footnoteReference w:id="1"/></w:r></w:p>',
+    extraParts: [
+      {
+        path: 'word/footnotes.xml',
+        contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml',
+        xml: '<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:id="1"><w:p><w:r><w:t>Footnote body</w:t></w:r></w:p></w:footnote></w:footnotes>',
+      },
+    ],
+  })
+  const full = await parseDocx(bytes)
+  const parser = await createDocxBlockParser(bytes)
+  const reading = await parser.readingContext()
+  expect(Array.isArray(reading.footnotes)).toBe(true)
+  expect(reading.footnotes).toEqual(full.footnotes)
+  expect(reading.footnoteSeparator).toEqual(full.footnoteSeparator)
+  expect(reading.noteNumbers).toEqual(full.noteNumbers)
 })

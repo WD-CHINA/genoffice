@@ -12,6 +12,9 @@ export async function parserFingerprint(version: string): Promise<string> {
     'packages/pptx-engine/src',
     'packages/pptx-render/src',
     'packages/docx-engine/src',
+    'packages/font-metrics/src',
+    'packages/font-metrics/measurements',
+    'packages/viewer-services/src',
     'packages/zip-reader/src',
     'packages/zip-gate/src',
   ]
@@ -31,6 +34,7 @@ export async function parserFingerprint(version: string): Promise<string> {
     }
   }
   for (const path of roots) await visit(join(root, path))
+  hash.update(await readFile(join(root, 'packages/font-metrics/word-faces.json')))
   hash.update(await readFile(join(root, 'pnpm-lock.yaml')))
   return hash.digest('hex')
 }

@@ -17,6 +17,7 @@ import type {
 } from '../../shared/ipc'
 import type { InkPenSettings, InkTool } from '../ink'
 import type { WordArtPreset } from '@genoffice/viewer-renderers/ui'
+import type { InkPreset } from '../ink-presets'
 import type { ChartPresetDef, IconDef, SmartArtDef } from '../insert-presets'
 import type { ZoomMode } from '../zoom-actions'
 import type { SlideThemePreset } from '../themes'
@@ -292,11 +293,17 @@ export interface Props {
   onUndo: () => void
   onRedo: () => void
   onSaveAs: () => void
+  /** Ask the model for a name, then open Save As with it prefilled */
+  onNameWithAi: () => void
   /** Export as PDF (hidden slides skipped) */
   onExportPdf: () => void
   onPrint: () => void
   /** Export as images (one PNG per page, hidden slides skipped) */
   onExportImages: () => void
+  /** Export as images (one JPG per page, hidden slides skipped) */
+  onExportImagesJpg: () => void
+  /** Export as video (MP4 of the show, hidden slides skipped) */
+  onExportVideo: () => void
   onFormat: (cmd: FormatCmd) => void
   zoom: number
   onZoom: (z: number | ((current: number) => number)) => void
@@ -444,10 +451,10 @@ export interface Props {
   /** Drawing tool (select = exit drawing) */
   inkTool: InkTool
   onInkTool: (tool: InkTool) => void
-  inkPen: InkPenSettings
-  onInkPen: (settings: InkPenSettings) => void
-  inkHighlighter: InkPenSettings
-  onInkHighlighter: (settings: InkPenSettings) => void
+  inkPresets: InkPreset[]
+  inkActiveId: string
+  onInkPresets: (presets: InkPreset[]) => void
+  onInkActivate: (id: string) => void
   /** Current page's stroke count (clear button availability) */
   inkCount: number
   /** Clear all ink on the current page */

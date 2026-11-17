@@ -1,5 +1,5 @@
 {
-  "sourceCommit": "8c170596b6c2a5fc92a858dfd6f064c7762d835e",
+  "sourceCommit": "ac19c54111849d9d8fb2c508223a0389b805c247",
   "runtimeFiles": [
     "apps/slides/src/renderer/SlideThumb.tsx",
     "apps/slides/src/renderer/konva-adapter.ts",
@@ -131,7 +131,13 @@
     "apps/pdf/src/renderer/NoteMargin.tsx",
     "apps/pdf/src/renderer/DrawLayer.tsx",
     "apps/pdf/src/renderer/annotation-catalog.ts",
-    "apps/pdf/src/renderer/form-detect.ts"
+    "apps/pdf/src/renderer/form-detect.ts",
+    "apps/slides/src/shared/slide-update.ts",
+    "apps/slides/src/renderer/export-render.tsx",
+    "apps/slides/src/renderer/ink-presets.ts",
+    "apps/pdf/src/renderer/redact-patterns.ts",
+    "apps/slides/src/renderer/export-svg.ts",
+    "apps/slides/src/renderer/canvas-kerning.ts"
   ],
   "typeFiles": [
     "apps/slides/src/shared/ipc.ts",
@@ -155,5 +161,12 @@
     "apps/pdf/src/renderer/edit-state.ts (saved annotation model/constants)",
     "apps/slides/src/renderer/components/SlideShowView.tsx (hitLink)",
     "packages/ui/src/find-text.ts (original literal matcher)"
+  ],
+  "sourceTag": "v0.13.18",
+  "adaptations": [
+    "Read-only Viewer adapters and continuous DOCX reading remain private.",
+    "Desktop font-rule entry points are mapped to private modules; missing-theme SC fallback is recognized.",
+    "PPT canvas kerning is installed in Viewer; browser width feedback separates kerning modes.",
+    "Remote metafile limits, retry, decode concurrency and image release are retained."
   ]
 }

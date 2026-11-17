@@ -9382,8 +9382,15 @@ export interface DocxStyleContext {
   fontTable?: ParsedDoc['fontTable']
   compatibilityMode?: number
   autoHyphenation?: boolean
+  defaultTabStopTwips?: number
+  balanceDbcsSpacing?: boolean
+  useFELayout?: boolean
+  compressPunctuation?: boolean
   adjustLineHeightInTable?: boolean
+  indentNotNumberingTabStop?: boolean
+  doNotExpandShiftReturn?: boolean
   doNotUseHTMLParagraphAutoSpacing?: boolean
+  overrideTableStyleFontSizeAndJustification?: boolean
 }
 
 export async function readDocxStyleContext(bytes: Uint8Array): Promise<DocxStyleContext> {

@@ -11,7 +11,7 @@ const env = {
 
 const frontend = spawn(
   process.execPath,
-  [resolve(root, 'node_modules/vite/bin/vite.js'), '--config', resolve(app, 'vite.config.ts')],
+  [resolve(app, 'node_modules/vite/bin/vite.js'), '--config', resolve(app, 'vite.config.ts')],
   { cwd: app, stdio: 'inherit', env },
 )
 const stop = () => {

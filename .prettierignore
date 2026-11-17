@@ -17,6 +17,9 @@ packages/viewer-renderers/src/docs/renderer/fonts/stand-in-boxes.json
 apps/docs/tests/fixtures/font-metrics/
 apps/docs/src/renderer/fonts/fonts.generated.css
 apps/docs/src/renderer/line-factors.generated.ts
+packages/viewer-renderers/src/docs/renderer/fonts/fonts.generated.css
+packages/viewer-renderers/src/docs/renderer/line-factors.generated.ts
+packages/viewer-renderers/src/docs/renderer/stand-in-chains.generated.ts
 
 # Local-only acceptance drivers are intentionally outside CI.
 scripts/drivers/driver.*.mjs

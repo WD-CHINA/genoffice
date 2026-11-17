@@ -73,7 +73,7 @@ async function open(input, mode) {
       c.close()
     } catch (error) {
       c?.close()
-      if (!/ECONNREFUSED|fetch failed|No WebView|disconnected/.test(String(error))) throw error
+      if (!/ECONNREFUSED|fetch failed|No WebView|disconnected|Cannot find context with specified id/.test(String(error))) throw error
     }
   }
   throw Error(`PDF ${input.name} ${mode} did not render`)
@@ -182,7 +182,7 @@ try {
     const offline = await open(input, 'open')
     try {
       const range = await offline.c.evaluate(
-        `(async()=>{const url=new URLSearchParams(location.search);const response=await fetch(url.get('server')+'/v1/files/'+url.get('fileId')+'/content',{headers:{Range:'bytes=0-31'}});return{status:response.status,etag:response.headers.get('ETag'),type:response.headers.get('Content-Type'),bytes:[...new Uint8Array(await response.arrayBuffer())]}})()`,
+        `(async()=>{const url=new URLSearchParams(location.search);const response=await fetch((url.get('server')||location.origin)+'/v1/files/'+url.get('fileId')+'/content',{headers:{Range:'bytes=0-31'}});return{status:response.status,etag:response.headers.get('ETag'),type:response.headers.get('Content-Type'),bytes:[...new Uint8Array(await response.arrayBuffer())]}})()`,
         offline.id,
       )
       assert.equal(range.status, 206)

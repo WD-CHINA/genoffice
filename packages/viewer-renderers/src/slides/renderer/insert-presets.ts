@@ -4,7 +4,7 @@
  */
 import { SHAPE_GALLERY_GROUPS } from '@genoffice/viewer-renderers/ui'
 import { t, type StringKey } from './i18n/locale'
-import type { SmartArtLayout } from '../../../../../pptx-engine/src/smartart-layout'
+import type { SmartArtLayout } from '@genoffice/pptx-engine'
 
 // ── Shape gallery ─────────────────────────────────────────────────────────────
 

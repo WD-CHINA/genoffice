@@ -11,6 +11,7 @@ export interface WidthItem {
   text: string
   bold: boolean
   italic: boolean
+  kerning?: boolean
 }
 
 /**
@@ -30,7 +31,7 @@ export class FeedbackMetrics implements FontMetricsProvider {
 
   measure(text: string, style: RunStyle): number {
     if (!text) return this.fallback.measure(text, style)
-    const key = `${style.bold ? 'b' : ''}${style.italic ? 'i' : ''}|${style.fontFamily}|${text}`
+    const key = `${style.bold ? 'b' : ''}${style.italic ? 'i' : ''}${style.kerning === false ? 'n' : ''}|${style.fontFamily}|${text}`
     const known = this.cache.get(key)
     if (known != null) return (known / 100) * style.fontSizePx
     this.pending.set(key, {
@@ -39,6 +40,7 @@ export class FeedbackMetrics implements FontMetricsProvider {
       text,
       bold: style.bold,
       italic: style.italic,
+      kerning: style.kerning,
     })
     return this.fallback.measure(text, style)
   }

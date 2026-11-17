@@ -6,10 +6,17 @@
  */
 import { metafileToDataUrl } from '@genoffice/docx-engine/metafile'
 
+/** Slide media is cross-origin: without CORS a canvas that draws it is tainted (cutout, export). */
+export function setImageSource(img: HTMLImageElement, url: string): void {
+  if (url.startsWith('genoffice-slide-media:')) img.crossOrigin = 'anonymous'
+  img.src = url
+}
+
 export type ApplyImages = (entries: ReadonlyArray<readonly [string, HTMLImageElement]>) => void
 
 /** EMF/WMF data URLs: browsers cannot decode metafiles — rasterize to PNG first (keyed by the original url). */
 const METAFILE_RE = /^data:(image\/x-(?:emf|wmf)|image\/(?:emf|wmf));base64,/
+const LAZY_METAFILE_RE = /^genoffice-slide-media:.*[?&]mime=image%2F(?:x-)?(emf|wmf)(?:&|$)/i
 
 /**
  * EMF headers size the raster from their device bounds, up to the converter's 8192px cap:
@@ -43,7 +50,7 @@ async function rasterizeMetafile(url: string, mimeHint?: string): Promise<string
   const m = METAFILE_RE.exec(url)
   await waitForDocFonts()
   if (!m) {
-    const mime = mimeHint || (/\.wmf(?:[?#]|$)/i.test(url) ? 'image/x-wmf' : 'image/x-emf')
+    const mime = mimeHint || (LAZY_METAFILE_RE.exec(url)?.[1] ? `image/x-${LAZY_METAFILE_RE.exec(url)![1]!.toLowerCase()}` : undefined) || (/\.wmf(?:[?#]|$)/i.test(url) ? 'image/x-wmf' : 'image/x-emf')
     const response = await fetch(url)
     if (!response.ok) return null
     const limit = MAX_METAFILE_BASE64_CHARS * 3 / 4
@@ -73,7 +80,7 @@ async function rasterizeMetafile(url: string, mimeHint?: string): Promise<string
   const bin = atob(b64)
   const bytes = new Uint8Array(bin.length)
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-  const mime = m[1]!.includes('emf') ? 'image/x-emf' : 'image/x-wmf'
+  const mime = m![1]!.includes('emf') ? 'image/x-emf' : 'image/x-wmf'
   return metafileToDataUrl(bytes, mime, { maxSidePx: MAX_METAFILE_RASTER_PX })
 }
 
@@ -133,7 +140,7 @@ export function createImageLoader(
         img.onload = () => resolve(img)
         img.onerror = () => resolve(null)
         const mime = mimeType?.(source)
-        if (METAFILE_RE.test(source) || /\.(?:emf|wmf)(?:[?#]|$)/i.test(source) || /^image\/(?:x-)?(?:emf|wmf)$/.test(mime ?? '')) {
+        if (METAFILE_RE.test(source) || LAZY_METAFILE_RE.test(source) || /\.(?:emf|wmf)(?:[?#]|$)/i.test(source) || /^image\/(?:x-)?(?:emf|wmf)$/.test(mime ?? '')) {
           void rasterizeMetafile(source, mime)
             .then((png) => {
               if (png) img.src = png
@@ -141,7 +148,7 @@ export function createImageLoader(
             })
             .catch(() => resolve(null))
         } else {
-          img.src = source
+          setImageSource(img, source)
         }
       })
     }

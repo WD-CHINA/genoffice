@@ -2,7 +2,7 @@
 
 Original drawing and pagination sources extracted from GenOffice commit
 `4863835963c99793c47b72473900c483e9fa0c2a` and refreshed against
-`8c170596b6c2a5fc92a858dfd6f064c7762d835e`, owned exclusively by `apps/viewer`.
+`ac19c54111849d9d8fb2c508223a0389b805c247`, owned exclusively by `apps/viewer`.
 Existing desktop applications continue importing their original files.
 `sources.json` and `docs-sources.json` record the extraction inputs and the
 commit the copies were last synced from.
@@ -21,3 +21,7 @@ The package is source input for the Viewer bundler, not a standalone Node runtim
 The bundled runtime does not require this source directory. Keep upstream fixes
 explicit: adapt the snapshot here and verify against original fixtures without
 editing existing consumers. Full visual acceptance remains in the Viewer plan.
+
+The current upstream baseline is `v0.13.18`. New font-rule, table-layout and
+pagination modules are included with their transitive resources. Viewer-specific
+changes remain explicit adapters; see `docs/upstream-v0.13.18-migration.zh-CN.md`.

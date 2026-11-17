@@ -33,6 +33,8 @@ try {
   for (const x of chosen) {
     console.log('START', x.name)
     restoreAccess()
+    // Start with fresh WebView/decoder state, as the PDF and offline-PPT drills do.
+    adb('shell', 'am', 'force-stop', 'com.genoffice.viewerdemo')
     adb(
       'shell',
       'am',
@@ -125,25 +127,41 @@ try {
         `(async()=>{
    const url=${JSON.stringify(local)}, kind=${JSON.stringify(m.kind)};
    const range=await fetch(url,{headers:{Range:'bytes=0-31'}});const count=(await range.arrayBuffer()).byteLength;
-   const v=document.createElement(kind);v.muted=true;v.preload='auto';v.controls=true;v.style.cssText='position:fixed;left:0;top:0;width:320px;height:240px;z-index:999999';document.body.appendChild(v);
+   const probes=window.__viewerCodecProbes||(window.__viewerCodecProbes={}),v=probes[kind]||(probes[kind]=document.createElement(kind));v.muted=true;v.preload='auto';v.controls=true;v.style.cssText='position:fixed;left:0;top:0;width:320px;height:240px;z-index:999999';document.body.appendChild(v);
    try{
-    const timeout=ms=>new Promise((_,j)=>setTimeout(()=>j(Error('media timeout')),ms));
-    await Promise.race([new Promise((r,j)=>{v.onloadedmetadata=r;v.onerror=()=>j(Error(v.error?.message||'media error'));v.src=url}),timeout(20000)]);
+    const event=(name,start,ms)=>new Promise((resolve,reject)=>{
+     const cleanup=()=>{clearTimeout(timer);v.removeEventListener(name,done);v.removeEventListener('error',failed)};
+     const done=()=>{cleanup();resolve()};const failed=()=>{cleanup();reject(Error(v.error?.message||'media error'))};
+     const timer=setTimeout(()=>{cleanup();reject(Error('media timeout: '+name))},ms);
+     v.addEventListener(name,done);v.addEventListener('error',failed);try{start()}catch(e){cleanup();reject(e)}
+    });
+    const bounded=(promise,ms)=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('media timeout: play')),ms);promise.then(value=>{clearTimeout(timer);resolve(value)},error=>{clearTimeout(timer);reject(error)})});
+    await event('loadedmetadata',()=>{v.src=url},20000);
     const duration=v.duration;
-    await Promise.race([new Promise(r=>{v.onseeked=r;v.currentTime=duration*0.4}),timeout(10000)]);
-    const sought=v.currentTime;await Promise.race([v.play(),timeout(10000)]);await new Promise(r=>setTimeout(r,700));
+    await event('seeked',()=>{v.currentTime=duration*0.4},10000);
+    const sought=v.currentTime;await bounded(v.play(),10000);await new Promise(r=>setTimeout(r,700));
     if(v.error||!(v.currentTime>sought+Math.min(.1,duration*.1)||v.ended))throw Error('Playback did not advance');
     return{pass:true,range:range.status,rangeBytes:count,duration,seek:sought,time:v.currentTime,width:v.videoWidth||null,height:v.videoHeight||null};
    }catch(error){return{pass:false,error:String(error),code:v.error?.code,ready:v.readyState}}
-   finally{v.pause();v.removeAttribute('src');v.load();v.remove()}
+   finally{v.pause();v.removeAttribute('src');v.load()}
   })()`,
         ctxId,
       )
       media.push({ part: m.part, kind: m.kind, ...result })
       await writeFile(join(output, `${x.fileId}-media-probe.json`), JSON.stringify(media, null, 2))
       console.log('MEDIA', m.part, m.kind, result.pass ? 'PASS' : JSON.stringify(result))
-      if (!result.pass) throw Error(`${x.name} ${m.part}: ${result.error}`)
+      if (!result.pass) {
+        await c.evaluate(
+          'Object.values(window.__viewerCodecProbes||{}).forEach(v=>v.remove());delete window.__viewerCodecProbes',
+          ctxId,
+        )
+        throw Error(`${x.name} ${m.part}: ${result.error}`)
+      }
     }
+    await c.evaluate(
+      'Object.values(window.__viewerCodecProbes||{}).forEach(v=>v.remove());delete window.__viewerCodecProbes',
+      ctxId,
+    )
     await screenshot(c, `${x.fileId}-offline-first.png`)
     const ui = await exerciseUI(c, ctxId)
     await screenshot(c, `${x.fileId}-offline-show.png`)
@@ -159,6 +177,7 @@ try {
       sourceVerified: manifest.sourceVerified,
       artifactKey: manifest.artifactKey,
       prepared: (manifest.preparedMedia || []).length,
+      codecProbeMode: 'one-player-per-kind',
       backendUnavailable: unavailable,
       media,
       ui,

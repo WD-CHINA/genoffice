@@ -48,6 +48,7 @@ export interface WidthItem {
   text: string
   bold: boolean
   italic: boolean
+  kerning?: boolean
 }
 
 function mergeMeasurements(deck: PptxDeck, items: WidthItem[] | undefined) {

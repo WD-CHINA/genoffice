@@ -66,11 +66,14 @@
     "eslint": "^10.8.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "globals": "^17.8.0",
+    "harfbuzzjs": "^0.10.3",
     "jszip": "^3.10.2",
+    "pdfjs-dist": "6.2.108",
     "pixelmatch": "^7.2.0",
     "playwright-core": "^1.61.1",
     "pngjs": "^7.0.0",
     "prettier": "^3.9.6",
+    "tsx": "^4.23.15",
     "typescript-eslint": "^8.65.0"
   }
 }

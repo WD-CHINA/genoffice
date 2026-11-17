@@ -1,3 +1,9 @@
+import { setOpenDocumentText } from '@genoffice/viewer-renderers/docs/renderer/text-layout/open-document'
+import { documentTextContext } from '@genoffice/viewer-renderers/docs/renderer/text-layout/document-context'
+import {
+  setDocFontTable,
+  setEmbeddedLineMetrics,
+} from '@genoffice/viewer-renderers/docs/renderer/text-layout/font-rules'
 import type {
   DocxStyleContext,
   DocxReadingContext,
@@ -10,17 +16,16 @@ import {
   docThemeCss,
 } from '@genoffice/viewer-renderers/docs/renderer/doc-style-css'
 import { sectionGridPitchPt } from '@genoffice/viewer-renderers/docs/renderer/pagination'
-import {
-  noteEmbeddedFontsChanged,
-  setDocFontTable,
-  setEmbeddedLineMetrics,
-} from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
+import { noteEmbeddedFontsChanged } from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
 
 export const DOCX_THEME_SANS = 'GenOffice Theme Sans SC'
 // hhea/head of the shipped subset: 1160 / -288 / 0, unitsPerEm=1000.
 const themeSansMetrics = { family: DOCX_THEME_SANS, ascent: 1.16, descent: 0.288, lineGap: 0 }
 
-export interface RemoteDocxStyleContext extends Omit<DocxStyleContext, 'styles' | 'numbering'> {
+export interface RemoteDocxStyleContext
+  extends
+    Omit<DocxStyleContext, 'styles' | 'numbering'>,
+    Pick<DocxReadingContext, 'footnoteProps' | 'endnoteProps'> {
   styles: ParsedDocFull['styles']
   numbering: ParsedDocFull['numbering']
   css: string
@@ -41,6 +46,8 @@ export function reviveDocxStyles(
     !payload.docDefaults.eastAsiaFont
   const context = {
     ...payload,
+    footnoteProps: reading?.footnoteProps,
+    endnoteProps: reading?.endnoteProps,
     styles: new Map(payload.styles),
     numbering: new Map(payload.numbering),
     ...(missingThemeFallback
@@ -48,6 +55,8 @@ export function reviveDocxStyles(
           missingThemeFallback: true as const,
           docDefaults: {
             ...payload.docDefaults,
+            eaSlotEmpty: false,
+            eaThemeSlot: false,
             asciiFont: payload.docDefaults?.asciiFont ?? 'Calibri',
             eastAsiaFont: DOCX_THEME_SANS,
           },
@@ -67,6 +76,7 @@ export function reviveDocxStyles(
       runs: [],
     })),
   } as unknown as ParsedDocFull
+  setOpenDocumentText(documentTextContext(parsed))
   return {
     ...context,
     css: (
@@ -93,6 +103,7 @@ export function mountDocxStyles(context: RemoteDocxStyleContext, themeSansUrl: s
     sheet.remove()
     setEmbeddedLineMetrics([])
     setDocFontTable([])
+    setOpenDocumentText(null)
   }
 }
 

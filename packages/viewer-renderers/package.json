@@ -25,6 +25,11 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-konva": "19.0.10",
-    "@genoffice/font-metrics": "*"
+    "@genoffice/font-metrics": "*",
+    "@genoffice/ui": "*"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3"
   }
 }

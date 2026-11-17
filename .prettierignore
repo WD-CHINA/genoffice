@@ -14,6 +14,9 @@ apps/shell/build/THIRD-PARTY-NOTICES.txt
 packages/font-metrics/word-faces.json
 apps/docs/src/renderer/fonts/stand-in-boxes.json
 packages/viewer-renderers/src/docs/renderer/fonts/stand-in-boxes.json
+apps/docs/tests/fixtures/font-metrics/
+apps/docs/src/renderer/fonts/fonts.generated.css
+apps/docs/src/renderer/line-factors.generated.ts
 
 # Local-only acceptance drivers are intentionally outside CI.
 scripts/drivers/driver.*.mjs
@@ -29,3 +32,4 @@ packages/html2docx/src/browser/
 
 # ISO/IEC 29500 schemas: keep byte-identical to the published files (one marked amendment).
 tools/ooxml-validate/schemas/
+apps/docs/src/renderer/stand-in-chains.generated.ts

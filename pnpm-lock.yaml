@@ -18,6 +18,9 @@ importers:
       '@playwright/test':
         specifier: ^1.61.1
         version: 1.64.1
+      '@xmldom/xmldom':
+        specifier: ^0.8.15
+        version: 0.8.15
       concurrently:
         specifier: ^9.2.5
         version: 9.2.5
@@ -33,6 +36,9 @@ importers:
       globals:
         specifier: ^17.8.0
         version: 17.14.0
+      jszip:
+        specifier: ^3.10.2
+        version: 3.10.2
       pixelmatch:
         specifier: ^7.2.0
         version: 7.2.0
@@ -490,8 +496,8 @@ importers:
         specifier: ^28.0.0
         version: 28.1.0(@noble/hashes@1.8.0)(supports-color@8.1.1)
       node-forge:
-        specifier: ^1.4.0
-        version: 1.4.2
+        specifier: ^1.4.3
+        version: 1.4.3
       pdf-lib:
         specifier: ^1.17.1
         version: 1.17.1
@@ -598,8 +604,8 @@ importers:
         specifier: ^0.25.1
         version: 0.25.2
       fast-xml-parser:
-        specifier: ^5.3.4
-        version: 5.11.2
+        specifier: ^5.12.0
+        version: 5.12.1
       jszip:
         specifier: ^3.10.1
         version: 3.10.2
@@ -763,6 +769,9 @@ importers:
       harfbuzzjs:
         specifier: ^1.4.0
         version: 1.6.4
+      mp4-muxer:
+        specifier: ^5.2.2
+        version: 5.2.2
       pngjs:
         specifier: ^7.0.0
         version: 7.0.0
@@ -998,9 +1007,15 @@ importers:
       '@genoffice/ai-search':
         specifier: '*'
         version: link:../ai-search
+      '@genoffice/doc2docx':
+        specifier: '*'
+        version: link:../doc2docx
       '@genoffice/docx-engine':
         specifier: '*'
         version: link:../docx-engine
+      '@genoffice/hwp2docx':
+        specifier: '*'
+        version: link:../hwp2docx
       '@genoffice/odf2ooxml':
         specifier: '*'
         version: link:../odf2ooxml
@@ -1010,6 +1025,9 @@ importers:
       '@genoffice/pipelines':
         specifier: '*'
         version: link:../pipelines
+      '@genoffice/ppt2pptx':
+        specifier: '*'
+        version: link:../ppt2pptx
       '@genoffice/pptx-engine':
         specifier: '*'
         version: link:../pptx-engine
@@ -1025,6 +1043,9 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.1
         version: 1.32.2(supports-color@8.1.1)(zod@4.6.7)
+      '@rhwp/core':
+        specifier: 0.8.7
+        version: 0.8.7
       '@tiptap/core':
         specifier: 3.31.0
         version: 3.31.0(@tiptap/pm@3.31.0)
@@ -1060,6 +1081,47 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12(@types/node@24.19.2)(jsdom@28.1.0(@noble/hashes@1.8.0)(supports-color@8.1.1))(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(tsx@4.23.15))
 
+  packages/compound-file:
+    dependencies:
+      cfb:
+        specifier: ^1.2.2
+        version: 1.2.2
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.19.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@24.19.2)(jsdom@28.1.0(@noble/hashes@1.8.0)(supports-color@8.1.1))(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(tsx@4.23.15))
+
+  packages/doc2docx:
+    dependencies:
+      '@genoffice/compound-file':
+        specifier: '*'
+        version: link:../compound-file
+      '@genoffice/docx-engine':
+        specifier: '*'
+        version: link:../docx-engine
+      cfb:
+        specifier: ^1.2.2
+        version: 1.2.2
+      jszip:
+        specifier: ^3.10.1
+        version: 3.10.2
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.19.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@24.19.2)(jsdom@28.1.0(@noble/hashes@1.8.0)(supports-color@8.1.1))(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(tsx@4.23.15))
+
   packages/docx-engine:
     dependencies:
       '@genoffice/agent-core':
@@ -1075,8 +1137,8 @@ importers:
         specifier: '*'
         version: link:../zip-reader
       fast-xml-parser:
-        specifier: ^5.3.4
-        version: 5.11.2
+        specifier: ^5.12.0
+        version: 5.12.1
       jszip:
         specifier: ^3.10.1
         version: 3.10.2
@@ -1121,12 +1183,15 @@ importers:
       '@genoffice/docx-engine':
         specifier: '*'
         version: link:../docx-engine
+      '@genoffice/xlsx-gateway':
+        specifier: '*'
+        version: link:../xlsx-gateway
       cfb:
         specifier: ^1.2.2
         version: 1.2.2
       fast-xml-parser:
-        specifier: ^5.3.4
-        version: 5.11.2
+        specifier: ^5.12.0
+        version: 5.12.1
       jszip:
         specifier: ^3.10.1
         version: 3.10.2
@@ -1184,6 +1249,31 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12(@types/node@24.19.2)(jsdom@28.1.0(@noble/hashes@1.8.0)(supports-color@8.1.1))(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(tsx@4.23.15))
 
+  packages/hwp2docx:
+    dependencies:
+      '@genoffice/docx-engine':
+        specifier: '*'
+        version: link:../docx-engine
+      '@rhwp/core':
+        specifier: 0.8.7
+        version: 0.8.7
+      fast-xml-parser:
+        specifier: ^5.12.0
+        version: 5.12.1
+      jszip:
+        specifier: ^3.10.1
+        version: 3.10.2
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.19.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@24.19.2)(jsdom@28.1.0(@noble/hashes@1.8.0)(supports-color@8.1.1))(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(tsx@4.23.15))
+
   packages/i18n:
     devDependencies:
       typescript:
@@ -1202,8 +1292,8 @@ importers:
         specifier: '*'
         version: link:../pptx-engine
       fast-xml-parser:
-        specifier: ^5.3.4
-        version: 5.11.2
+        specifier: ^5.12.0
+        version: 5.12.1
       jszip:
         specifier: ^3.10.1
         version: 3.10.2
@@ -1277,6 +1367,28 @@ importers:
         specifier: ^4.1.12
         version: 4.1.12(@types/node@24.19.2)(jsdom@28.1.0(@noble/hashes@1.8.0)(supports-color@8.1.1))(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(tsx@4.23.15))
 
+  packages/ppt2pptx:
+    dependencies:
+      '@genoffice/compound-file':
+        specifier: '*'
+        version: link:../compound-file
+      cfb:
+        specifier: ^1.2.2
+        version: 1.2.2
+      jszip:
+        specifier: ^3.10.1
+        version: 3.10.2
+    devDependencies:
+      '@types/node':
+        specifier: ^24.10.1
+        version: 24.19.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.12
+        version: 4.1.12(@types/node@24.19.2)(jsdom@28.1.0(@noble/hashes@1.8.0)(supports-color@8.1.1))(vite@7.3.7(@types/node@24.19.2)(jiti@2.7.0)(tsx@4.23.15))
+
   packages/pptx-engine:
     dependencies:
       '@genoffice/agent-core':
@@ -1286,8 +1398,8 @@ importers:
         specifier: '*'
         version: link:../zip-gate
       fast-xml-parser:
-        specifier: ^5.3.4
-        version: 5.11.2
+        specifier: ^5.12.0
+        version: 5.12.1
       jszip:
         specifier: ^3.10.1
         version: 3.10.2
@@ -2918,6 +3030,9 @@ packages:
   '@radix-ui/rect@1.1.3':
     resolution: {integrity: sha512-JtyZR+mqgBibTo8xea3B6ZRmzZiM/YeVBtUkas6zMuXjAlfIFIW2FgqeM9eLyvEaYX66vr6DJMK+4U6LV0KhNw==}
 
+  '@rhwp/core@0.8.7':
+    resolution: {integrity: sha512-qgNpY9aclCvy9D7cPnpuplu42kUFZCCPhdjAS5HBso4Z4XeHG3uchYdUleQBoas/zEuwfJ7H4/ulepqdL/LXDA==}
+
   '@rolldown/pluginutils@1.0.0-beta.38':
     resolution: {integrity: sha512-N/ICGKleNhA5nc9XXQG/kkKHJ7S55u0x0XUJbbkmdCnFuoRkM1Il12q9q0eX19+M7KKUEPw/daUPIRnxhcxAIw==}
 
@@ -3379,6 +3494,9 @@ packages:
   '@types/deep-eql@4.0.2':
     resolution: {integrity: sha512-c9h9dVVMigMPc4bwTvC5dxqtqJZwQPePsWjPlpSOnojbor6pGqdk541lfA7AqFQr5pB1BRdq0juY9db81BwyFw==}
 
+  '@types/dom-webcodecs@0.1.19':
+    resolution: {integrity: sha512-+yFUIDUaASFz0vQpWBErPxun/Lb+F0TdrlTsj50gm7K797YzEx2TmV6fEiwciHyFNghlZYPgQXH5qRcwMHcJFQ==}
+
   '@types/esrecurse@4.3.1':
     resolution: {integrity: sha512-xJBAbDifo5hpffDBuHl0Y8ywswbiAp/Wi7Y/GtAgSlZyIABppyurxVueOPE8LUQOxdlgi6Zqce7uoEpqNTeiUw==}
 
@@ -3472,6 +3590,9 @@ packages:
 
   '@types/webxr@0.5.24':
     resolution: {integrity: sha512-h8fgEd/DpoS9CBrjEQXR+dIDraopAEfu4wYVNY2tEPwk60stPWhvZMf4Foo5FakuQ7HFZoa8WceaWFervK2Ovg==}
+
+  '@types/wicg-file-system-access@2020.9.8':
+    resolution: {integrity: sha512-ggMz8nOygG7d/stpH40WVaNvBwuyYLnrg5Mbyf6bmsj/8+gb6Ei4ZZ9/4PNpcPNTT8th9Q8sM8wYmWGjMWLX/A==}
 
   '@typescript-eslint/eslint-plugin@8.72.1':
     resolution: {integrity: sha512-5CokTWXpmbylfFabsbvHC0CAw3XLaGnoa+nFJX5FR592h/LoZsENUE6p/rg5xvkKrFEXz6pYmgI29AgXc2N3BQ==}
@@ -4761,11 +4882,11 @@ packages:
   fast-uri@3.1.9:
     resolution: {integrity: sha512-hS/0Wt3Ya043oKXs0sIxrMpKQITXhMLIrVAKKXi4gozGC9v7YRWVnXIZzjNPTO02M9BdxLCWqK1yRXgNziVyJQ==}
 
-  fast-xml-builder@1.3.1:
-    resolution: {integrity: sha512-pIM/1n3ntFXKYrUZwW7QCK0gAW7XY+wzj1YMIV3tLDvPj/V+zTGJK5e3/4WJfwj0qWw2ElNXiTixda/R+3YSug==}
+  fast-xml-builder@1.3.2:
+    resolution: {integrity: sha512-OX91VSlShLPDgRZV7tk/YQ4l8tT75QziF5Ixg8g4PFbCVPjuTWwN+yQfAxLJ0dufJpprdOd6HlM74Jhd39TcBQ==}
 
-  fast-xml-parser@5.11.2:
-    resolution: {integrity: sha512-R9iDuNrQYeQut46cn2r2wHKn4HYzVDvDm5J1wW+koZewykv0yuO2HChTYeZtrULyHIDM9cj9TUXloCsueCQUog==}
+  fast-xml-parser@5.12.1:
+    resolution: {integrity: sha512-wR8dO/fx+z8C5exuem1e7BKOWvjsuzvjS/tvA/Xu3Z1zQqJGcXrPzXbcAiaMgp2KjreEROcTkmnnisrcmJ2hYQ==}
     hasBin: true
 
   fastdom@1.0.12:
@@ -5088,8 +5209,8 @@ packages:
   is-property@1.0.2:
     resolution: {integrity: sha512-Ks/IoX00TtClbGQr4TWXemAnktAQvYB7HzcCxDGqEZU6oCmb2INHuOoKxbtR+HFkmYWBKv/dOZtGRiAjDhj92g==}
 
-  is-unsafe@2.0.2:
-    resolution: {integrity: sha512-HgbIHPBH0KHHCcjLfGsCvhtPTVxjaAZlXjwdz7/GQC40SjSe4sfQsar8J5VFo8JOSbarkpV0OLG95bbaNd9aAQ==}
+  is-unsafe@2.0.3:
+    resolution: {integrity: sha512-ZBllczCCO267vgdFb6Tq3pv+LhHaCiGMdr+ZsuL+OopruAg7S+3ZDs1vD0RPC0uSrkjzbraxaGjtX1YBxjPeFQ==}
 
   isarray@1.0.0:
     resolution: {integrity: sha512-VLghIWNM6ELQzo7zwmcg0NmTVyWKYjvIeM83yjp0wRDTmUnrM678fQbcKBo6n2CJEF0szoG//ytg+TKla89ALQ==}
@@ -5387,6 +5508,10 @@ packages:
     resolution: {integrity: sha512-FP+p8RB8OWpF3YZBCrP5gtADmtXApB5AMLn+vdyA+PyxCjrCs00mjyUozssO33cwDeT3wNGdLxJ5M//YqtHAJw==}
     hasBin: true
 
+  mp4-muxer@5.2.2:
+    resolution: {integrity: sha512-dhozjTywI0h2qFzeShagt8YYw811fh1XlwiDCE2f6Aeqf6xG2CyuShoSa5E0AZDO8pPF0JOZ3wOmWBNWIGdSpQ==}
+    deprecated: This library is superseded by Mediabunny. Please migrate to it.
+
   ms@2.1.3:
     resolution: {integrity: sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==}
 
@@ -5432,8 +5557,8 @@ packages:
   node-api-version@0.2.1:
     resolution: {integrity: sha512-2xP/IGGMmmSQpI1+O/k72jF/ykvZ89JeuKX3TLJAYPDVLUalrshrLHkeVcCCZqG/eEa635cr8IBYzgnDvM2O8Q==}
 
-  node-forge@1.4.2:
-    resolution: {integrity: sha512-rRtAR5XLJ8gCKd9du4qrKAsgCG1ObGP4gLeNJMa4vYSeq4bmBMOJk5IHkrviBV0q7uoAJlVd8HEQYQSVUb4FGQ==}
+  node-forge@1.4.3:
+    resolution: {integrity: sha512-P6wzfh6t70avmV8FrVEAd/36sOPJQ+hkaJVX1Laap9J/77m7M0eyozDvc8SwnDf4P7MP94gwbAAo0rg3YVXT+g==}
     engines: {node: '>= 6.13.0'}
 
   node-gyp@12.4.0:
@@ -7908,6 +8033,8 @@ snapshots:
 
   '@radix-ui/rect@1.1.3': {}
 
+  '@rhwp/core@0.8.7': {}
+
   '@rolldown/pluginutils@1.0.0-beta.38': {}
 
   '@rolldown/pluginutils@1.0.0-rc.3': {}
@@ -8373,6 +8500,8 @@ snapshots:
 
   '@types/deep-eql@4.0.2': {}
 
+  '@types/dom-webcodecs@0.1.19': {}
+
   '@types/esrecurse@4.3.1': {}
 
   '@types/estree@1.0.10': {}
@@ -8472,6 +8601,8 @@ snapshots:
   '@types/use-sync-external-store@0.0.6': {}
 
   '@types/webxr@0.5.24': {}
+
+  '@types/wicg-file-system-access@2020.9.8': {}
 
   '@typescript-eslint/eslint-plugin@8.72.1(@typescript-eslint/parser@8.72.1(eslint@10.14.0(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3))(eslint@10.14.0(jiti@2.7.0)(supports-color@8.1.1))(supports-color@8.1.1)(typescript@5.9.3)':
     dependencies:
@@ -10478,16 +10609,16 @@ snapshots:
 
   fast-uri@3.1.9: {}
 
-  fast-xml-builder@1.3.1:
+  fast-xml-builder@1.3.2:
     dependencies:
       path-expression-matcher: 1.6.2
       xml-naming: 0.3.0
 
-  fast-xml-parser@5.11.2:
+  fast-xml-parser@5.12.1:
     dependencies:
       '@nodable/entities': 3.1.0
-      fast-xml-builder: 1.3.1
-      is-unsafe: 2.0.2
+      fast-xml-builder: 1.3.2
+      is-unsafe: 2.0.3
       path-expression-matcher: 1.6.2
       strnum: 2.5.1
       xml-naming: 0.3.0
@@ -10833,7 +10964,7 @@ snapshots:
 
   is-property@1.0.2: {}
 
-  is-unsafe@2.0.2: {}
+  is-unsafe@2.0.3: {}
 
   isarray@1.0.0: {}
 
@@ -11130,6 +11261,11 @@ snapshots:
     dependencies:
       minimist: 1.2.8
 
+  mp4-muxer@5.2.2:
+    dependencies:
+      '@types/dom-webcodecs': 0.1.19
+      '@types/wicg-file-system-access': 2020.9.8
+
   ms@2.1.3: {}
 
   mysql2@3.24.6(@types/node@24.19.2):
@@ -11169,7 +11305,7 @@ snapshots:
     dependencies:
       semver: 7.7.4
 
-  node-forge@1.4.2: {}
+  node-forge@1.4.3: {}
 
   node-gyp@12.4.0:
     dependencies:

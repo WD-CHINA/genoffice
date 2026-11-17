@@ -161,6 +161,9 @@ function buildChartNodeTitled(
   metrics: FontMetricsProvider,
   media?: MediaResolver,
 ): ChartRenderNode | null {
+  // Seriesless chart: PowerPoint exports a blank frame — no plot, not even the title
+  // (probe: title-only <c:barChart> with no <c:ser>); chartSpace fill/border still apply
+  if (!model.series.length) return emptyChartNode(id, sourceId, box)
   if (!model.title) {
     const node = buildChartNodeInner(id, sourceId, model, box, vp, metrics, media)
     if (node) extrudeBars(node, model)
@@ -3822,8 +3825,9 @@ function addSeriesLegend(
 
 /** #RRGGBB(AA) → rgba() string (semi-transparent fill for filled radar charts). */
 function withAlpha(hex: string, alpha: number): string {
-  const m = /^#([0-9a-fA-F]{6})/.exec(hex)
-  if (!m) return hex
+  const t = (hex ?? '').trim()
+  const m = /^#([0-9a-fA-F]{6})/.exec(t)
+  if (!m) return t
   const v = parseInt(m[1]!, 16)
   return `rgba(${(v >> 16) & 255}, ${(v >> 8) & 255}, ${v & 255}, ${alpha})`
 }

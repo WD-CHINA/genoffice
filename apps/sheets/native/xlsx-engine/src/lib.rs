@@ -21,12 +21,16 @@ pub mod find;
 pub mod odf;
 pub mod protocol;
 pub mod recalc;
+mod rels_normalize;
 mod richdata;
 mod shared_formulas;
 pub mod spreadsheetml;
+pub mod stream_patch;
 mod visuals;
 
 mod cell_images;
+mod escher;
+mod external_links;
 mod refs;
 mod sparklines;
 mod table_styles;
@@ -35,6 +39,8 @@ mod tests;
 mod types;
 mod workbook;
 mod worksheet;
+mod xls_biff;
+mod xls_styles;
 mod xlsx_package;
 mod xml_util;
 
@@ -356,7 +362,11 @@ impl WorkbookSessions {
                     })
                 })
                 .collect();
-            let sparklines = read_sheet_sparklines(&mut archive, &worksheet_path)?;
+            let worksheet_without_cells =
+                visuals::read_worksheet_without_cells(&mut archive, &worksheet_path)?;
+            let sparklines = read_sheet_sparklines(&worksheet_without_cells)?;
+            let ole_objects =
+                visuals::read_ole_objects(&mut archive, &worksheet_without_cells, &worksheet_path)?;
             let cell_images = read_sheet_cell_images(
                 &mut archive,
                 &worksheet_path,
@@ -449,6 +459,7 @@ impl WorkbookSessions {
             visual_sources.push(SheetVisualSource {
                 sheet_id: id,
                 worksheet_path: worksheet_path.clone(),
+                ole_objects,
             });
             runtimes.push(SheetRuntime::new(worksheet_path));
         }

@@ -137,6 +137,9 @@ try {
           assert.deepEqual(dimensions[1], dimensions[0], 'bad page keeps prior good geometry')
       }
       if (scenario.allBad) {
+        // Unvisited pages are probed lazily; inspect the last page before
+        // asserting the final whole-document failure count.
+        await frame.getByLabel('PDF 页码').selectOption('3', { force: true })
         await expect(frame.locator('.viewer-pdf-failed-page')).toHaveCount(3)
         await expect(frame.locator('.viewer-warning')).toContainText('均无法加载')
         await expect(frame.locator('.pdf-page-content canvas')).toHaveCount(0)

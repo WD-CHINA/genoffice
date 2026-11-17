@@ -17,7 +17,32 @@ export interface PageProbeResult {
   failures: PageProbeFailure[]
 }
 
-const FALLBACK: PageGeometry = { width: 595, height: 842, rotate: 0, origin: [0, 0], userUnit: 1 }
+export const FALLBACK_PAGE_GEOMETRY: PageGeometry = {
+  width: 595,
+  height: 842,
+  rotate: 0,
+  origin: [0, 0],
+  userUnit: 1,
+}
+
+type GeometryDocument = Parameters<typeof probePageGeometry>[0]
+
+/** Read only the requested page, retaining original page numbers in failures. */
+export async function probeOnePage(
+  doc: GeometryDocument,
+  pageNo: number,
+  fallback: PageGeometry = FALLBACK_PAGE_GEOMETRY,
+  cancelled: () => boolean = () => false,
+): Promise<{ geometry: PageGeometry; failure?: PageProbeFailure } | null> {
+  const result = await probePageGeometry(
+    { numPages: 1, getPage: () => doc.getPage(pageNo) },
+    cancelled,
+  )
+  if (!result.pages.length) return null
+  return result.failures.length
+    ? { geometry: fallback, failure: { ...result.failures[0]!, page: pageNo } }
+    : { geometry: result.pages[0]! }
+}
 
 /**
  * Probes every page's geometry (size, rotation, origin, userUnit) in document
@@ -42,7 +67,7 @@ export async function probePageGeometry(
 ): Promise<PageProbeResult> {
   const pages: PageGeometry[] = []
   const failures: PageProbeFailure[] = []
-  let lastGood = FALLBACK
+  let lastGood = FALLBACK_PAGE_GEOMETRY
   for (let i = 1; i <= doc.numPages; i++) {
     if (cancelled()) break
     try {

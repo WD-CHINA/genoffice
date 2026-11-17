@@ -31,3 +31,39 @@ export function pdfPageFixture(damaged = false, label = 'PDF_ISOLATION') {
   pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`
   return Buffer.from(pdf)
 }
+
+/** Large annotated PDF with compact page dictionaries and widely spaced content. */
+export function largePdfFixture(pages = 240, paddingBytes = 64 * 1024) {
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    `<< /Type /Pages /Kids [${Array.from({ length: pages }, (_, n) => `${4 + n} 0 R`).join(' ')}] /Count ${pages} >>`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ]
+  for (let n = 0; n < pages; n++) {
+    const streamNo = 4 + pages + n * 2
+    const landscape = n % 7 === 6
+    objects.push(
+      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${landscape ? '700 400' : '300 500'}] /Resources << /Font << /F1 3 0 R >> >> /Contents ${streamNo} 0 R /Annots [${streamNo + 1} 0 R] >>`,
+    )
+  }
+  for (let n = 0; n < pages; n++) {
+    const body = `BT /F1 20 Tf 20 350 Td (LARGE_PDF_PAGE_${n + 1}) Tj ET\n%${'x'.repeat(paddingBytes)}\n`
+    objects.push(
+      `<< /Length ${body.length} >>\nstream\n${body}endstream`,
+      '<< /Type /Annot /Subtype /Text /Rect [20 20 40 40] /Contents (A saved note) >>',
+    )
+  }
+  const parts = ['%PDF-1.4\n']
+  const offsets: number[] = []
+  let offset = parts[0]!.length
+  objects.forEach((object, n) => {
+    offsets.push(offset)
+    const part = `${n + 1} 0 obj\n${object}\nendobj\n`
+    parts.push(part)
+    offset += Buffer.byteLength(part)
+  })
+  parts.push(
+    `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((n) => `${String(n).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${offset}\n%%EOF`,
+  )
+  return Buffer.from(parts.join(''))
+}

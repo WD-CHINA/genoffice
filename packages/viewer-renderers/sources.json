@@ -161,7 +161,9 @@
     "apps/pdf/src/renderer/PdfThumb.tsx (read-only raster component)",
     "apps/pdf/src/renderer/edit-state.ts (saved annotation model/constants)",
     "apps/slides/src/renderer/components/SlideShowView.tsx (hitLink)",
-    "packages/ui/src/find-text.ts (original literal matcher)"
+    "packages/ui/src/find-text.ts (original literal matcher)",
+    "apps/pdf/src/renderer/form-catalog.ts (pageFormWidgets extracted from original per-page catalog logic)",
+    "apps/pdf/src/renderer/PdfThumb.tsx (releaseCanvasPixels logic extracted as releasePdfCanvas)"
   ],
   "sourceTag": "v0.13.18",
   "adaptations": [
@@ -169,6 +171,7 @@
     "Desktop font-rule entry points are mapped to private modules; missing-theme SC fallback is recognized.",
     "PPT canvas kerning is installed in Viewer; browser width feedback separates kerning modes.",
     "Remote metafile limits, retry, decode concurrency and image release are retained.",
-    "PDF page probing supports cancellation; auxiliary scans and link overlays tolerate page errors, and bitmap rendering reports page-local failures."
+    "PDF page probing supports cancellation; auxiliary scans and link overlays tolerate page errors, and bitmap rendering reports page-local failures.",
+    "Viewer probes geometry and reads forms on demand; page rendering uses a bounded queue, configurable pixel limits and explicit canvas/text/page cleanup."
   ]
 }

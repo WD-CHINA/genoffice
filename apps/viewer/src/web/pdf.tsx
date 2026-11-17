@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState, useCallback } from 'react'
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react'
 import { ToolbarIcon } from './toolbar-icon'
 import { ViewerBar } from './viewer-bar'
 import {
@@ -17,9 +17,20 @@ import { PdfPage, useVisibleSet } from '@genoffice/viewer-renderers/pdf/renderer
 import { PdfThumb } from '@genoffice/viewer-renderers/pdf/renderer/PdfThumb'
 import { FormLayer } from '@genoffice/viewer-renderers/pdf/renderer/FormLayer'
 import { LinkLayer } from '@genoffice/viewer-renderers/pdf/renderer/LinkLayer'
-import { buildFormCatalog } from '@genoffice/viewer-renderers/pdf/renderer/form-catalog'
 import {
-  probePageGeometry,
+  pageFormWidgets,
+  type FormWidget,
+} from '@genoffice/viewer-renderers/pdf/renderer/form-catalog'
+import {
+  PDF_LOAD_OPTIONS,
+  PDF_PAGE_PIXELS,
+  residentPdfPages,
+  viewerPageGeometry,
+} from './pdf-runtime'
+import {
+  probeOnePage,
+  FALLBACK_PAGE_GEOMETRY,
+  type PageGeometry,
   type PageProbeFailure,
 } from '@genoffice/viewer-renderers/pdf/renderer/page-probe'
 import {
@@ -64,8 +75,9 @@ const labels: Record<string, string> = {
 }
 export function Pdf({ src }: { src: string }) {
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null),
-    [catalog, setCatalog] = useState<any>(null),
+    [catalog, setCatalog] = useState(new Map<number, FormWidget[]>()),
     [geoms, setGeoms] = useState<any[]>([]),
+    [geometryReady, setGeometryReady] = useState(new Set<number>()),
     [scale, setScale] = useState(1),
     [rotation, setRotation] = useState(0),
     [error, setError] = useState(''),
@@ -86,7 +98,7 @@ export function Pdf({ src }: { src: string }) {
   const scroll = useRef<HTMLDivElement>(null),
     thumbScroll = useRef<HTMLDivElement>(null),
     index = useRef<Promise<any> | null>(null),
-    loadingNotes = useRef(new Set<number>()),
+    geometryReader = useRef<((page: number) => Promise<void>) | null>(null),
     activeDocument = useRef<PDFDocumentProxy | null>(null),
     unreadablePages = useRef(new Set<number>())
   const visible = useVisibleSet(scroll, doc?.numPages || 0, '800px', !!doc)
@@ -96,6 +108,26 @@ export function Pdf({ src }: { src: string }) {
     '200px',
     !!doc && sidebar === 'thumbs',
   )
+  const residentKey = [
+    ...residentPdfPages(visible.visible, current - 1, (page) => {
+      const geom = geoms[page]
+      return geom
+        ? geom.pw * geom.ph * scale * scale * Math.min(window.devicePixelRatio || 1, 2) ** 2
+        : PDF_PAGE_PIXELS
+    }),
+  ].join(',')
+  const resident = useMemo(() => new Set(residentKey.split(',').map(Number)), [residentKey])
+  const currentRef = useRef(current)
+  currentRef.current = current
+  const geometryAnchor = useRef<{ page: number; top: number } | null>(null)
+  useLayoutEffect(() => {
+    const anchor = geometryAnchor.current
+    geometryAnchor.current = null
+    const element = scroll.current
+    const page = element?.querySelector<HTMLElement>(`[data-idx="${anchor?.page}"]`)
+    if (anchor && page && element)
+      element.scrollTop += page.getBoundingClientRect().top - anchor.top
+  }, [geoms])
   const renderState = useCallback(noop, [])
   const renderError = useCallback((document: PDFDocumentProxy, page: number, cause: unknown) => {
     if (activeDocument.current !== document) return
@@ -127,11 +159,13 @@ export function Pdf({ src }: { src: string }) {
     activeDocument.current = null
     unreadablePages.current = new Set()
     index.current = null
-    loadingNotes.current = new Set()
+    geometryReader.current = null
+    geometryAnchor.current = null
     fitAnchor.current = null
     setDoc(null)
     setGeoms([])
-    setCatalog(null)
+    setGeometryReady(new Set())
+    setCatalog(new Map())
     setInfo(null)
     setOutline([])
     setGenerated(false)
@@ -146,8 +180,9 @@ export function Pdf({ src }: { src: string }) {
     setRotation(0)
     setShowInfo(false)
     if (scroll.current) scroll.current.scrollTop = 0
-    const task = getDocument({ url: src, ...DOC_OPTS })
+    const task = getDocument({ url: src, ...DOC_OPTS, ...PDF_LOAD_OPTIONS })
     task.onPassword = (update: (password: string) => void, reason: number) => {
+      if (stopped || passwordCancelled) return
       const value = window.prompt(reason === 2 ? 'PDF 密码不正确，请重试' : '请输入 PDF 打开密码')
       if (stopped) return
       if (value !== null) update(value)
@@ -162,38 +197,44 @@ export function Pdf({ src }: { src: string }) {
         const cancelled = () => stopped || activeDocument.current !== document
         if (stopped) return
         activeDocument.current = document
-        const probe = await probePageGeometry(document, cancelled)
-        if (cancelled()) return
-        unreadablePages.current = new Set(probe.failures.map((failure) => failure.page))
-        setPageFailures(new Map(probe.failures.map((failure) => [failure.page, failure])))
+        // Only page one gates first paint. All other dimensions remain cheap
+        // placeholders until the reader approaches that page.
+        const first = await probeOnePage(document, 1, FALLBACK_PAGE_GEOMETRY, cancelled)
+        if (!first || cancelled()) return
+        if (first.failure) renderError(document, 1, first.failure.message)
+        const known = new Map<number, PageGeometry>([[1, first.geometry]])
+        const pending = new Map<number, Promise<void>>()
         setGeoms(
-          probe.pages.map((page) => ({
-            pw: page.width,
-            ph: page.height,
-            rot: page.rotate,
-            x0: page.origin[0],
-            y0: page.origin[1],
-            userUnit: page.userUnit,
-          })),
+          Array.from({ length: document.numPages }, () => viewerPageGeometry(first.geometry)),
         )
-        // Publish readable pages before optional scans. Metadata, annotations and
-        // bookmarks have independent failure boundaries and cannot hide the bitmap.
+        setGeometryReady(new Set([1]))
+        geometryReader.current = (pageNo) => {
+          if (known.has(pageNo) || cancelled()) return Promise.resolve()
+          const prior = pending.get(pageNo)
+          if (prior) return prior
+          const read = (async () => {
+            const fallback = known.get(pageNo - 1) || first.geometry
+            const result = await probeOnePage(document, pageNo, fallback, cancelled)
+            if (!result || cancelled()) return
+            known.set(pageNo, result.geometry)
+            if (result.failure) renderError(document, pageNo, result.failure.message)
+            const anchorPage = currentRef.current - 1
+            const anchor = scroll.current?.querySelector<HTMLElement>(`[data-idx="${anchorPage}"]`)
+            if (anchor && !geometryAnchor.current)
+              geometryAnchor.current = { page: anchorPage, top: anchor.getBoundingClientRect().top }
+            setGeoms((old) => {
+              const next = [...old]
+              next[pageNo - 1] = viewerPageGeometry(result.geometry)
+              return next
+            })
+            setGeometryReady((old) => new Set(old).add(pageNo))
+          })().finally(() => pending.delete(pageNo))
+          pending.set(pageNo, read)
+          return read
+        }
         setDoc(document)
         const warn = (feature: string, message: string) => {
           if (!cancelled()) setWarnings((old) => ({ ...old, [feature]: message }))
-        }
-        const options = {
-          cancelled,
-          skipPage: (page: number) => unreadablePages.current.has(page),
-          onPageError: () => warn('forms', '部分页面的表单暂不可用，仍可阅读页面内容。'),
-        }
-        const forms = async () => {
-          try {
-            const value = await buildFormCatalog(document, options)
-            if (!cancelled()) setCatalog(value)
-          } catch {
-            warn('forms', '表单暂不可用，仍可阅读页面内容。')
-          }
         }
         const metadata = async () => {
           try {
@@ -203,33 +244,7 @@ export function Pdf({ src }: { src: string }) {
             warn('metadata', '文档信息暂不可用，仍可继续阅读。')
           }
         }
-        const outline = async () => {
-          let embedded: Awaited<ReturnType<PDFDocumentProxy['getOutline']>> | null = null
-          try {
-            embedded = await document.getOutline()
-          } catch {
-            warn('outline', '文档书签暂不可用，正在尝试识别标题目录。')
-          }
-          if (cancelled()) return
-          if (embedded?.length) {
-            setOutline(embedded as OutlineNode[])
-            setGenerated(false)
-            return
-          }
-          try {
-            const tree = await buildHeadingOutline(document, cancelled, {
-              ...options,
-              onPageError: () => warn('outline', '部分页面的文字无法读取，目录可能不完整。'),
-            })
-            if (!cancelled()) {
-              setOutline(tree || [])
-              setGenerated(true)
-            }
-          } catch {
-            warn('outline', '目录暂不可用，可使用页码继续阅读。')
-          }
-        }
-        await Promise.all([forms(), metadata(), outline()])
+        void metadata()
       })
       .catch((cause) => {
         if (!stopped && !passwordCancelled)
@@ -238,38 +253,85 @@ export function Pdf({ src }: { src: string }) {
     return () => {
       stopped = true
       activeDocument.current = null
+      geometryReader.current = null
       void task.destroy().catch(() => {})
     }
-  }, [src])
+  }, [src, renderError])
 
   useEffect(() => {
     if (!doc) return
-    let cancelled = false
-    const pending = loadingNotes.current
-    const inflight = new Set<number>()
-    for (const page of visible.visible) {
-      if (pending.has(page) || unreadablePages.current.has(page + 1)) continue
-      pending.add(page)
-      inflight.add(page)
-      void loadSavedAnnots(doc, page)
-        .then((value) => {
-          inflight.delete(page)
-          if (cancelled) {
-            pending.delete(page)
-            return
-          }
-          setNotes((old) => new Map(old).set(page, buildNoteThreads(value.notes, [])))
-        })
-        .catch(() => {
-          inflight.delete(page)
-          pending.delete(page)
-        })
+    let stopped = false
+    const cancelled = () => stopped || activeDocument.current !== doc
+    // Keep annotations only for the same bounded window as page bitmaps.
+    setCatalog((old) => new Map([...old].filter(([page]) => resident.has(page))))
+    setNotes((old) => new Map([...old].filter(([page]) => resident.has(page))))
+    for (const pageIndex of resident) {
+      void (async () => {
+        await geometryReader.current?.(pageIndex + 1)
+        if (cancelled() || unreadablePages.current.has(pageIndex + 1)) return
+        const page = await doc.getPage(pageIndex + 1)
+        if (cancelled()) return
+        try {
+          const annotations = await page.getAnnotations()
+          if (cancelled()) return
+          const widgets = pageFormWidgets(annotations, pageIndex)
+          setCatalog((old) => new Map(old).set(pageIndex, widgets))
+        } catch {
+          if (!cancelled())
+            setWarnings((old) => ({ ...old, forms: '部分页面的表单暂不可用，仍可阅读页面内容。' }))
+        }
+        if (cancelled()) return
+        const value = await loadSavedAnnots(doc, pageIndex)
+        if (!cancelled())
+          setNotes((old) => new Map(old).set(pageIndex, buildNoteThreads(value.notes, [])))
+      })().catch(() => {
+        /* A page failure is reported by probing or rendering. */
+      })
     }
     return () => {
-      cancelled = true
-      for (const page of inflight) pending.delete(page)
+      stopped = true
     }
-  }, [doc, visible.visible])
+  }, [doc, resident])
+
+  // Full text heading scans are opt-in; opening a document never indexes it.
+  useEffect(() => {
+    if (!doc || sidebar !== 'outline') return
+    let stopped = false
+    const cancelled = () => stopped || activeDocument.current !== doc
+    void (async () => {
+      let embedded: Awaited<ReturnType<PDFDocumentProxy['getOutline']>> | null = null
+      try {
+        embedded = await doc.getOutline()
+      } catch {
+        /* Try text headings. */
+      }
+      if (cancelled()) return
+      try {
+        const tree = embedded?.length
+          ? embedded
+          : await buildHeadingOutline(doc, cancelled, {
+              skipPage: (page) => unreadablePages.current.has(page),
+              onPageError: () => {
+                if (!cancelled())
+                  setWarnings((old) => ({
+                    ...old,
+                    outline: '部分页面的文字无法读取，目录可能不完整。',
+                  }))
+              },
+            })
+        if (!cancelled()) {
+          setOutline((tree || []) as OutlineNode[])
+          setGenerated(!embedded?.length)
+        }
+      } catch {
+        if (!cancelled())
+          setWarnings((old) => ({ ...old, outline: '目录暂不可用，可使用页码继续阅读。' }))
+      }
+    })()
+    return () => {
+      stopped = true
+    }
+  }, [doc, sidebar])
   function goPage(value: number) {
     const page = Math.max(1, Math.min(doc?.numPages || 1, value))
     scroll.current?.querySelector(`[data-idx="${page - 1}"]`)?.scrollIntoView({ block: 'start' })
@@ -582,15 +644,16 @@ export function Pdf({ src }: { src: string }) {
                         pageNo={i + 1}
                         scale={scale}
                         rotationDelta={rotation}
-                        visible={visible.visible.has(i)}
+                        visible={resident.has(i) && geometryReady.has(i + 1)}
+                        maxPixels={PDF_PAGE_PIXELS}
                         onRenderState={renderState}
                         onRenderError={renderError}
                       />
                     )}
-                    {visible.visible.has(i) && !pageFailures.has(i + 1) && (
+                    {resident.has(i) && !pageFailures.has(i + 1) && (
                       <>
                         <FormLayer
-                          widgets={catalog?.byPage.get(i) || []}
+                          widgets={catalog.get(i) || []}
                           geom={g}
                           scale={scale}
                           readOnly

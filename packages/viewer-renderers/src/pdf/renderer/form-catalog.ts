@@ -201,6 +201,29 @@ export function widgetsFromAnnotations(annots: RawFormAnnotation[], pageIndex = 
     .map(({ widget }) => widget)
 }
 
+/** Read-only page forms without scanning unrelated pages or global field objects. */
+export function pageFormWidgets(annotations: RawFormAnnotation[], pageIndex: number): FormWidget[] {
+  const pageWidgets = widgetsFromAnnotations(annotations, pageIndex)
+  const visualSignatures = annotations.filter(
+    (annotation) =>
+      (annotation.subtype === 'Ink' || annotation.subtype === 'Stamp') &&
+      annotation.rect?.length === 4,
+  )
+  for (const widget of pageWidgets) {
+    if (widget.kind !== 'signature' || widget.signed) continue
+    const explicitlyAssociated = visualSignatures.some(
+      (annotation) => visualSignatureFieldName(annotation) === widget.fieldName,
+    )
+    const legacyOverlap = visualSignatures.some(
+      (annotation) =>
+        visualSignatureFieldName(annotation) === null &&
+        rectsSubstantiallyOverlap(widget.rect, annotation.rect as number[]),
+    )
+    widget.signed = explicitlyAssociated || legacyOverlap
+  }
+  return pageWidgets
+}
+
 /** Build the whole-document catalog once so ribbon, FormLayer, and AI share field semantics. */
 export async function buildFormCatalog(
   doc: PDFDocumentProxy,
@@ -218,24 +241,7 @@ export async function buildFormCatalog(
       (page) => page.getAnnotations(),
       options,
     )) ?? []) as RawFormAnnotation[]
-    const pageWidgets = widgetsFromAnnotations(annotations, pageIndex)
-    const visualSignatures = annotations.filter(
-      (annotation) =>
-        (annotation.subtype === 'Ink' || annotation.subtype === 'Stamp') &&
-        annotation.rect?.length === 4,
-    )
-    for (const widget of pageWidgets) {
-      if (widget.kind !== 'signature' || widget.signed) continue
-      const explicitlyAssociated = visualSignatures.some(
-        (annotation) => visualSignatureFieldName(annotation) === widget.fieldName,
-      )
-      const legacyOverlap = visualSignatures.some(
-        (annotation) =>
-          visualSignatureFieldName(annotation) === null &&
-          rectsSubstantiallyOverlap(widget.rect, annotation.rect as number[]),
-      )
-      widget.signed = explicitlyAssociated || legacyOverlap
-    }
+    const pageWidgets = pageFormWidgets(annotations, pageIndex)
     byPage.set(pageIndex, pageWidgets)
     widgets.push(...pageWidgets)
 

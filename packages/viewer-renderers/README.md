@@ -27,3 +27,12 @@ editing existing consumers. Full visual acceptance remains in the Viewer plan.
 The current upstream baseline is `v0.13.18`. New font-rule, table-layout and
 pagination modules are included with their transitive resources. Viewer-specific
 changes remain explicit adapters; see `docs/upstream-v0.13.18-migration.zh-CN.md`.
+
+PDF geometry and read-only forms are loaded per requested page. The Viewer uses
+an adaptive resident pixel budget, a two-task render queue, and explicit canvas,
+text-layer and page cleanup. Full-text outline generation is opt-in. These are
+private Viewer adaptations, covered by `test:pdf-isolation` and `test:pdf-runtime`.
+
+Project policy: port suitable main-application implementations first; add private
+logic only for missing or incompatible behavior. Record the source and concrete
+adaptation reason; see `docs/viewer-porting-rules.zh-CN.md`.

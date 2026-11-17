@@ -2,6 +2,7 @@ package com.genoffice.viewerdemo;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.Configuration;
@@ -17,6 +18,7 @@ import android.view.ViewGroup;
 import android.webkit.ConsoleMessage;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.JsPromptResult;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -61,6 +63,7 @@ public class MainActivity extends Activity {
     private Button onlineButton;
     private View fullscreen;
     private WebChromeClient.CustomViewCallback fullscreenCallback;
+    private AlertDialog passwordDialog;
     private int previousUi;
     private EditText serverInput;
     private EditText fileInput;
@@ -560,6 +563,21 @@ public class MainActivity extends Activity {
             }
         });
         view.setWebChromeClient(new WebChromeClient() {
+            @Override public boolean onJsPrompt(WebView v, String url, String message,
+                                                String defaultValue, JsPromptResult result) {
+                if (!"请输入 Word 打开密码".equals(message)) return false;
+                EditText password = new EditText(MainActivity.this);
+                password.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
+                password.setSingleLine(true);
+                if (passwordDialog != null) passwordDialog.cancel();
+                passwordDialog = new AlertDialog.Builder(MainActivity.this).setTitle(message).setView(password)
+                        .setPositiveButton("打开", (dialog, which) -> result.confirm(password.getText().toString()))
+                        .setNegativeButton("取消", (dialog, which) -> result.cancel())
+                        .setOnCancelListener(dialog -> result.cancel()).create();
+                passwordDialog.setOnDismissListener(dialog -> { password.setText(""); passwordDialog = null; });
+                passwordDialog.show();
+                return true;
+            }
             @Override public void onShowCustomView(View custom, CustomViewCallback callback) {
                 if (fullscreen != null) { callback.onCustomViewHidden(); return; }
                 fullscreen = custom; fullscreenCallback = callback;
@@ -643,6 +661,7 @@ public class MainActivity extends Activity {
     }
 
     private void closeViewer() {
+        if (passwordDialog != null) passwordDialog.cancel();
         hideFullscreen();
         if (webView != null) {
             if (webView.getParent() instanceof ViewGroup) ((ViewGroup) webView.getParent()).removeView(webView);

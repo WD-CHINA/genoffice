@@ -29,6 +29,7 @@
     "@genoffice/pptx-render": "*",
     "@genoffice/zip-gate": "*",
     "@genoffice/zip-reader": "*",
+    "@genoffice/viewer-services": "*",
     "mysql2": "^3.24.6",
     "tsx": "^4.21.0"
   },

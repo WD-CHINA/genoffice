@@ -3,6 +3,7 @@ import { Editor } from '@tiptap/core'
 import { waitForDocxImages } from './docx-image-ready'
 import { waitForDocxLayout } from './docx-layout-ready'
 import { docxSectionTypography } from './docx-style-context'
+import { docxReadingPageVars } from './docx-reading-page'
 import type { SectionSettings } from '@genoffice/docx-engine'
 import { viewerEditorOptions } from '@genoffice/viewer-renderers/docs/renderer/viewer-extensions'
 import {
@@ -28,7 +29,11 @@ export async function measureBlockHeights(
   const host = document.createElement('div')
   host.className = 'viewer-doc-remote viewer-doc-reading viewer-doc-remote-measure'
   host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;height:auto;display:block;visibility:hidden;pointer-events:none`
-  for (const [key, value] of Object.entries(docxSectionTypography(settings))) host.style.setProperty(key, value)
+  for (const [key, value] of Object.entries({
+    ...docxReadingPageVars(settings),
+    ...docxSectionTypography(settings),
+  }))
+    host.style.setProperty(key, value)
   document.body.appendChild(host)
   const editor = new Editor({
     element: host,
@@ -53,9 +58,13 @@ export async function measureBlockHeights(
       void editor.view.dom.offsetHeight
       await waitForDocxLayout(document.fonts.ready, signal)
       await waitForDocxImages(editor.view.dom.querySelectorAll('img'), signal)
-      const elements = chunk.map((block) => block.docxIndex == null ? null : editor.view.dom.querySelector<HTMLElement>(
-        `[data-idx="${CSS.escape(String(block.docxIndex))}"]`,
-      ))
+      const elements = chunk.map((block) =>
+        block.docxIndex == null
+          ? null
+          : editor.view.dom.querySelector<HTMLElement>(
+              `[data-idx="${CSS.escape(String(block.docxIndex))}"]`,
+            ),
+      )
       for (const [index, block] of chunk.entries()) {
         if (block.docxIndex == null) continue
         const element = elements[index]
@@ -65,7 +74,10 @@ export async function measureBlockHeights(
           // Include actual paragraph spacing, which is outside its border box.
           // The probe must use the same column width and CSS scope as the page.
           const margin = Number.parseFloat(getComputedStyle(element).marginBottom) || 0
-          const height = Math.max(bounds.height, next ? next.top - bounds.top : bounds.height + margin)
+          const height = Math.max(
+            bounds.height,
+            next ? next.top - bounds.top : bounds.height + margin,
+          )
           heights.set(block.docxIndex, height)
           if (geometries && (block.type === 'paragraph' || block.type === 'listItem'))
             geometries.set(block.docxIndex, measureBlockGeometry(element, height))

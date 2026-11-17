@@ -9,6 +9,7 @@ import { fetchCapabilities } from './capabilities'
 import { FORMAT_POLICY, decideRoute, precheckLocalFile } from './format-policy'
 import { readResponseLimited } from './fetch-limited'
 import { pptxHasMedia } from './pptx-media-policy'
+import { uploadFile } from './upload-file'
 import '@genoffice/ui/tokens.css'
 import './viewer.css'
 
@@ -174,25 +175,7 @@ function Host() {
       let remote: RemoteTarget | undefined
       if (resolvedMode === 'server') {
         if (!serverUrl) throw new Error('没有配置解析服务地址（?server=http://…）')
-        const auth: Record<string, string> = serverToken
-          ? { Authorization: `Bearer ${serverToken}` }
-          : {}
-        const response = await fetch(`${serverUrl}/v1/files`, {
-          method: 'POST',
-          body: file,
-          headers: auth,
-        })
-        if (!response.ok) {
-          let detail = `HTTP ${response.status}`
-          try {
-            const body = (await response.json()) as { message?: string }
-            detail = body.message || detail
-          } catch {
-            /* non-JSON error body */
-          }
-          throw new Error(`上传到解析服务失败：${detail}`)
-        }
-        const uploaded = (await response.json()) as { fileId: string }
+        const uploaded = await uploadFile(serverUrl, file, format, serverToken)
         remote = { server: serverUrl, fileId: uploaded.fileId, token: serverToken || undefined }
       }
       if (currentUrl.current) URL.revokeObjectURL(currentUrl.current)

@@ -1,5 +1,6 @@
 import type { RunStyle } from '@genoffice/pptx-render'
 import { fontName, fontVariants, fallbackFamilies } from './font-selection'
+import { createScriptFallback } from '@genoffice/viewer-services/slides/shared/script-fallback'
 
 export interface AvailableFont {
   id: string
@@ -18,6 +19,13 @@ export function createFontDemand(fonts: AvailableFont[], unavailable = new Set<s
       byName.set(fontKey, [...(byName.get(fontKey) || []), font])
     }
   const wanted = new Set<string>()
+  // Discovery knows availability, not glyphs. Request the main package's possible
+  // script fallback as well; actual selection checks loaded glyph coverage.
+  const scriptFallback = createScriptFallback((style) =>
+    byName.get(fontName(style.fontFamily))?.some((face) => !unavailable.has(face.id))
+      ? { font: { charToGlyphIndex: () => 1 }, substituted: false }
+      : undefined,
+  )
   const add = (name: string, style: RunStyle) => {
     const candidates = (byName.get(fontName(name)) ?? []).filter(
       (face) => !unavailable.has(face.id),
@@ -28,6 +36,8 @@ export function createFontDemand(fonts: AvailableFont[], unavailable = new Set<s
     request(style: RunStyle, text = '') {
       add(style.fontFamily, style)
       add('Carlito', style)
+      const preferred = scriptFallback(text, undefined, style)
+      if (preferred) add(preferred, style)
       for (const family of fallbackFamilies(style, text)) add(family, style)
     },
     ids: () => wanted,

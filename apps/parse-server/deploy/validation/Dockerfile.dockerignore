@@ -4,6 +4,10 @@
 !apps/
 !apps/parse-server/
 !apps/parse-server/**
+!apps/docs/
+!apps/docs/tests/
+!apps/docs/tests/encrypted-fixtures/
+!apps/docs/tests/encrypted-fixtures/**
 !packages/
 !packages/pptx-engine/
 !packages/pptx-engine/**
@@ -11,6 +15,10 @@
 !packages/pptx-render/**
 !packages/docx-engine/
 !packages/docx-engine/**
+!packages/font-metrics/
+!packages/font-metrics/**
+!packages/viewer-services/
+!packages/viewer-services/**
 !packages/parse-contract/
 !packages/parse-contract/**
 !packages/zip-reader/

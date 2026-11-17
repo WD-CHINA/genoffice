@@ -1,5 +1,36 @@
 # 三端测试、精简映射与验收指南
 
+## 2026-11-17 阅读纸层最小页高补齐
+
+修复前 Viewer 纸层的 `min-height: 0` 会让短文档缩至正文高度，未对齐 Electron。现复用主包 `.doc-page` 的 `min-height: var(--page-h, 1056px)` 到单个阅读纸层，内部虚拟单元仍不重复撑高。`01_Word_明文对照.docx` 在 Electron、Web 本地/HTTP 服务端及 Android 在线/离线均实测纸高 1122.53125px（文档声明约 1122.53 CSS px），原 Viewer 约 562.64px。长表格回归确认内容仍可自然撑高；连续阅读与有界加载保留。
+
+本轮 Viewer 179 项单元、生产本地 7 项/服务端 13 项回归、Android 在线与权威离线包页高检查通过；两端类型检查、改动 JS/TS ESLint、格式和 diff 检查通过。Web 发布物与 Android APK 重建安装，Electron 未修改。最新对比 JSON、截图及实机记录位于测试课件目录 `GenOffice移植验证Demo-20261117/Word页高修复`。本轮未部署生产环境。
+
+## 2026-11-17 独立上传页密码与 Word 查看留白
+
+针对 `01_Word_明文对照.docx` 实际启动 Electron 阅读视图，以 DOM 计算值和截图核对：纸宽约 793.73px，正文边距 75.6px。修复 Viewer 页面 CSS 变量缺失导致的页角默认尺寸错位、远程查看重复文件名的额外 29px 空间；正文继续采用单个纸层 padding，不给虚拟单元重复添加。隐藏正文/表格测量同步页面几何。连续阅读与有界加载保留，Electron 未修改。
+
+独立 `upload.html` 接入与预览首页相同的密码重试适配，XHR 保留进度。生产构建 `test:porting` 本地 7 项、HTTP 服务端 13 项（含独立上传页 6 项）通过；Viewer 179 项单元及服务端 5 项相关 HTTP 回归通过，历史资源 `test:library`、长表格和多节文档回归通过。类型检查、改动 TS/JS ESLint、格式和 diff 检查通过。
+
+Android 最新 APK 已构建安装。`ANDROID_UPLOAD_PAGE=1` 的原生密码回归覆盖独立上传页两种加密格式、错误重试与取消后切换明文；在线和权威离线包回归记录真实 padding/纸宽/页角位置，断开服务转发后再次验证。证据见测试课件目录 `GenOffice移植验证Demo-20261117/Word查看与上传修复`；其中保留 Electron 实际截图和修复前后几何 JSON。本轮为本地隔离服务验证，未部署生产；上线需同步更新上传 HTML 与对应 JS 资源。
+
+## 2026-11-17 加密 Word / TIFF / SVG 三端入口修复
+
+以 Electron 共享 OOXML 解密、TIFF 校验与解码、SVG 主题重着色为基准；Electron 源码未修改。四端逐项来源、差异及宿主边界见 [移植规则](viewer-porting-rules.zh-CN.md#2026-11-17-实际三端入口补齐)，密码上传协议见 [API v1](api-v1.zh-CN.md#加密-word-上传)。
+
+| 验证                     | 本次结果                                                                                              |
+| ------------------------ | ----------------------------------------------------------------------------------------------------- |
+| Viewer 单元与来源守卫    | 179 项通过，无跳过；含真实 Agile / Standard、UTF-8 密码、旧服务与鉴权错误处理                         |
+| parse-server 常规套件    | 486 项通过；91 项依赖 MySQL 等环境的集成测试跳过，未计为通过                                          |
+| Web 生产构建             | 本地、真实 HTTP 服务端两种 `test:porting` 模式各 7 项通过；9 份 Demo 共 12 个文件/页面检查通过        |
+| HTTP 服务端              | 两种 Word 解密逐字节等于明文，错误密码、临时文件清理通过；布局模型和服务端渲染树使用解码/重着色资源   |
+| Android 构建与密码 UI    | 最新 APK 构建安装成功；两种加密 Word 的原生密码输入、错误重试、取消后切换明文均通过                   |
+| Android PPT 在线 / 离线  | TIFF 单图/多图/非法首图/超限、绿色和紫色 SVG 共 12 个页面检查通过；离线清单校验及服务连接不可达均验证 |
+| Android Word 在线 / 离线 | 解密副本在线显示及权威离线包断开服务连接后重放通过                                                    |
+| 静态检查                 | Viewer / parse-server 类型检查、改动 TS/JS ESLint、格式和 diff 检查通过                               |
+
+Demo 及修复后截图/报告位于 `/Users/dddd/Downloads/测试课件/GenOffice移植验证Demo-20261117`；可复验脚本在仓库，生成结果不提交业务样本。测试使用当前工作区的隔离 HTTP 服务和 Chrome / Android 真机，不表示已经部署生产服务。Docker daemon 本次不可用，容器构建及 MySQL 等外部集成未验证；已补齐镜像依赖、私有包清单/链接及验证镜像测试资源。离线不可达验证移除的是本次 USB 服务映射，没有关闭设备全部网络。
+
 更新日期：2026-11-12。范围为 `apps/viewer`、`apps/parse-server`、Android Demo 及其测试/演练辅助代码；共享解析与契约包仅检查依赖与覆盖关系，不删减其测试；共享渲染包另包含一处已复现的视频单击双重切换修复。
 
 功能与交互见[架构主文档](runtime-workflows.zh-CN.md)，产品与验收边界见[运行边界](runtime-boundaries.zh-CN.md)。本文记录本轮实际结果，保留失败与复验记录，不能用历史报告替代。
@@ -300,3 +331,15 @@ Viewer 打开时只等待第一页尺寸，其他页面按阅读位置探测，�
 加密回归使用既有 qpdf/LibreOffice/pypdf 样本及测试生成的 R6 文件，经真实 PDF.js 和 Viewer 打开，覆盖 RC4、AES-128、AES-256、用户密码、所有者密码、空用户密码、错密后重试、首次取消、错密后取消和取消后重新打开，共 13 个场景。生成器只用于测试，未进入 Viewer 生产包；测试密码不写入生产存储。内置浏览器仍连接超时，本轮使用本机 Chrome，未重跑 Android 实机。
 
 最终检查：Viewer 163 项单元测试、9 个单页失败隔离场景、上述运行时与加密场景、三格式浅色/深色和移动尺寸 UI 回归、类型检查、ESLint、格式及独立包构建均通过。对照数据保存在证据目录的 `comparison-846bb46e.json`，最终运行时验证为 `report.json`；本轮临时开发服务已关闭。
+
+## 2026-11-17 五项移植整改回归
+
+本轮按 [项目移植规则](viewer-porting-rules.zh-CN.md#2026-11-17-五项移植整改) 修复 Word 加密检测、浏览器 TIFF、PPT 字体回退、SVG 主题重着色和来源登记。优先移植主包原模块或抽取原核心；保留 Viewer 的导出接口、只读阅读、便携字体兜底与媒体 descriptor。主包源文件未修改。
+
+新增 `test:porting` 默认通过临时 HTTP 服务运行已打包的 `dist/web`，先执行 `pnpm --filter @genoffice/viewer package`，再执行 `pnpm --filter @genoffice/viewer test:porting`。可用 `VIEWER_PORTING_URL` 指向开发服务，`VIEWER_PORTING_OUTPUT` 指定证据目录，默认为 `/tmp/genoffice-porting-regression/`。
+
+176 项 Viewer 单元测试通过，新增覆盖真实 Office Agile/Standard 文件、Uint8Array/偏移视图、错密及不支持的容器；TIFF 多 IFD、无合法页、非法整数/像素/解码后尺寸及与 Node 解码像素一致；日/韩语言提示、已有字形保留、首选字体不可用、Nyala/Arial 缺字回退；SVG 母版色映射和损坏关系回退。来源回归锁定 46 个补登记文件和原共享 OOXML 模块，并按符号/核心语句对照主包，不替换原有一致性检查。
+
+生产包浏览器回归 7 个场景通过：两种 Office 加密格式正确打开、错密重试、取消、错密后取消并打开普通文件、普通文件，以及真实 PPT 的 TIFF 图片和 SVG 主题色绘制。`report.json`、`word-*.png`、`pptx-tiff-svg.png` 保留结果。原有 PPT 字体演练通过，覆盖 30 组字体样本（含符号字体）；三格式 UI 明暗主题、320/375/768/1440px、短视口、触控及嵌入回归通过。服务端持久化重开画布为 1200×675，0 像素差异，证据 `/tmp/genoffice-porting-pixel/`；此项验证同一构建的重开一致性。
+
+Viewer 与 parse-server 类型检查、修改源码 ESLint、格式和独立包构建通过。内置浏览器连接超时，本轮使用本机 Chrome；未重跑 Android 实机。真实浏览器用例发现原解密库缺少 EventEmitter 宿主接口，最终通过 Viewer 专用 `events@3.3.0` 别名补齐，未改写解密算法。

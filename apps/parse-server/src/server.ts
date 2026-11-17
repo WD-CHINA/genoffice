@@ -3,7 +3,9 @@ import { ArtifactReadHandle } from './artifact-read-handle'
 import { StorageBudget } from './storage-budget'
 import { SqlStorageReservations } from './storage-reservations'
 import { SqlPressureLedger } from './storage-pressure'
-import { stat, statfs } from 'node:fs/promises'
+import { stat, statfs, rm } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { decryptOfficeUpload } from './office-decrypt'
 import { PendingSessionStore, type PendingSession } from './pending-session-store'
 import { artifactKey } from './artifact-store'
 import { isolatedMemory } from './isolated-worker'
@@ -422,7 +424,7 @@ function applyCors(req: IncomingMessage, res: ServerResponse, allowedOrigins: st
     res.setHeader('Vary', 'Origin')
     res.setHeader(
       'Access-Control-Allow-Headers',
-      'Authorization, Content-Type, Range, X-Request-Id, Prefer, Idempotency-Key',
+      'Authorization, Content-Type, Range, X-Request-Id, Prefer, Idempotency-Key, X-Office-Password',
     )
     res.setHeader('Access-Control-Allow-Methods', 'GET, HEAD, POST, DELETE, OPTIONS')
     res.setHeader(
@@ -2254,6 +2256,7 @@ async function handleUpload(
   }
   let upload: Awaited<ReturnType<ContentStore['writeTemp']>> | undefined
   let reply: (() => void) | undefined
+  let decryptedPath: string | undefined
   const reservation = ctx.storageBudget.reservation({ temporary: true })
   try {
     try {
@@ -2289,15 +2292,84 @@ async function handleUpload(
       throw error
     }
     if (detected === 'encrypted') {
-      await ctx.store.abort(upload)
-      reply = () =>
-        sendError(
-          res,
-          415,
-          'encrypted_document',
-          'document is password-protected (encrypted Office container); password input and decryption are not supported',
+      const encoded = req.headers['x-office-password']
+      if (encoded === undefined) {
+        reply = () =>
+          sendError(
+            res,
+            415,
+            'encrypted_document',
+            'document requires an Office password; retry with X-Office-Password (base64 UTF-8)',
+          )
+        return
+      }
+      if (
+        typeof encoded !== 'string' ||
+        encoded.length > 8192 ||
+        !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)
+      )
+        throw new HttpError(400, 'invalid_request', 'invalid Office password encoding')
+      if (upload.size > ctx.limits.maxParseBytes)
+        throw new HttpError(
+          413,
+          'parse_limit',
+          'encrypted document exceeds the in-memory decryption limit',
         )
-      return
+      decryptedPath = upload.tempPath + '.decrypted'
+      await reservation.reserve(upload.size)
+      const abort = new AbortController()
+      const disconnected = () => {
+        if (!res.writableFinished) abort.abort()
+      }
+      res.once('close', disconnected)
+      try {
+        const current = upload
+        await ctx.parseQueue.run(
+          () =>
+            decryptOfficeUpload(
+              {
+                path: current.tempPath,
+                output: decryptedPath!,
+                password: Buffer.from(encoded, 'base64').toString('utf8'),
+                maxBytes: Math.min(ctx.limits.maxParseBytes, current.size),
+              },
+              {
+                signal: abort.signal,
+                heapMb: ctx.workerMemoryMb,
+                rssMb: ctx.workerRssMb,
+                sampleMs: ctx.rssSampleMs,
+                cgroupRoot: ctx.cgroupRoot,
+                lifetimeMs: ctx.parseTimeoutMs,
+                groupId: ctx.processGroup,
+              },
+            ),
+          undefined,
+          abort.signal,
+        )
+      } catch (error) {
+        const code = (error as { code?: string }).code
+        if (code === 'wrong_password')
+          throw new HttpError(422, code, 'Office password is incorrect')
+        if (code === 'unsupported_encryption')
+          throw new HttpError(415, code, 'unsupported or damaged encrypted Office document')
+        throw error
+      } finally {
+        res.off('close', disconnected)
+      }
+      detected = await detectFormat(decryptedPath, ctx.limits)
+      if (detected !== 'docx')
+        throw new HttpError(
+          415,
+          'unsupported_format',
+          'only encrypted Word documents are supported',
+        )
+      await ctx.store.abort(upload)
+      upload = undefined
+      upload = await ctx.store.writeTemp(
+        createReadStream(decryptedPath),
+        ctx.limits.maxParseBytes,
+        reservation.reserve,
+      )
     }
     if (detected !== 'pptx' && detected !== 'pdf' && detected !== 'docx') {
       await ctx.store.abort(upload)
@@ -2345,6 +2417,7 @@ async function handleUpload(
     })
   } finally {
     try {
+      if (decryptedPath) await rm(decryptedPath, { force: true })
       if (upload) await ctx.store.abort(upload)
     } finally {
       await reservation.release()

@@ -23,7 +23,8 @@ export function fontVariants<T extends FontVariant>(faces: readonly T[], style: 
   return members.filter((face) => score(face) === best)
 }
 
-/** Portable script fallbacks; all calls use these same names for demand and layout. */
+/** Final portable fallback chain when original script decisions have no available face.
+ * Main-package language/glyph decisions run first in metrics and font discovery. */
 export function fallbackFamilies(style: RunStyle, text = ''): string[] {
   const serif =
     /serif|ming|mincho|batang|myeong|myung|song|simsun|宋|明|cambria|times|palatino|garamond|bookman/i.test(

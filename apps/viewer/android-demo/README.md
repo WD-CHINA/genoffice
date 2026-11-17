@@ -81,6 +81,14 @@ DOCX 的 unitCount 是正文分块数，应用不把它显示为排版页数。�
 脚本验证在线和下载后断开服务端口映射时的本地重放，保留应用数据并恢复原 USB reverse 映射。
 详细结果见 [Word 阅读修复验收](../../../docs/word-reading-fixes-validation.zh-CN.md)。
 
+## 加密 Word、TIFF 与 SVG 主题色
+
+首页上传加密 Word 时复用 Web 的服务端密码重试流程，Android 使用原生密码输入框隐藏输入；取消或离开预览会结束密码请求。Agile / Standard 解密由服务端复用 Electron 共享算法完成，密码不保存。成功上传获得解密副本的文件 ID，后续在线及离线阅读均使用该副本，客户端原始加密文件不被覆盖。旧服务不支持密码重试时明确提示更新服务。
+
+PPT 的 TIFF 解码、最大合法 IFD 选择和解码前后尺寸检查使用 Electron 实现，SVG 在服务端按当前页主题及母版颜色映射重着色。在线布局模型、服务端渲染树和权威离线包携带相同的可显示资源，不要求 Android WebView 原生解码 TIFF，也不依赖离线时再次读取主题原件。
+
+真机回归设置 `ANDROID_SERIAL`、`ANDROID_OFFICE_INPUTS` 并运行 `node apps/viewer/scripts/android-office-compat-smoke.mjs`。输入 JSON 形如 `{ "server": "http://127.0.0.1:端口", "viewer": "http://127.0.0.1:端口/viewer/", "token": "…", "inputs": [{"file":"02_TIFF图片验证.pptx","fileId":"64位sha256","format":"pptx"}] }`。该脚本使用本轮 Demo 的编号及左右参考图，按左右区域分别核对像素，下载后验证清单、移除本次 USB 服务映射确认离线重放，结束后恢复映射。`android-word-password-smoke.mjs` 额外要求 `ANDROID_OFFICE_DEMO_ROOT`，覆盖同一 Demo 中两种加密 Word 的原生密码输入、错误重试及取消后切换明文文件。
+
 ## PDF 原文件离线阅读
 
 PDF 下载先读取 `/v1/files/<fileId>` 的鉴权元数据，核对文档类型、大小和 SHA-256，

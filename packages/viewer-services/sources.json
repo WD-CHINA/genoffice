@@ -10,18 +10,85 @@
     "apps/slides/src/main/media-mime.ts",
     "apps/slides/src/main/metafile-fonts.ts",
     "apps/slides/src/main/session-state.ts",
-    "apps/docs/src/main/docs-main.ts",
     "packages/html2docx/src/drivers/playwright.ts",
-    "packages/html2docx/src/driver.ts"
+    "packages/html2docx/src/driver.ts",
+    "packages/electron-utils/src/ooxml-encryption.ts"
   ],
   "typeFiles": [],
   "notes": {
-    "session-state.ts": "Only the original retintThemedSvg and makeMediaResolver helpers were copied.",
-    "docs-main.ts": "Only the original DOCX password decryption helpers were copied.",
-    "playwright.ts": "Chrome lookup accepts VIEWER_CHROME_PATH."
+    "session-state.ts": "Original makeMediaResolver is retained in slides/main/media.ts; retintThemedSvg is extracted once to slides/shared/themed-svg.ts and re-exported.",
+    "playwright.ts": "Chrome lookup accepts VIEWER_CHROME_PATH.",
+    "docs/decrypt.ts": "Uint8Array/Buffer adapter over the exact shared OOXML module; docs-main now uses docx-encryption.ts re-exports.",
+    "slides/shared/themed-svg.ts": "retintThemedSvg and SVG_THEME_SLOTS extracted from apps/slides/src/main/session-state.ts; browser and Node share this pure module.",
+    "slides/shared/tiff-pixels.ts": "TIFF IFD selection, integer/dimension/pixel guards and post-decode validation extracted from apps/slides/src/main/tiff-decode.ts. Browser PNG encoding remains an adapter.",
+    "slides/shared/script-fallback.ts": "Exact language/glyph decisions and probe patterns extracted from createSystemFontMetrics in apps/slides/src/main/fonts.ts; font lookup is injected."
   },
   "sourceTag": "v0.13.18",
   "adaptations": [
-    "Only media/decryption helpers are extracted from their original main modules."
+    "Media, OOXML and script-fallback cores are extracted or copied from the original owning modules; browser/Node host adapters remain private.",
+    "Browser and Node share the SVG theme transformation; browser TIFF only adapts byte input and PNG encoding around the original validation/decode core.",
+    "Browser metrics and font discovery use the original script fallback decisions with injected catalog/glyph lookup; unavailable preferred faces retain the portable fallback chain."
+  ],
+  "directCopies": [
+    {
+      "source": "packages/electron-utils/src/ooxml-encryption.ts",
+      "target": "shared/ooxml-encryption.ts"
+    },
+    {
+      "source": "apps/slides/src/main/tiff-decode.ts",
+      "target": "slides/main/tiff-decode.ts"
+    }
+  ],
+  "extractedSymbols": [
+    {
+      "source": "apps/slides/src/main/session-state.ts",
+      "target": "slides/shared/themed-svg.ts",
+      "symbols": ["SVG_THEME_SLOTS", "retintThemedSvg"]
+    },
+    {
+      "source": "apps/slides/src/main/tiff-decode.ts",
+      "target": "slides/shared/tiff-pixels.ts",
+      "symbols": ["MAX_TIFF_PIXELS", "MAX_TIFF_DIM", "tiffDimsOk"]
+    },
+    {
+      "source": "apps/slides/src/main/fonts.ts",
+      "target": "slides/shared/script-fallback.ts",
+      "symbols": ["ETHIOPIC_RE", "SYMBOL_BULLET_GLYPH_RE", "scriptFallbackFor"]
+    }
+  ],
+  "hostIntegrations": [
+    {
+      "source": "packages/electron-utils/src/ooxml-encryption.ts",
+      "targets": [
+        "apps/parse-server/src/office-decrypt-worker.ts",
+        "apps/parse-server/src/office-decrypt.ts",
+        "apps/parse-server/src/server.ts",
+        "apps/viewer/src/web/upload-file.ts",
+        "apps/viewer/android-demo/app/src/main/java/com/genoffice/viewerdemo/MainActivity.java",
+        "apps/viewer/src/web/upload.tsx"
+      ],
+      "adaptation": "Shared Electron decrypt core runs in a bounded child process; HTTP password retry and masked Android prompt are host adapters. Passwords are request-only. Successful upload stores the decrypted parsing copy under its own content hash; client original is unchanged. Both the preview host and standalone XHR upload page share the same password/retry adapter; upload progress remains a transport concern."
+    },
+    {
+      "source": "apps/slides/src/main/session-state.ts",
+      "targets": ["apps/parse-server/src/pptx-slim.ts", "apps/parse-server/src/pptx-core.ts"],
+      "adaptation": "Retain TIFF/SVG in the parse-budget-bounded slim archive and invoke the original media resolver with the current slide path. Other media remain streamed. Both server trees and client layout/offline models receive display-ready inline resources."
+    },
+    {
+      "source": "apps/docs/src/renderer/App.tsx",
+      "targets": [
+        "apps/viewer/src/web/docx-reading-page.ts",
+        "apps/viewer/src/web/docs.tsx",
+        "apps/viewer/src/web/docs-remote.tsx",
+        "apps/viewer/src/web/docx-block-measure.ts",
+        "apps/viewer/src/web/docx-table-measure.ts"
+      ],
+      "adaptation": "Reuse the ported sectionPageBox geometry and App docZoomStyle CSS variables. Continuous reading carries padding on one paper wrapper, while source-unit editors keep zero padding. Measurements inherit identical geometry variables. Preserve continuous height and bounded source units; remove remote-only filename spacing."
+    },
+    {
+      "source": "apps/docs/src/renderer/styles.css",
+      "targets": ["apps/viewer/src/web/viewer.css"],
+      "adaptation": "Mirror .doc-page min-height:var(--page-h,1056px) on the single continuous paper wrapper. Keep virtual source-unit editors at min-height:0 so the minimum is applied once, and allow long content to grow without clipping."
+    }
   ]
 }

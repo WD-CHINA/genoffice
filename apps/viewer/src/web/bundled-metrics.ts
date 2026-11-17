@@ -6,6 +6,7 @@ import {
 } from '@genoffice/pptx-render'
 import { fontName, fontVariants, fallbackFamilies } from './font-selection'
 import type { MetricFont } from './metric-font-types'
+import { createScriptFallback } from '@genoffice/viewer-services/slides/shared/script-fallback'
 
 export interface ParsedFace {
   family: string
@@ -82,11 +83,28 @@ export function createBundledMetrics(
   }
   const covers = (members: ParsedFace[], text: string) =>
     [...text].every(
-      (char) => !char.trim() || /[\u200c\u200d\ufe0e\ufe0f]/.test(char) || pick(members, char),
+      (char) => !char.trim() || /\u200c|\u200d|\ufe0e|\ufe0f/.test(char) || pick(members, char),
     )
+  const scriptEntry = (style: RunStyle) => {
+    const members = group(style.fontFamily, style)
+    // Explicit catalog/embedded aliases are available metric-compatible faces.
+    // Missing system faces never become a pretend match in the browser.
+    return members.length
+      ? {
+          font: { charToGlyphIndex: (char: string) => (pick(members, char) ? 1 : 0) },
+          substituted: false,
+        }
+      : undefined
+  }
+  const scriptFallback = createScriptFallback(scriptEntry)
   const resolve = (style: RunStyle, text = '') => {
     onRequest?.(style, text)
     const exact = group(style.fontFamily, style)
+    const preferred = scriptFallback(text, scriptEntry(style), style)
+    if (preferred) {
+      const members = group(preferred, style)
+      if (members.length && covers(members, text)) return { members, substituted: !exact.length }
+    }
     if (exact.length && covers(exact, text)) return { members: exact, substituted: false }
     for (const family of fallbackFamilies(style, text)) {
       const members = group(family, style)

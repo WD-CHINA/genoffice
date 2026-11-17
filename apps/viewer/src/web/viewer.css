@@ -587,7 +587,8 @@ html[data-viewer-errors='false'] #root .viewer-warning {
 }
 .viewer-doc-reading .viewer-doc-reading-paper {
   position: relative;
-  min-height: 0;
+  /* Match Electron's paper minimum without fixing the continuous body's height. */
+  min-height: var(--page-h, 1056px);
   box-sizing: border-box;
   margin: 0 auto;
   background: var(--docs-paper, white);

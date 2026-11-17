@@ -5,6 +5,8 @@
   "type": "module",
   "license": "Apache-2.0",
   "exports": {
+    "./slides/main/media": "./src/slides/main/media.ts",
+    "./shared/ooxml-encryption": "./src/shared/ooxml-encryption.ts",
     "./*": "./src/*"
   },
   "description": "Viewer-owned rendering snapshot; original applications are unchanged.",

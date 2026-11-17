@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { previewUrl } from './preview-target'
 import { createLibraryClient, type SavedResource } from './server-library'
+import { uploadFile } from './upload-file'
 import '@genoffice/ui/tokens.css'
 import './upload.css'
 
@@ -161,7 +162,7 @@ function UploadPage() {
     })
   }, [result])
 
-  const upload = (file: File) => {
+  const upload = async (file: File) => {
     if (busy) return
     const lower = file.name.toLowerCase()
     if (!lower.endsWith('.pptx') && !lower.endsWith('.pdf') && !lower.endsWith('.docx')) {
@@ -172,33 +173,38 @@ function UploadPage() {
     setError('')
     setResult(null)
     setProgress(0)
-    const request = new XMLHttpRequest()
-    request.open('POST', `${apiBase}/v1/files`)
-    if (token) request.setRequestHeader('Authorization', `Bearer ${token}`)
-    request.upload.onprogress = (event) => {
-      if (event.lengthComputable) setProgress(Math.round((event.loaded / event.total) * 100))
-    }
-    request.onerror = () => {
-      setBusy(false)
-      setError('上传失败：无法连接解析服务')
-    }
-    request.onload = () => {
-      setBusy(false)
-      if (request.status !== 201) {
-        let detail = `HTTP ${request.status}`
-        try {
-          const body = JSON.parse(request.responseText) as { message?: string }
-          detail = body.message || detail
-        } catch {
-          /* non-JSON error */
-        }
-        setError(`上传失败：${detail}`)
-        return
-      }
-      const uploaded = JSON.parse(request.responseText) as Omit<Uploaded, 'name'>
+    try {
+      const uploaded = await uploadFile(
+        apiBase,
+        file,
+        lower.split('.').at(-1)!,
+        token,
+        undefined,
+        (url, init) =>
+          new Promise<Response>((resolve, reject) => {
+            const request = new XMLHttpRequest()
+            request.open('POST', String(url))
+            for (const [name, value] of new Headers(init?.headers))
+              request.setRequestHeader(name, value)
+            setProgress(0)
+            request.upload.onprogress = (event) => {
+              if (event.lengthComputable)
+                setProgress(Math.round((event.loaded / event.total) * 100))
+            }
+            request.onerror = () => reject(new Error('上传失败：无法连接解析服务'))
+            request.onabort = () => reject(new Error('已取消上传'))
+            request.onload = () =>
+              resolve(new Response(request.responseText, { status: request.status }))
+            request.send(file)
+          }),
+      )
+      setProgress(100)
       setResult({ ...uploaded, name: file.name })
+    } catch (caught) {
+      setError((caught as Error).message.replace(/^上传到解析服务失败：/, '上传失败：'))
+    } finally {
+      setBusy(false)
     }
-    request.send(file)
   }
 
   const onFiles = (files: FileList | null) => {

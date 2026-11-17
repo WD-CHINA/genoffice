@@ -38,6 +38,7 @@ import {
 } from '@genoffice/viewer-renderers/docs/renderer/phased-content'
 import { DocxReadingBar, DocxReadingHf, DocxReadingNotes, useDocxReadingZoom } from './docx-reading'
 import { docxSectionTypography } from './docx-style-context'
+import { docxReadingPageStyle } from './docx-reading-page'
 import '@genoffice/viewer-renderers/docs/renderer/styles.css'
 import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
 
@@ -298,8 +299,7 @@ export function Docs({ src }: { src: string }) {
               <div
                 className="page-wrap viewer-doc-reading-paper"
                 style={{
-                  width,
-                  padding: `${section.marginTop / 15}px ${section.marginRight / 15}px ${section.marginBottom / 15}px ${section.marginLeft / 15}px`,
+                  ...docxReadingPageStyle(section),
                   ...(pageColor ? { background: `#${pageColor}` } : {}),
                   ...docxSectionTypography(section),
                 }}

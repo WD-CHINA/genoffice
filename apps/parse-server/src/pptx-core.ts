@@ -11,9 +11,9 @@ import { buildRenderSlide, HeuristicMetrics } from '@genoffice/pptx-render'
 import type { DocModel, UnitSummary } from '@genoffice/parse-contract'
 import type { ServerLimits } from './limits'
 import { FeedbackMetrics, type WidthItem } from './metrics'
-import { mimeForPart } from './mime'
 import { slimPptxFile } from './pptx-slim'
 import { signResource } from './sign'
+import { makeMediaResolver } from '@genoffice/viewer-services/slides/main/media'
 
 /** One slide as the Viewer's remote session consumes it. */
 export interface PptxFontSummary {
@@ -70,18 +70,15 @@ function createMediaResolver(
   baseUrl: string,
   fileId: string,
   secret?: string,
+  slidePath?: string,
 ) {
   const cache = new Map<string, string | undefined>()
+  const display = makeMediaResolver(opened, slidePath)
   return (mediaRef: string): string | undefined => {
     if (cache.has(mediaRef)) return cache.get(mediaRef)
     let url: string | undefined
     if (mediaParts.has(mediaRef)) url = partUrl(baseUrl, fileId, mediaRef, secret)
-    else {
-      const bytes = opened.archive.readBytes(mediaRef)
-      if (bytes) {
-        url = `data:${mimeForPart(mediaRef)};base64,${Buffer.from(bytes).toString('base64')}`
-      }
-    }
+    else url = display(mediaRef)
     cache.set(mediaRef, url)
     return url
   }
@@ -150,7 +147,7 @@ function buildSlideUnit(
 ): PptxSlideUnit {
   const slide = opened.deck.slides[index]
   if (!slide) throw new Error(`pptx: slide ${index} does not exist`)
-  const resolve = createMediaResolver(opened, mediaParts, baseUrl, fileId, secret)
+  const resolve = createMediaResolver(opened, mediaParts, baseUrl, fileId, secret, slide.path)
   const built = buildRenderSlide(slide, opened.deck.size, {
     fitWidthPx: width,
     metrics,
@@ -348,6 +345,7 @@ export class PptxCore {
       this.baseUrl,
       this.fileId,
       this.secret,
+      slide.path,
     )
     const media = new Map<string, string>()
     const record = (ref: string): string | undefined => {

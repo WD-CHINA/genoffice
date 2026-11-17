@@ -2,7 +2,13 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { imageDpiFromBytes, imageSizeFromBytes } from '@genoffice/pptx-render'
 import type { OpenedPptx } from '@genoffice/pptx-engine'
-import { createBrowserMedia, MEDIA_HEAD_BYTES } from '../src/web/browser-media.ts'
+import { createBrowserMedia, servedMedia, MEDIA_HEAD_BYTES } from '../src/web/browser-media.ts'
+import { decodeTiffPixels } from '@genoffice/viewer-services/slides/shared/tiff-pixels'
+import { tiffToPng as mainTiffToPng } from '@genoffice/viewer-services/slides/main/tiff-decode'
+import { retintThemedSvg } from '@genoffice/viewer-services/slides/shared/themed-svg'
+import { retintThemedSvg as serviceRetint } from '@genoffice/viewer-services/slides/main/media'
+import UTIF from 'utif2'
+import { PNG } from 'pngjs'
 
 /** Decode the head of a data url the way pptx-render's readers do. */
 function head(dataUrl: string) {
@@ -69,4 +75,113 @@ test('metafiles stay inline for the loader to rasterize', () => {
   const url = media.resolve('ppt/media/pic.emf')!
   assert.ok(url.startsWith('data:image/x-emf;base64,'), 'full payload, no descriptor')
   assert.equal(media.refs.size, 0)
+})
+
+test('browser TIFF matches main-package decoded pixels, including an offset input view', () => {
+  const rgba = new Uint8Array(6 * 4 * 4)
+  for (let i = 0; i < rgba.length; i += 4) rgba.set([200, 100, 50, 255], i)
+  const tiff = new Uint8Array(UTIF.encodeImage(rgba, 6, 4))
+  const padded = new Uint8Array(tiff.length + 8)
+  padded.set(tiff, 4)
+  const input = padded.subarray(4, 4 + tiff.length)
+  const before = input.slice()
+  const served = servedMedia(archiveOf({ 'pic.tif': input }), 'pic.tif')!
+  assert.equal(served.mime, 'image/png')
+  const actual = PNG.sync.read(Buffer.from(served.bytes))
+  const expected = PNG.sync.read(Buffer.from(mainTiffToPng(input)!.png))
+  assert.equal(actual.width, 6)
+  assert.equal(actual.height, 4)
+  assert.deepEqual(actual.data, expected.data)
+  assert.deepEqual(input, before)
+})
+
+test('main TIFF guards reject invalid headers and decoded dimensions before RGBA allocation', () => {
+  for (const dims of [
+    [40000, 40000],
+    [0, 10],
+    [NaN, 3],
+    [1.5, 4],
+    [32767, 32767],
+  ]) {
+    let decoded = 0
+    const result = decodeTiffPixels(new Uint8Array(), {
+      decode: () => [{ t256: [dims[0]], t257: [dims[1]] }],
+      decodeImage: () => {
+        decoded++
+        throw Error('must not decode')
+      },
+      toRGBA8: () => {
+        throw Error('must not allocate')
+      },
+    } as unknown as Parameters<typeof decodeTiffPixels>[1])
+    assert.equal(result, null)
+    assert.equal(decoded, 0)
+  }
+  let allocated = 0
+  assert.equal(
+    decodeTiffPixels(new Uint8Array(), {
+      decode: () => [{ t256: [6], t257: [4] }],
+      decodeImage: (_bytes: unknown, ifd: any) => {
+        ifd.width = 40000
+        ifd.height = 40000
+      },
+      toRGBA8: () => {
+        allocated++
+        throw Error('post-decode guard must precede RGBA allocation')
+      },
+    } as unknown as Parameters<typeof decodeTiffPixels>[1]),
+    null,
+  )
+  assert.equal(allocated, 0)
+})
+
+test('main TIFF page selection skips hostile IFDs and picks the largest valid page', () => {
+  const ifds = [
+    { t256: [100000], t257: [100000] },
+    { t256: [6], t257: [4] },
+    { t256: [3], t257: [2] },
+  ]
+  let selected: unknown
+  const result = decodeTiffPixels(new Uint8Array(), {
+    decode: () => ifds,
+    decodeImage: (_bytes: unknown, ifd: any) => {
+      selected = ifd
+      ifd.width = 6
+      ifd.height = 4
+    },
+    toRGBA8: () => new Uint8Array(96),
+  } as unknown as Parameters<typeof decodeTiffPixels>[1])
+  assert.equal(selected, ifds[1])
+  assert.equal(result?.width, 6)
+  assert.equal(result?.height, 4)
+})
+
+test('browser and service share SVG theme remapping, including master color maps and broken chains', () => {
+  assert.equal(serviceRetint, retintThemedSvg)
+  const svg =
+    '<svg xmlns="http://www.w3.org/2000/svg"><style>.MsftOfcThm_Accent1_Fill_v2{fill:#000000;}.MsftOfcThm_Text1_Stroke_v2{stroke:#ffffff;}</style><rect width="20" height="20"/></svg>'
+  const theme =
+    '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:themeElements><a:clrScheme name="test"><a:dk1><a:srgbClr val="112233"/></a:dk1><a:lt1><a:srgbClr val="ffffff"/></a:lt1><a:accent1><a:srgbClr val="ff0000"/></a:accent1><a:accent2><a:srgbClr val="00ff00"/></a:accent2></a:clrScheme></a:themeElements></a:theme>'
+  const opened = {
+    deck: { slides: [{ path: 'slide.xml' }] },
+    archive: {
+      readBytes: () => new TextEncoder().encode(svg),
+      resolveSlideChain: () => ({ themePath: 'theme.xml', masterPath: 'master.xml' }),
+      readText: (name: string) =>
+        name === 'theme.xml'
+          ? theme
+          : name === 'master.xml'
+            ? '<p:sldMaster xmlns:p="p" xmlns:a="a"><p:clrMap accent1="accent2" tx1="dk1"/></p:sldMaster>'
+            : '',
+    },
+  } as unknown as OpenedPptx
+  const transformed = retintThemedSvg(svg, opened)
+  assert.match(transformed, /fill:#00ff00/i)
+  assert.match(transformed, /stroke:#112233/i)
+  const url = createBrowserMedia(opened).resolve('pic.svg')!
+  assert.equal(new TextDecoder().decode(head(url)), transformed)
+  opened.archive.resolveSlideChain = () => {
+    throw Error('broken relation')
+  }
+  assert.equal(retintThemedSvg(svg, opened), svg)
 })

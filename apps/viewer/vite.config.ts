@@ -71,6 +71,9 @@ export default defineConfig({
       { find: 'crypto', replacement: resolve(app, 'src/web/shims/crypto.ts') },
       { find: 'node:crypto', replacement: resolve(app, 'src/web/shims/crypto.ts') },
       { find: 'node:zlib', replacement: resolve(app, 'src/web/shims/zlib.ts') },
+      // xml2js in the original OOXML decryptor extends Node's EventEmitter.
+      // Resolve the maintained browser implementation instead of Vite's empty stub.
+      { find: /^events$/, replacement: resolve(app, 'node_modules/events/events.js') },
       ...Object.entries(aliases).map(([find, replacement]) => ({ find, replacement })),
     ],
   },

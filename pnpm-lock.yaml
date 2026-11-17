@@ -425,6 +425,9 @@ importers:
       '@genoffice/pptx-render':
         specifier: '*'
         version: link:../../packages/pptx-render
+      '@genoffice/viewer-services':
+        specifier: '*'
+        version: link:../../packages/viewer-services
       '@genoffice/zip-gate':
         specifier: '*'
         version: link:../../packages/zip-gate
@@ -908,6 +911,9 @@ importers:
       '@tiptap/react':
         specifier: 3.31.0
         version: 3.31.0(@floating-ui/dom@1.8.0)(@tiptap/core@3.31.0(@tiptap/pm@3.31.0))(@tiptap/pm@3.31.0)(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      events:
+        specifier: 3.3.0
+        version: 3.3.0
       hash.js:
         specifier: 1.1.7
         version: 1.1.7
@@ -4866,6 +4872,10 @@ packages:
   etag@1.8.1:
     resolution: {integrity: sha512-aIL5Fx7mawVa300al2BnEE4iNvo1qETxLrPI/o05L7z6go7fCw1J6EQmbK4FmJ2AS7kgVF/KEZWufBfdClMcPg==}
     engines: {node: '>= 0.6'}
+
+  events@3.3.0:
+    resolution: {integrity: sha512-mQw+2fkQbALzQ7V0MY0IqdnXNOeTtP4r0lN9z7AAawCXgqea7bDii20AYrIBrFd/Hx0M2Ocz6S111CaFkUcb0Q==}
+    engines: {node: '>=0.8.x'}
 
   eventsource-parser@3.1.1:
     resolution: {integrity: sha512-EKN1vKAMcZ8MlYMpaNuxN6R9yakzH6uajHcHVTqWJzvu5pWw9DyhbP35HH8MVBQ+dZjAfDxk+A8NiR9KWaXiyQ==}
@@ -10578,6 +10588,8 @@ snapshots:
   esutils@2.0.3: {}
 
   etag@1.8.1: {}
+
+  events@3.3.0: {}
 
   eventsource-parser@3.1.1: {}
 

@@ -19,14 +19,30 @@
 
 ## 已上传文档列表
 
+### 加密 Word 上传
+
+`POST /v1/files` 支持 Electron 共享 OOXML 模块可读取的 Agile / Standard 加密 Word。首次不提供密码时返回 `415 encrypted_document`；客户端提示密码后重传同一文件，在 `X-Office-Password` 请求头中携带密码的 Base64 UTF-8 编码。错误密码返回 `422 wrong_password`，允许重新输入；取消输入时客户端停止重传。Base64 仅是传输编码，部署时沿用 HTTPS。
+
+密码不进入 URL、元数据、离线包或日志。解密在解析队列管理的独立受限进程中执行，遵循内存、超时、上传及存储配额，退出后清理临时文件。成功返回的 `fileId` 是**解密后 DOCX 副本**的 SHA-256；服务端后续原文件读取与离线包包含可读内容，客户端原始加密文件不被覆盖。这是导入解析副本接口，不提供 Electron 的原件加密保存能力。
+
+加密输入及解密结果受 `maxParseBytes` 限制，因为主包解密库需要完整字节；超限明确返回 `413 parse_limit`。损坏或不支持的加密格式返回 `415 unsupported_encryption`；解密后的非 Word 文件仍被拒绝。普通未加密文件继续流式上传，不受此解密步骤影响。
+
+遇到超限文件，可在确认容量后提高服务端解析及内存预算，或在 Word 中另存明文副本后按普通文件上传；当前不自动改走其他解析模式，也不通过取消资源限制来强行解密。
+
 `GET /v1/files?limit=20&cursor=<next>` 与上传/读取接口使用相同 Bearer 鉴权。limit 为 1–100，默认 20；游标不可自行构造，下一页直接传回响应的 next。响应设置 `Cache-Control: private, no-store`：
 
 ```json
 {
-  "items": [{
-    "fileId": "<64位sha256>", "sha256": "<64位sha256>", "format": "docx",
-    "size": 1234, "createdAt": "2026-11-16T00:00:00.000Z", "displayName": "课时计划.docx"
-  }],
+  "items": [
+    {
+      "fileId": "<64位sha256>",
+      "sha256": "<64位sha256>",
+      "format": "docx",
+      "size": 1234,
+      "createdAt": "2026-11-16T00:00:00.000Z",
+      "displayName": "课时计划.docx"
+    }
+  ],
   "next": "<可选游标>"
 }
 ```

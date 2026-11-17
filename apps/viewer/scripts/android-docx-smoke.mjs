@@ -104,6 +104,18 @@ async function inspect(c, id, input, disconnected) {
     `(()=>{const root=document.querySelector('.viewer-doc-reading'),editor=root.querySelector('.doc-page'),span=editor.querySelector('.doc-east-asian-font');return{sheets:document.querySelectorAll('[data-docx-style-context][data-doc-css]').length,fallback:root.dataset.docxThemeFallback,baseSize:getComputedStyle(editor).fontSize,chineseFont:span&&getComputedStyle(span).fontFamily,themeLoaded:[...document.fonts].some(face=>face.family.includes('GenOffice Theme Sans SC')&&face.status==='loaded')}})()`,
     id,
   )
+  const geometry = await c.evaluate(
+    `(()=>{const paper=document.querySelector('.viewer-doc-reading-paper'),s=getComputedStyle(paper),mark=getComputedStyle(paper,'::before');return{width:paper.getBoundingClientRect().width,height:paper.getBoundingClientRect().height,pageHeight:parseFloat(s.getPropertyValue('--page-h')),minHeight:parseFloat(s.minHeight),padding:s.padding,top:parseFloat(s.paddingTop),markLeft:parseFloat(mark.left),markWidth:parseFloat(mark.width),markBottom:parseFloat(mark.top)+parseFloat(mark.height),pageWidth:s.getPropertyValue('--page-w')}})()`,
+    id,
+  )
+  if (
+    Math.abs(geometry.minHeight - geometry.pageHeight) > 0.1 ||
+    geometry.height < geometry.pageHeight - 0.1 ||
+    Math.abs(geometry.markLeft) > 0.1 ||
+    Math.abs(geometry.markWidth - geometry.width) > 0.1 ||
+    Math.abs(geometry.markBottom - geometry.top) > 0.1
+  )
+    throw Error('Word crop marks differ from the paper padding: ' + JSON.stringify(geometry))
   if (typography.sheets !== 1) throw Error('Word document style scope is missing or duplicated')
   if (
     typography.fallback === 'bundled' &&
@@ -180,6 +192,7 @@ async function inspect(c, id, input, disconnected) {
   await writeFile(join(output, `${input.name}-${disconnected ? 'offline' : 'online'}.png`), png)
   return {
     typography,
+    geometry,
     units: units.size,
     notes: notes.size,
     external: [...external],

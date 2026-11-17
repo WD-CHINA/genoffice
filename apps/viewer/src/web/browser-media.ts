@@ -1,31 +1,11 @@
-import {
-  parseTheme,
-  parseClrMap,
-  resolveSchemeColor,
-  type OpenedPptx,
-} from '@genoffice/pptx-engine'
+import type { OpenedPptx } from '@genoffice/pptx-engine'
 import { neutralizeJpegOrientation } from '@genoffice/viewer-services/slides/main/jpeg-orientation'
 import { displayMime } from '@genoffice/viewer-services/slides/main/media-mime'
-import UTIF from 'utif2'
-// @ts-expect-error pako ships no types in this repo; the namespace import keeps the
-// CommonJS default usable without relying on a named ESM export
+import { retintThemedSvg } from '@genoffice/viewer-services/slides/shared/themed-svg'
+import { decodeTiffPixels } from '@genoffice/viewer-services/slides/shared/tiff-pixels'
+// @ts-expect-error pako ships no types in this repo; keep its CommonJS default import.
 import pako from 'pako'
 const deflate = pako.deflate.bind(pako)
-
-const SVG_THEME_SLOTS: Record<string, string> = {
-  background1: 'bg1',
-  text1: 'tx1',
-  background2: 'bg2',
-  text2: 'tx2',
-  accent1: 'accent1',
-  accent2: 'accent2',
-  accent3: 'accent3',
-  accent4: 'accent4',
-  accent5: 'accent5',
-  accent6: 'accent6',
-  hyperlink: 'hlink',
-  followedhyperlink: 'folHlink',
-}
 
 function base64(bytes: Uint8Array): string {
   let binary = ''
@@ -33,34 +13,6 @@ function base64(bytes: Uint8Array): string {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
   }
   return btoa(binary)
-}
-
-function retint(svg: string, opened: OpenedPptx, slidePath?: string): string {
-  const path = slidePath ?? opened.deck.slides[0]?.path
-  if (!path) return svg
-  try {
-    const chain = opened.archive.resolveSlideChain(path)
-    const themeXml = chain.themePath ? opened.archive.readText(chain.themePath) : null
-    if (!themeXml) return svg
-    const theme = parseTheme(themeXml)
-    theme.clrMap = parseClrMap(
-      chain.masterPath ? (opened.archive.readText(chain.masterPath) ?? undefined) : undefined,
-      chain.layoutPath ? (opened.archive.readText(chain.layoutPath) ?? undefined) : undefined,
-      opened.archive.readText(path) ?? undefined,
-    )
-    return svg.replace(
-      /\.MsftOfcThm_(\w+?)_(Fill|Stroke)\w*\s*\{[^}]*\}/g,
-      (rule, slot: string, kind: string) => {
-        const scheme = SVG_THEME_SLOTS[slot.toLowerCase()]
-        const color = scheme ? resolveSchemeColor(scheme, theme) : undefined
-        if (!color) return rule
-        const prop = kind === 'Stroke' ? 'stroke' : 'fill'
-        return rule.replace(new RegExp(`${prop}\\s*:\\s*[^;}]+`, 'g'), `${prop}:${color}`)
-      },
-    )
-  } catch {
-    return svg
-  }
 }
 
 function crc32(bytes: Uint8Array): number {
@@ -114,31 +66,10 @@ function rgbaToPng(rgba: Uint8Array, width: number, height: number): Uint8Array 
 }
 
 function tiffToPng(bytes: Uint8Array): Uint8Array | null {
+  const decoded = decodeTiffPixels(bytes)
+  if (!decoded) return null
   try {
-    const ifds = UTIF.decode(bytes as unknown as ArrayBuffer)
-    if (!ifds.length) return null
-    let page = ifds[0]
-    let pixels = 0
-    for (const ifd of ifds) {
-      const width = Array.isArray(ifd.t256) ? ifd.t256[0] : ifd.width
-      const height = Array.isArray(ifd.t257) ? ifd.t257[0] : ifd.height
-      if (
-        typeof width !== 'number' ||
-        typeof height !== 'number' ||
-        width < 1 ||
-        height < 1 ||
-        width > 32767 ||
-        height > 32767
-      )
-        continue
-      if (width * height > pixels && width * height <= 256 * 1024 * 1024) {
-        page = ifd
-        pixels = width * height
-      }
-    }
-    UTIF.decodeImage(bytes as unknown as ArrayBuffer, page)
-    if (!page.width || !page.height) return null
-    return rgbaToPng(UTIF.toRGBA8(page), page.width, page.height)
+    return rgbaToPng(decoded.rgba, decoded.width, decoded.height)
   } catch {
     return null
   }
@@ -206,7 +137,7 @@ export function createBrowserMedia(
         if (isMetafile(served.mime)) url = `data:${served.mime};base64,${base64(served.bytes)}`
         else if (served.mime === 'image/svg+xml') {
           let text = new TextDecoder().decode(served.bytes)
-          if (text.includes('MsftOfcThm_')) text = retint(text, opened, slidePath)
+          if (text.includes('MsftOfcThm_')) text = retintThemedSvg(text, opened, slidePath)
           url = `data:${served.mime};base64,${base64(new TextEncoder().encode(text))}`
         } else if (served.bytes.length > MEDIA_HEAD_BYTES) {
           url = `data:${served.mime};base64,${base64(served.bytes.subarray(0, MEDIA_HEAD_BYTES))}`

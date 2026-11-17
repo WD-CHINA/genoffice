@@ -9,18 +9,28 @@ import {
 } from '@genoffice/viewer-renderers/docs/renderer/editor/convert'
 import type { TablePage, TablePageRow, TableRowLayout } from './docx-table-pagination'
 import { docxSectionTypography } from './docx-style-context'
+import { docxReadingPageVars } from './docx-reading-page'
 import type { SectionSettings } from '@genoffice/docx-engine'
 import { measureTableFlow } from './docx-table-flow-measure'
 
 /** Measure top-level table rows (nested tables are excluded by table.rows). */
 export async function measureTableRows(
-  doc: any, block: any, width = 760, signal?: AbortSignal, geometries?: Map<number, DocxBlockGeometry>, settings?: SectionSettings,
+  doc: any,
+  block: any,
+  width = 760,
+  signal?: AbortSignal,
+  geometries?: Map<number, DocxBlockGeometry>,
+  settings?: SectionSettings,
 ): Promise<TableRowLayout[]> {
   signal?.throwIfAborted()
   const host = document.createElement('div')
   host.className = 'viewer-doc-remote viewer-doc-reading viewer-doc-remote-measure'
   host.style.cssText = `position:fixed;left:-10000px;top:0;width:${width}px;height:auto;display:block;visibility:hidden;pointer-events:none`
-  for (const [key, value] of Object.entries(docxSectionTypography(settings))) host.style.setProperty(key, value)
+  for (const [key, value] of Object.entries({
+    ...docxReadingPageVars(settings),
+    ...docxSectionTypography(settings),
+  }))
+    host.style.setProperty(key, value)
   document.body.appendChild(host)
   const editor = new Editor({
     element: host,
@@ -32,7 +42,9 @@ export async function measureTableRows(
     storage.styles = doc.styles
     storage.docDefaults = doc.docDefaults
     storage.defs = doc.numbering
-    editor.commands.setContent(blocksToPmDoc([block], undefined, pmDocOptions(doc)), { emitUpdate: false })
+    editor.commands.setContent(blocksToPmDoc([block], undefined, pmDocOptions(doc)), {
+      emitUpdate: false,
+    })
     await new Promise<void>((resolve) => setTimeout(resolve, 0))
     void editor.view.dom.offsetHeight
     await waitForDocxLayout(document.fonts.ready, signal)
@@ -40,10 +52,13 @@ export async function measureTableRows(
     const table = editor.view.dom.querySelector('table')
     const tableModel = block.table
     if (table && geometries) {
-      const element = editor.view.dom.querySelector<HTMLElement>(`[data-idx="${block.docxIndex}"]`) ?? table
+      const element =
+        editor.view.dom.querySelector<HTMLElement>(`[data-idx="${block.docxIndex}"]`) ?? table
       const height = element.getBoundingClientRect().height
       const geometry = measureBlockGeometry(element, height, true)
-      geometry.cuts = measuredTableCuts(table, element.getBoundingClientRect().top).filter((cut) => cut > .5 && cut < height - .5)
+      geometry.cuts = measuredTableCuts(table, element.getBoundingClientRect().top).filter(
+        (cut) => cut > 0.5 && cut < height - 0.5,
+      )
       let headerHeight = 0
       for (const [index, row] of [...table.rows].entries()) {
         if (!tableModel?.repeatHeaderRows?.[index]) break
@@ -51,21 +66,29 @@ export async function measureTableRows(
       }
       geometry.headerHeight = headerHeight
       geometry.tableFlow = measureTableFlow(table, tableModel, doc.compatibilityMode)
-      if (headerHeight > 0) geometry.cuts = geometry.cuts.filter((cut) => cut > headerHeight + .5)
+      if (headerHeight > 0) geometry.cuts = geometry.cuts.filter((cut) => cut > headerHeight + 0.5)
       // An authored cantSplit applies to that row, not to the rest of the table.
-      geometry.cuts = geometry.cuts.filter((cut) => ![...table.rows].some((row, index) => {
-        if (!tableModel?.rowCantSplit?.[index]) return false
-        const box = row.getBoundingClientRect(), top = element.getBoundingClientRect().top
-        return cut > box.top - top + .5 && cut < box.bottom - top - .5
-      }))
+      geometry.cuts = geometry.cuts.filter(
+        (cut) =>
+          ![...table.rows].some((row, index) => {
+            if (!tableModel?.rowCantSplit?.[index]) return false
+            const box = row.getBoundingClientRect(),
+              top = element.getBoundingClientRect().top
+            return cut > box.top - top + 0.5 && cut < box.bottom - top - 0.5
+          }),
+      )
       geometries.set(block.docxIndex, geometry)
     }
-    return table ? [...table.rows].map((row, index) => ({
-      height: row.getBoundingClientRect().height,
-      header: tableModel?.repeatHeaderRows?.[index] === true,
-      cantSplit: tableModel?.rowCantSplit?.[index] === true,
-      cellParagraphs: [...row.cells].map((cell) => cell.querySelectorAll(':scope > p').length || 1),
-    })) : []
+    return table
+      ? [...table.rows].map((row, index) => ({
+          height: row.getBoundingClientRect().height,
+          header: tableModel?.repeatHeaderRows?.[index] === true,
+          cantSplit: tableModel?.rowCantSplit?.[index] === true,
+          cellParagraphs: [...row.cells].map(
+            (cell) => cell.querySelectorAll(':scope > p').length || 1,
+          ),
+        }))
+      : []
   } catch (error) {
     if (signal?.aborted) throw error
     console.warn('measureTableRows failed', error)

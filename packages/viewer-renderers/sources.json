@@ -138,7 +138,10 @@
     "apps/pdf/src/renderer/redact-patterns.ts",
     "apps/slides/src/renderer/export-svg.ts",
     "apps/slides/src/renderer/canvas-kerning.ts",
-    "apps/pdf/src/renderer/page-probe.ts"
+    "apps/pdf/src/renderer/page-probe.ts",
+    "packages/ui/src/font-list.ts",
+    "packages/ui/src/popover-dismiss.ts",
+    "packages/ui/src/wordart-presets.ts"
   ],
   "typeFiles": [
     "apps/slides/src/shared/ipc.ts",
@@ -172,6 +175,212 @@
     "PPT canvas kerning is installed in Viewer; browser width feedback separates kerning modes.",
     "Remote metafile limits, retry, decode concurrency and image release are retained.",
     "PDF page probing supports cancellation; auxiliary scans and link overlays tolerate page errors, and bitmap rendering reports page-local failures.",
-    "Viewer probes geometry and reads forms on demand; page rendering uses a bounded queue, configurable pixel limits and explicit canvas/text/page cleanup."
-  ]
+    "Viewer probes geometry and reads forms on demand; page rendering uses a bounded queue, configurable pixel limits and explicit canvas/text/page cleanup.",
+    "All imported UI/code/font resources are registered; exact copies and extracted main-package decisions are guarded by source tests."
+  ],
+  "directCopies": [
+    {
+      "source": "apps/docs/src/renderer/author-name.ts",
+      "target": "docs/renderer/author-name.ts"
+    },
+    {
+      "source": "apps/docs/src/renderer/editor/effective-css.ts",
+      "target": "docs/renderer/editor/effective-css.ts"
+    },
+    {
+      "source": "apps/docs/src/renderer/editor/table-row-drag.ts",
+      "target": "docs/renderer/editor/table-row-drag.ts"
+    },
+    {
+      "source": "apps/docs/src/renderer/editor/wrap-group.ts",
+      "target": "docs/renderer/editor/wrap-group.ts"
+    },
+    {
+      "source": "apps/docs/src/renderer/editor/wrap-obstacles.ts",
+      "target": "docs/renderer/editor/wrap-obstacles.ts"
+    },
+    {
+      "source": "apps/docs/src/renderer/font-resolve.ts",
+      "target": "docs/renderer/font-resolve.ts"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/Caladea-Bold.ttf",
+      "target": "docs/renderer/fonts/Caladea-Bold.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/Caladea-BoldItalic.ttf",
+      "target": "docs/renderer/fonts/Caladea-BoldItalic.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/Caladea-Italic.ttf",
+      "target": "docs/renderer/fonts/Caladea-Italic.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/Caladea-Regular.ttf",
+      "target": "docs/renderer/fonts/Caladea-Regular.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/GenOfficeCheLatinKR.woff2",
+      "target": "docs/renderer/fonts/GenOfficeCheLatinKR.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/GenOfficeDMSans-Bold-subset.woff2",
+      "target": "docs/renderer/fonts/GenOfficeDMSans-Bold-subset.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/GenOfficeDMSans-Regular-subset.woff2",
+      "target": "docs/renderer/fonts/GenOfficeDMSans-Regular-subset.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/GenOfficeGothicKR-Regular-subset.woff2",
+      "target": "docs/renderer/fonts/GenOfficeGothicKR-Regular-subset.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/GenOfficePUABlank.woff2",
+      "target": "docs/renderer/fonts/GenOfficePUABlank.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/GenOfficePoppins-Bold-subset.woff2",
+      "target": "docs/renderer/fonts/GenOfficePoppins-Bold-subset.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/GenOfficePoppins-Regular-subset.woff2",
+      "target": "docs/renderer/fonts/GenOfficePoppins-Regular-subset.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/GenOfficeSansKR-Regular-subset.woff2",
+      "target": "docs/renderer/fonts/GenOfficeSansKR-Regular-subset.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/GenOfficeSerifKR-Regular-subset.woff2",
+      "target": "docs/renderer/fonts/GenOfficeSerifKR-Regular-subset.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/GenOfficeTamil-Regular.woff2",
+      "target": "docs/renderer/fonts/GenOfficeTamil-Regular.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/GenOfficeUIKanaJP-Bold.woff2",
+      "target": "docs/renderer/fonts/GenOfficeUIKanaJP-Bold.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/GenOfficeUIKanaJP-Regular.woff2",
+      "target": "docs/renderer/fonts/GenOfficeUIKanaJP-Regular.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LICENSE-OFL.txt",
+      "target": "docs/renderer/fonts/LICENSE-OFL.txt"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LiberationMono-Bold.ttf",
+      "target": "docs/renderer/fonts/LiberationMono-Bold.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LiberationMono-BoldItalic.ttf",
+      "target": "docs/renderer/fonts/LiberationMono-BoldItalic.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LiberationMono-Italic.ttf",
+      "target": "docs/renderer/fonts/LiberationMono-Italic.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LiberationMono-Regular.ttf",
+      "target": "docs/renderer/fonts/LiberationMono-Regular.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LiberationSans-Bold.ttf",
+      "target": "docs/renderer/fonts/LiberationSans-Bold.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LiberationSans-BoldItalic.ttf",
+      "target": "docs/renderer/fonts/LiberationSans-BoldItalic.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LiberationSans-Italic.ttf",
+      "target": "docs/renderer/fonts/LiberationSans-Italic.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LiberationSans-Regular.ttf",
+      "target": "docs/renderer/fonts/LiberationSans-Regular.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LiberationSerif-Bold.ttf",
+      "target": "docs/renderer/fonts/LiberationSerif-Bold.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LiberationSerif-BoldItalic.ttf",
+      "target": "docs/renderer/fonts/LiberationSerif-BoldItalic.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LiberationSerif-Italic.ttf",
+      "target": "docs/renderer/fonts/LiberationSerif-Italic.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/LiberationSerif-Regular.ttf",
+      "target": "docs/renderer/fonts/LiberationSerif-Regular.ttf"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/NotoNaskhArabic-Regular-subset.woff2",
+      "target": "docs/renderer/fonts/NotoNaskhArabic-Regular-subset.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/NotoSansArabic-Regular-subset.woff2",
+      "target": "docs/renderer/fonts/NotoSansArabic-Regular-subset.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/NotoSansCJKsc-Regular-subset.woff2",
+      "target": "docs/renderer/fonts/NotoSansCJKsc-Regular-subset.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/NotoSerifCJKsc-Regular-subset.woff2",
+      "target": "docs/renderer/fonts/NotoSerifCJKsc-Regular-subset.woff2"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/README.md",
+      "target": "docs/renderer/fonts/README.md"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/fonts.css",
+      "target": "docs/renderer/fonts/fonts.css"
+    },
+    {
+      "source": "apps/docs/src/renderer/fonts/stand-in-boxes.json",
+      "target": "docs/renderer/fonts/stand-in-boxes.json"
+    },
+    {
+      "source": "apps/docs/src/renderer/styles.css",
+      "target": "docs/renderer/styles.css"
+    },
+    {
+      "source": "packages/ui/src/font-list.ts",
+      "target": "ui/font-list.ts"
+    },
+    {
+      "source": "packages/ui/src/popover-dismiss.ts",
+      "target": "ui/popover-dismiss.ts"
+    },
+    {
+      "source": "packages/ui/src/wordart-presets.ts",
+      "target": "ui/wordart-presets.ts"
+    }
+  ],
+  "adaptedFiles": {
+    "slides/renderer/image-loader.ts": "Viewer remote resource bounds, retries, decode concurrency and release.",
+    "slides/renderer/components/SlideShowView.tsx": "Read-only Viewer show entry, host callbacks and media layer.",
+    "slides/renderer/i18n/locale.tsx": "Viewer locale event boundary instead of desktop IPC.",
+    "slides/renderer/components/ShowMediaLayer.tsx": "Viewer media resource URLs, decoder diagnostics and detached-player cleanup.",
+    "slides/renderer/show-actions.ts": "Viewer omits editing and desktop-only show actions.",
+    "pdf/renderer/PdfPage.tsx": "Viewer page failures, cancellation, pixel budget and resource cleanup.",
+    "pdf/renderer/FormLayer.tsx": "Private UI module import.",
+    "pdf/renderer/form-catalog.ts": "Page-local form extraction and tolerant cancellable auxiliary reads.",
+    "pdf/shared/ipc.ts": "Private browser-safe type boundary; no Electron runtime import.",
+    "pdf/renderer/LinkLayer.tsx": "Tolerate unreadable link annotations and cancelled document reads.",
+    "pdf/renderer/search.ts": "Cancellable page-local error isolation; original matching algorithm retained.",
+    "pdf/renderer/heading-outline.ts": "Cancellable page-local error isolation; original heading heuristic retained.",
+    "pdf/renderer/page-probe.ts": "Cancellable single-page wrapper and invalid-dimension isolation.",
+    "slides/shared/ipc.ts": "Private browser-safe type boundary; no Electron runtime import.",
+    "slides/renderer/action-context.ts": "Read-only private editor type contract.",
+    "slides/renderer/components/ribbon-shared.tsx": "Private UI/type imports; editing UI is not mounted.",
+    "slides/renderer/insert-presets.ts": "Private UI/type imports."
+  }
 }

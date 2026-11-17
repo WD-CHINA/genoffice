@@ -39,6 +39,7 @@ import {
 } from './docx-continuous-layout'
 import { DocxReadingBar, DocxReadingHf, DocxReadingNotes, useDocxReadingZoom } from './docx-reading'
 import themeSansUrl from '@genoffice/viewer-renderers/docs/renderer/fonts/NotoSansCJKsc-Regular-subset.woff2?url'
+import { docxReadingPageStyle } from './docx-reading-page'
 import '@genoffice/viewer-renderers/docs/renderer/styles.css'
 import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
 
@@ -540,6 +541,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
       <div
         className="viewer-preview viewer-doc-remote viewer-doc-reading read-mode"
         data-docx-theme-fallback={styleContext.missingThemeFallback ? 'bundled' : undefined}
+        aria-label={name}
         onKeyDown={(event) => {
           if ((event.ctrlKey || event.metaKey) && ['+', '=', '-'].includes(event.key)) {
             event.preventDefault()
@@ -547,7 +549,6 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
           }
         }}
       >
-        {name && <span className="viewer-doc-remote-name">{name}</span>}
         {!!sourceBlocks.length && <DocxReadingBar controls={controls} />}
         {status && <p className="viewer-status">{status}</p>}
         {(error || windowError) && (
@@ -577,8 +578,7 @@ export function DocsRemote({ server, fileId, token, name }: Props) {
             <div
               className="page-wrap viewer-doc-reading-paper"
               style={{
-                width: settings.pageWidth / 15,
-                padding: `${settings.marginTop / 15}px ${settings.marginRight / 15}px ${settings.marginBottom / 15}px ${settings.marginLeft / 15}px`,
+                ...docxReadingPageStyle(settings),
                 ...docxSectionTypography(settings),
               }}
             >

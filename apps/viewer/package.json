@@ -17,6 +17,7 @@
     "test:pptx-fonts": "node --import tsx scripts/pptx-font-smoke.mts",
     "test:pdf-isolation": "node --import tsx scripts/pdf-page-isolation-smoke.mts",
     "test:pdf-runtime": "node --import tsx scripts/pdf-runtime-smoke.mts",
+    "test:porting": "node --import tsx scripts/porting-regression-smoke.mts",
     "test:android-pptx-fonts": "node scripts/android-pptx-font-smoke.mjs",
     "test:standalone": "node scripts/standalone-smoke.mjs",
     "package": "cross-env VIEWER_BASE=/viewer/ node scripts/build.mjs && node scripts/package.mjs",
@@ -30,6 +31,7 @@
   },
   "dependencies": {
     "@genoffice/docx-engine": "*",
+    "@genoffice/parse-contract": "*",
     "@genoffice/pptx-engine": "*",
     "@genoffice/pptx-render": "*",
     "@genoffice/ui": "*",
@@ -39,6 +41,7 @@
     "@tiptap/extensions": "3.31.0",
     "@tiptap/pm": "3.31.0",
     "@tiptap/react": "3.31.0",
+    "events": "3.3.0",
     "hash.js": "1.1.7",
     "jszip": "3.10.1",
     "konva": "9.3.20",
@@ -49,17 +52,16 @@
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-konva": "19.0.10",
-    "utif2": "4.1.0",
-    "@genoffice/parse-contract": "*"
+    "utif2": "4.1.0"
   },
   "devDependencies": {
     "@types/node": "24.10.1",
+    "@types/opentype.js": "^1.3.10",
     "@types/react": "19.2.14",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.0.4",
     "tsx": "4.21.0",
     "typescript": "5.9.3",
-    "vite": "7.3.6",
-    "@types/opentype.js": "^1.3.10"
+    "vite": "7.3.6"
   }
 }

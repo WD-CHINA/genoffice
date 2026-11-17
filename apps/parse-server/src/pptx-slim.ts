@@ -22,7 +22,9 @@ export interface SlimPptx {
 }
 
 function isMediaPart(name: string): boolean {
-  return name.startsWith('ppt/media/')
+  // Electron transforms these before display. Keep them in the bounded parser
+  // archive so the same resolver can decode TIFF and retint SVG per slide.
+  return name.startsWith('ppt/media/') && !/\.(?:tiff?|svg)$/i.test(name)
 }
 
 async function readEntry(source: ByteSource, entry: ZipEntry): Promise<Uint8Array> {

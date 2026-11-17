@@ -7,8 +7,10 @@ Existing desktop applications continue importing their original files.
 `sources.json` and `docs-sources.json` record the extraction inputs and the
 commit the copies were last synced from.
 
-Core SlideThumb/NodeBody/ChartBody/animation, PdfPage/LinkLayer and pure Word
-pagination algorithms are retained byte-for-byte. PaginationPreview has Viewer-only
+Core SlideThumb/NodeBody/ChartBody/animation, PDF and pure Word
+pagination algorithms retain the upstream implementation. The Viewer PDF page
+renderer additionally reports local failures; link overlays ignore failed annotations, and page probing and auxiliary scans
+support cancellation and unreadable pages. PaginationPreview has Viewer-only
 measurement/settling callbacks and sanitized interactive reading snapshots. Viewer adapters inject read-only
 slide data, locale events, PDF disabled controls, document initialization and
 layout inputs. The document controller calls the original per-block layout functions

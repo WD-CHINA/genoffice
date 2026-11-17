@@ -19,6 +19,10 @@ import { FormLayer } from '@genoffice/viewer-renderers/pdf/renderer/FormLayer'
 import { LinkLayer } from '@genoffice/viewer-renderers/pdf/renderer/LinkLayer'
 import { buildFormCatalog } from '@genoffice/viewer-renderers/pdf/renderer/form-catalog'
 import {
+  probePageGeometry,
+  type PageProbeFailure,
+} from '@genoffice/viewer-renderers/pdf/renderer/page-probe'
+import {
   DOC_OPTS,
   ZOOM_STEPS,
   MIN_SCALE,
@@ -65,6 +69,8 @@ export function Pdf({ src }: { src: string }) {
     [scale, setScale] = useState(1),
     [rotation, setRotation] = useState(0),
     [error, setError] = useState(''),
+    [pageFailures, setPageFailures] = useState<Map<number, PageProbeFailure>>(new Map()),
+    [warnings, setWarnings] = useState<Record<string, string>>({}),
     [query, setQuery] = useState(''),
     [matches, setMatches] = useState<SearchMatch[]>([]),
     [hit, setHit] = useState(0),
@@ -80,7 +86,9 @@ export function Pdf({ src }: { src: string }) {
   const scroll = useRef<HTMLDivElement>(null),
     thumbScroll = useRef<HTMLDivElement>(null),
     index = useRef<Promise<any> | null>(null),
-    loadingNotes = useRef(new Set<number>())
+    loadingNotes = useRef(new Set<number>()),
+    activeDocument = useRef<PDFDocumentProxy | null>(null),
+    unreadablePages = useRef(new Set<number>())
   const visible = useVisibleSet(scroll, doc?.numPages || 0, '800px', !!doc)
   const thumbs = useVisibleSet(
     thumbScroll,
@@ -89,6 +97,16 @@ export function Pdf({ src }: { src: string }) {
     !!doc && sidebar === 'thumbs',
   )
   const renderState = useCallback(noop, [])
+  const renderError = useCallback((document: PDFDocumentProxy, page: number, cause: unknown) => {
+    if (activeDocument.current !== document) return
+    unreadablePages.current.add(page)
+    setPageFailures((old) =>
+      new Map(old).set(page, {
+        page,
+        message: cause instanceof Error ? cause.message : String(cause),
+      }),
+    )
+  }, [])
   const scaleValue = useRef(scale)
   scaleValue.current = scale
   const fitAnchor = useRef<{ doc: PDFDocumentProxy; page: number; offset: number } | null>(null)
@@ -105,61 +123,132 @@ export function Pdf({ src }: { src: string }) {
   }, [scale, doc])
   useEffect(() => {
     let stopped = false
+    let passwordCancelled = false
+    activeDocument.current = null
+    unreadablePages.current = new Set()
+    index.current = null
+    loadingNotes.current = new Set()
+    fitAnchor.current = null
+    setDoc(null)
+    setGeoms([])
+    setCatalog(null)
+    setInfo(null)
+    setOutline([])
+    setGenerated(false)
+    setNotes(new Map())
+    setActiveNote(null)
+    setPageFailures(new Map())
+    setWarnings({})
+    setError('')
+    setMatches([])
+    setHit(0)
+    setCurrent(1)
+    setRotation(0)
+    setShowInfo(false)
+    if (scroll.current) scroll.current.scrollTop = 0
     const task = getDocument({ url: src, ...DOC_OPTS })
     task.onPassword = (update: (password: string) => void, reason: number) => {
       const value = window.prompt(reason === 2 ? 'PDF 密码不正确，请重试' : '请输入 PDF 打开密码')
+      if (stopped) return
       if (value !== null) update(value)
       else {
+        passwordCancelled = true
         setError('已取消密码输入')
-        void task.destroy()
+        void task.destroy().catch(() => {})
       }
     }
     void task.promise
       .then(async (document) => {
-        const sizes = []
-        for (let i = 1; i <= document.numPages; i++) {
-          const page = await document.getPage(i)
-          const vp = page.getViewport({ scale: 1, rotation: 0 })
-          sizes.push({
-            pw: vp.width,
-            ph: vp.height,
-            rot: page.rotate,
-            x0: page.view[0],
-            y0: page.view[1],
-            userUnit: page.userUnit,
-          })
-        }
-        const forms = await buildFormCatalog(document),
-          metadata = await document.getMetadata()
+        const cancelled = () => stopped || activeDocument.current !== document
         if (stopped) return
-        setGeoms(sizes)
-        setCatalog(forms)
-        setInfo(metadata)
+        activeDocument.current = document
+        const probe = await probePageGeometry(document, cancelled)
+        if (cancelled()) return
+        unreadablePages.current = new Set(probe.failures.map((failure) => failure.page))
+        setPageFailures(new Map(probe.failures.map((failure) => [failure.page, failure])))
+        setGeoms(
+          probe.pages.map((page) => ({
+            pw: page.width,
+            ph: page.height,
+            rot: page.rotate,
+            x0: page.origin[0],
+            y0: page.origin[1],
+            userUnit: page.userUnit,
+          })),
+        )
+        // Publish readable pages before optional scans. Metadata, annotations and
+        // bookmarks have independent failure boundaries and cannot hide the bitmap.
         setDoc(document)
-        const embedded = await document.getOutline()
-        const tree = embedded?.length
-          ? embedded
-          : await buildHeadingOutline(document, () => stopped)
-        if (!stopped) {
-          setOutline((tree || []) as OutlineNode[])
-          setGenerated(!embedded?.length)
+        const warn = (feature: string, message: string) => {
+          if (!cancelled()) setWarnings((old) => ({ ...old, [feature]: message }))
         }
+        const options = {
+          cancelled,
+          skipPage: (page: number) => unreadablePages.current.has(page),
+          onPageError: () => warn('forms', '部分页面的表单暂不可用，仍可阅读页面内容。'),
+        }
+        const forms = async () => {
+          try {
+            const value = await buildFormCatalog(document, options)
+            if (!cancelled()) setCatalog(value)
+          } catch {
+            warn('forms', '表单暂不可用，仍可阅读页面内容。')
+          }
+        }
+        const metadata = async () => {
+          try {
+            const value = await document.getMetadata()
+            if (!cancelled()) setInfo(value)
+          } catch {
+            warn('metadata', '文档信息暂不可用，仍可继续阅读。')
+          }
+        }
+        const outline = async () => {
+          let embedded: Awaited<ReturnType<PDFDocumentProxy['getOutline']>> | null = null
+          try {
+            embedded = await document.getOutline()
+          } catch {
+            warn('outline', '文档书签暂不可用，正在尝试识别标题目录。')
+          }
+          if (cancelled()) return
+          if (embedded?.length) {
+            setOutline(embedded as OutlineNode[])
+            setGenerated(false)
+            return
+          }
+          try {
+            const tree = await buildHeadingOutline(document, cancelled, {
+              ...options,
+              onPageError: () => warn('outline', '部分页面的文字无法读取，目录可能不完整。'),
+            })
+            if (!cancelled()) {
+              setOutline(tree || [])
+              setGenerated(true)
+            }
+          } catch {
+            warn('outline', '目录暂不可用，可使用页码继续阅读。')
+          }
+        }
+        await Promise.all([forms(), metadata(), outline()])
       })
-      .catch((e) => {
-        if (!stopped) setError(e.message)
+      .catch((cause) => {
+        if (!stopped && !passwordCancelled)
+          setError(cause instanceof Error ? cause.message : String(cause))
       })
     return () => {
       stopped = true
-      void task.destroy()
+      activeDocument.current = null
+      void task.destroy().catch(() => {})
     }
   }, [src])
+
   useEffect(() => {
     if (!doc) return
     let cancelled = false
     const pending = loadingNotes.current
     const inflight = new Set<number>()
     for (const page of visible.visible) {
-      if (pending.has(page)) continue
+      if (pending.has(page) || unreadablePages.current.has(page + 1)) continue
       pending.add(page)
       inflight.add(page)
       void loadSavedAnnots(doc, page)
@@ -192,6 +281,7 @@ export function Pdf({ src }: { src: string }) {
       const value = typeof dest === 'string' ? await doc.getDestination(dest) : dest
       if (!Array.isArray(value) || !value.length) return
       const page = typeof value[0] === 'number' ? value[0] : await doc.getPageIndex(value[0])
+      if (activeDocument.current !== doc) return
       if (Number.isInteger(page)) goPage(page + 1)
     } catch {
       /* A corrupt link does not interrupt reading. */
@@ -246,17 +336,31 @@ export function Pdf({ src }: { src: string }) {
     return () => observer.disconnect()
   }, [fit, geoms, current, rotation, sidebar, doc])
   async function search() {
-    if (!doc) return
+    const document = doc
+    if (!document) return
+    const cancelled = () => activeDocument.current !== document
     try {
-      index.current ??= buildSearchIndex(doc)
+      index.current ??= buildSearchIndex(document, {
+        cancelled,
+        skipPage: (page) => unreadablePages.current.has(page),
+        onPageError: () => {
+          if (!cancelled())
+            setWarnings((old) => ({
+              ...old,
+              search: '部分页面的文字无法读取，搜索结果可能不完整。',
+            }))
+        },
+      })
       const found = searchInIndex(await index.current, query)
+      if (cancelled()) return
       setMatches(found)
       setHit(0)
       if (found.length) goPage(found[0].pageIndex + 1)
-    } catch (e) {
-      setError(String(e))
+    } catch (cause) {
+      if (!cancelled()) setWarnings((old) => ({ ...old, search: '搜索暂不可用，仍可继续阅读。' }))
     }
   }
+
   function step(delta: number) {
     if (!matches.length) return
     const next = (hit + delta + matches.length) % matches.length
@@ -365,10 +469,23 @@ export function Pdf({ src }: { src: string }) {
           {error}
         </p>
       )}
-      {info?.info?.IsXFAPresent && (
-        <p className="viewer-warning" role="status">
-          该文档包含 XFA，部分动态表单可能无法完整展示。
-        </p>
+      {(pageFailures.size > 0 || Object.keys(warnings).length > 0 || info?.info?.IsXFAPresent) && (
+        <div className="viewer-warning" role="status">
+          {pageFailures.size > 0 && (
+            <p>
+              {pageFailures.size === geoms.length
+                ? `这份 PDF 的 ${pageFailures.size} 页均无法加载，请检查文件或重新打开。`
+                : `有 ${pageFailures.size} 页无法加载（第 ${[...pageFailures.keys()]
+                    .sort((a, b) => a - b)
+                    .slice(0, 5)
+                    .join('、')} 页${pageFailures.size > 5 ? '等' : ''}），其余页面仍可阅读。`}
+            </p>
+          )}
+          {Object.entries(warnings).map(([key, message]) => (
+            <p key={key}>{message}</p>
+          ))}
+          {info?.info?.IsXFAPresent && <p>该文档包含 XFA，部分动态表单可能无法完整展示。</p>}
+        </div>
       )}
       {showInfo && (
         <div className="viewer-info" role="region" aria-label="文档信息">
@@ -407,13 +524,17 @@ export function Pdf({ src }: { src: string }) {
                   aria-current={current === i + 1}
                   onClick={() => goPage(i + 1)}
                 >
-                  <PdfThumb
-                    doc={doc}
-                    pageNo={i + 1}
-                    rotationDelta={rotation}
-                    visible={thumbs.visible.has(i)}
-                    rasterW={126}
-                  />
+                  {pageFailures.has(i + 1) ? (
+                    <span className="viewer-pdf-failed-thumb">加载失败</span>
+                  ) : (
+                    <PdfThumb
+                      doc={doc}
+                      pageNo={i + 1}
+                      rotationDelta={rotation}
+                      visible={thumbs.visible.has(i)}
+                      rasterW={126}
+                    />
+                  )}
                   <span>{i + 1}</span>
                 </button>
               ))
@@ -432,7 +553,9 @@ export function Pdf({ src }: { src: string }) {
                 odd = rot % 180 !== 0,
                 g = { ...geom, rot },
                 threads = notes.get(i) || [],
-                active = threads.find((th) => th.key === activeNote)
+                active = pageFailures.has(i + 1)
+                  ? undefined
+                  : threads.find((th) => th.key === activeNote)
               return (
                 <div className="viewer-pdf-row" key={i}>
                   <div
@@ -444,15 +567,27 @@ export function Pdf({ src }: { src: string }) {
                       height: (odd ? geom.pw : geom.ph) * scale,
                     }}
                   >
-                    <PdfPage
-                      doc={doc}
-                      pageNo={i + 1}
-                      scale={scale}
-                      rotationDelta={rotation}
-                      visible={visible.visible.has(i)}
-                      onRenderState={renderState}
-                    />
-                    {visible.visible.has(i) && (
+                    {pageFailures.has(i + 1) ? (
+                      <div
+                        className="viewer-pdf-failed-page"
+                        role="status"
+                        aria-label={`第 ${i + 1} 页加载失败`}
+                      >
+                        <strong>第 {i + 1} 页无法加载</strong>
+                        <span>该页内容暂不可用，可继续翻阅其他页面。</span>
+                      </div>
+                    ) : (
+                      <PdfPage
+                        doc={doc}
+                        pageNo={i + 1}
+                        scale={scale}
+                        rotationDelta={rotation}
+                        visible={visible.visible.has(i)}
+                        onRenderState={renderState}
+                        onRenderError={renderError}
+                      />
+                    )}
+                    {visible.visible.has(i) && !pageFailures.has(i + 1) && (
                       <>
                         <FormLayer
                           widgets={catalog?.byPage.get(i) || []}

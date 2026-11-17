@@ -874,6 +874,35 @@ html[data-viewer-errors='false'] #root .viewer-warning {
 .viewer-pdf-scroll {
   scroll-padding-block: 24px;
 }
+.viewer-pdf-failed-page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px;
+  box-sizing: border-box;
+  background: #fff;
+  color: #4b5563;
+  text-align: center;
+  font-size: 14px;
+}
+.viewer-pdf-failed-page strong {
+  color: #b42318;
+  font-size: 18px;
+}
+.viewer-pdf-failed-thumb {
+  display: grid;
+  min-height: 120px;
+  place-items: center;
+  color: var(--viewer-error);
+}
+.viewer-warning > p {
+  width: 100%;
+  margin: 0;
+}
 .viewer-preview > :is(.viewer-error, .viewer-warning) {
   position: absolute;
   z-index: 85;

@@ -137,7 +137,8 @@
     "apps/slides/src/renderer/ink-presets.ts",
     "apps/pdf/src/renderer/redact-patterns.ts",
     "apps/slides/src/renderer/export-svg.ts",
-    "apps/slides/src/renderer/canvas-kerning.ts"
+    "apps/slides/src/renderer/canvas-kerning.ts",
+    "apps/pdf/src/renderer/page-probe.ts"
   ],
   "typeFiles": [
     "apps/slides/src/shared/ipc.ts",
@@ -167,6 +168,7 @@
     "Read-only Viewer adapters and continuous DOCX reading remain private.",
     "Desktop font-rule entry points are mapped to private modules; missing-theme SC fallback is recognized.",
     "PPT canvas kerning is installed in Viewer; browser width feedback separates kerning modes.",
-    "Remote metafile limits, retry, decode concurrency and image release are retained."
+    "Remote metafile limits, retry, decode concurrency and image release are retained.",
+    "PDF page probing supports cancellation; auxiliary scans and link overlays tolerate page errors, and bitmap rendering reports page-local failures."
   ]
 }

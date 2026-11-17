@@ -1,6 +1,7 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { VISUAL_SIGNATURE_CONTENT_PREFIX } from '../shared/ipc'
 import { dateFormatFromActions } from './date-format'
+import { readPageValue, type PageReadOptions } from './page-read'
 
 export type FormWidgetKind = 'text' | 'checkbox' | 'radio' | 'choice' | 'signature'
 
@@ -201,14 +202,22 @@ export function widgetsFromAnnotations(annots: RawFormAnnotation[], pageIndex = 
 }
 
 /** Build the whole-document catalog once so ribbon, FormLayer, and AI share field semantics. */
-export async function buildFormCatalog(doc: PDFDocumentProxy): Promise<FormCatalog> {
+export async function buildFormCatalog(
+  doc: PDFDocumentProxy,
+  options: PageReadOptions = {},
+): Promise<FormCatalog> {
   const widgets: FormWidget[] = []
   const fields = new Map<string, FormField>()
   const byPage = new Map<number, FormWidget[]>()
 
   for (let pageIndex = 0; pageIndex < doc.numPages; pageIndex++) {
-    const page = await doc.getPage(pageIndex + 1)
-    const annotations = (await page.getAnnotations()) as RawFormAnnotation[]
+    if (options.cancelled?.()) break
+    const annotations = ((await readPageValue(
+      doc,
+      pageIndex + 1,
+      (page) => page.getAnnotations(),
+      options,
+    )) ?? []) as RawFormAnnotation[]
     const pageWidgets = widgetsFromAnnotations(annotations, pageIndex)
     const visualSignatures = annotations.filter(
       (annotation) =>
@@ -262,11 +271,11 @@ export async function buildFormCatalog(doc: PDFDocumentProxy): Promise<FormCatal
     }
   }
 
-  const allNames = await (
-    doc as { getFieldObjects?: () => Promise<Record<string, unknown> | null> }
-  )
-    .getFieldObjects?.()
-    .catch(() => null)
+  const allNames = options.cancelled?.()
+    ? null
+    : await (doc as { getFieldObjects?: () => Promise<Record<string, unknown> | null> })
+        .getFieldObjects?.()
+        .catch(() => null)
   const otherFieldNames = new Set(Object.keys(allNames ?? {}).filter((n) => !fields.has(n)))
   return { widgets, fields, byPage, otherFieldNames }
 }

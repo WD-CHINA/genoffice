@@ -62,12 +62,17 @@ export function LinkLayer({
 
   useEffect(() => {
     let cancelled = false
+    setLinks(null)
     void (async () => {
       const page = await doc.getPage(pageNo)
+      if (cancelled) return
       const annots = (await page.getAnnotations()) as RawLinkAnnotation[]
       if (cancelled) return
       setLinks(collectPageLinks(annots))
-    })()
+    })().catch(() => {
+      // The page bitmap remains usable when only its link annotations fail.
+      if (!cancelled) setLinks([])
+    })
     return () => {
       cancelled = true
     }

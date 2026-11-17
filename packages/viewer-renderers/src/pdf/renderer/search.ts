@@ -2,6 +2,7 @@ import type { PDFDocumentProxy } from 'pdfjs-dist'
 import { foldCase, isWordChar } from '../../ui/find-text'
 import { findPattern } from './redact-patterns'
 import type { RedactPattern } from './redact-patterns'
+import { readPageValue, type PageReadOptions } from './page-read'
 
 /** One hit: original page + PDF user-space rects (multiple when spanning several text items) */
 export interface SearchMatch {
@@ -70,14 +71,17 @@ interface RawTextItem {
 }
 
 /** Concatenate text per page + record each item's char range and PDF-space box (built once, cached per doc by caller) */
-export async function buildSearchIndex(doc: PDFDocumentProxy): Promise<SearchIndex> {
+export async function buildSearchIndex(
+  doc: PDFDocumentProxy,
+  options: PageReadOptions = {},
+): Promise<SearchIndex> {
   const entries: PageEntry[] = []
   for (let n = 1; n <= doc.numPages; n++) {
-    const page = await doc.getPage(n)
-    const content = await page.getTextContent()
+    if (options.cancelled?.()) break
+    const content = await readPageValue(doc, n, (page) => page.getTextContent(), options)
     let text = ''
     const items: IndexedItem[] = []
-    for (const it of content.items as RawTextItem[]) {
+    for (const it of (content?.items ?? []) as RawTextItem[]) {
       if (typeof it.str !== 'string') continue
       if (it.str.length > 0) {
         // Geometry is optional; without a transform the item still contributes its

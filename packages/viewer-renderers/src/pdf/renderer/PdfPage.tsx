@@ -52,6 +52,7 @@ export function PdfPage({
   rotationDelta,
   visible,
   onRenderState,
+  onRenderError,
 }: {
   doc: PDFDocumentProxy
   pageNo: number
@@ -60,6 +61,7 @@ export function PdfPage({
   rotationDelta: number
   visible: boolean
   onRenderState: (doc: PDFDocumentProxy, pageNo: number, pending: boolean) => void
+  onRenderError?: (doc: PDFDocumentProxy, pageNo: number, error: unknown) => void
 }) {
   const holderRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -105,11 +107,7 @@ export function PdfPage({
         annotationMode: AnnotationMode.ENABLE_FORMS,
         transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : undefined,
       })
-      try {
-        await renderTask.promise
-      } catch {
-        return // cancelled
-      }
+      await renderTask.promise
       if (cancelled) return
       const textDiv = document.createElement('div')
       textDiv.className = 'textLayer'
@@ -117,22 +115,26 @@ export function PdfPage({
       // Notify after the bitmap swap, but before the browser paints. A post-save
       // reload uses this to remove the matching edit previews in the same frame.
       onRenderState(doc, pageNo, false)
-      const textLayer = new TextLayer({
-        textContentSource: page.streamTextContent(),
-        container: textDiv,
-        viewport,
-      })
       try {
+        const textLayer = new TextLayer({
+          textContentSource: page.streamTextContent(),
+          container: textDiv,
+          viewport,
+        })
         await textLayer.render()
       } catch {
-        /* cancelled */
+        /* An unavailable text layer must not discard a completed page bitmap. */
       }
-    })()
+    })().catch((error) => {
+      if (cancelled) return
+      onRenderState(doc, pageNo, false)
+      onRenderError?.(doc, pageNo, error)
+    })
     return () => {
       cancelled = true
       renderTask?.cancel()
     }
-  }, [doc, pageNo, scale, rotationDelta, visible, onRenderState])
+  }, [doc, pageNo, scale, rotationDelta, visible, onRenderState, onRenderError])
   return <div ref={holderRef} className="pdf-page-content" />
 }
 

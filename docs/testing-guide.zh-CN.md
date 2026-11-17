@@ -257,15 +257,15 @@ Android 最终媒体验收合并了同一新 APK 下 **3 份完整在线/离线�
 
 证据目录 `/tmp/genoffice-android-documents-20261116/` 保存 `*.run.json` 命令、耗时与退出状态，`*.log` 原始输出，`final-ui.json` 及对应页面 JSON/设备截图。`verification-index.json` 汇总 11 个最终阶段、原始未通过尝试及收尾校验，`cleanup.json` 记录已安装 APK 与最终构建哈希一致、连接偏好/网络/USB 映射恢复。结果：
 
-| 检查 | 本轮结果与证据 |
-| --- | --- |
-| 服务端常规套件 | 480 通过、91 依赖测试跳过；`server.*`。跳过不计通过 |
-| 真实 MySQL | 隔离 Compose 项目 `genoffice-android-documents-20261116` 执行 `library-mysql.test.ts`，12 通过、0 跳过；`mysql.*`。只补验相关数据库套件，未重跑全部 Redis/媒体/多实例矩阵 |
-| 静态检查 | parse-server `tsc --noEmit`、修改 TS 文件 ESLint/Prettier、`git diff --check` 通过 |
+| 检查              | 本轮结果与证据                                                                                                                                                               |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 服务端常规套件    | 480 通过、91 依赖测试跳过；`server.*`。跳过不计通过                                                                                                                          |
+| 真实 MySQL        | 隔离 Compose 项目 `genoffice-android-documents-20261116` 执行 `library-mysql.test.ts`，12 通过、0 跳过；`mysql.*`。只补验相关数据库套件，未重跑全部 Redis/媒体/多实例矩阵    |
+| 静态检查          | parse-server `tsc --noEmit`、修改 TS 文件 ESLint/Prettier、`git diff --check` 通过                                                                                           |
 | Android 构建/测试 | `android build '<android-demo绝对路径>?:app:assembleDebug' -- :app:assembleDebugAndroidTest`；应用和测试 APK 构建、保留数据安装通过；`native-final.log` 明确 `OK (50 tests)` |
-| 列表与在线预览 | 实机刷新、20 → 25 条分页；课时计划 DOCX、南宁天桃 PPTX、生成 PDF 从列表进入在线顶层预览，无 iframe、主题 light；`final-ui.*` |
-| 下载与离线 | 本轮重新下载 DOCX/PDF；PPTX 使用既有校验缓存。移除两项远程 USB 映射且关闭 Wi-Fi/移动数据，三格式冷启动本地预览成功；页面记录的 API 请求均为本地；`final-*-offline-cold.*` |
-| 主题与空/错误目录 | 深色、跟随系统（设备当前为日间）、浅色选择在进程重启后保留并作用于预览；无效令牌显示 HTTP 401，独立空服务显示暂无文档；`theme-ui.*` |
+| 列表与在线预览    | 实机刷新、20 → 25 条分页；课时计划 DOCX、南宁天桃 PPTX、生成 PDF 从列表进入在线顶层预览，无 iframe、主题 light；`final-ui.*`                                                 |
+| 下载与离线        | 本轮重新下载 DOCX/PDF；PPTX 使用既有校验缓存。移除两项远程 USB 映射且关闭 Wi-Fi/移动数据，三格式冷启动本地预览成功；页面记录的 API 请求均为本地；`final-*-offline-cold.*`    |
+| 主题与空/错误目录 | 深色、跟随系统（设备当前为日间）、浅色选择在进程重启后保留并作用于预览；无效令牌显示 HTTP 401，独立空服务显示暂无文档；`theme-ui.*`                                          |
 
 设备为 HUAWEI AGS5-W00 / Android 12 / WebView 114；服务使用仓库当前源码与独立文件存储目录。PDF 是一页生成样本。此次验证目录、主题及导航，不重跑全部媒体播放、复杂排版或长稳；PPT 首次播放前暂停定位的既有边界仍见[预览入口说明](preview-entry.zh-CN.md)。业务原文件只读。
 
@@ -276,3 +276,13 @@ Android 最终媒体验收合并了同一新 APK 下 **3 份完整在线/离线�
 ## 2026-11-17 上游迁移回归
 
 上游 v0.13.18 合并、私有包迁移及本轮证据见 [迁移记录](upstream-v0.13.18-migration.zh-CN.md)。Android Word 脚本现按连续只读阅读验证；PDF 离线 Range 探针按统一入口的同源默认值定位 API。历史分页验收保留其当时范围，不替代当前连续阅读回归。
+
+## 2026-11-17 PDF 单页失败隔离
+
+独立 Viewer 的私有 PDF 渲染包已接入上游页面探测逻辑：探测或绘制失败的页面保留原页码及占位，其他页面继续阅读。探测失败时沿用前一正常页的尺寸，首个正常页出现前使用 A4 尺寸。表单、链接批注、文字搜索、自动目录、元数据和书签读取分别容错；文字层失败时保留已完成的页面位图。切换文件会取消旧文档的后续扫描并丢弃迟到结果。
+
+`pnpm --filter @genoffice/viewer test:pdf-isolation` 需要先启动 Viewer Vite 开发服务，默认地址 `http://127.0.0.1:11042/`，可用 `VIEWER_PDF_ISOLATION_URL` 指定；通过本机 Chrome 运行。`VIEWER_PDF_ISOLATION_OUTPUT` 指定证据目录，默认 `/tmp/genoffice-pdf-isolation/`。
+
+本轮 Viewer 159 项单元测试、类型检查及独立包构建通过。浏览器 9 个场景通过：真实损坏的三页 PDF（中间页引用缺失对象）、正常文件、绘制失败、辅助信息失败、元数据持续等待、文字层失败、全部页面不可读、探测期间切换文件、整个文件无效。其中真实损坏文件直接经过 PDF.js；其余异常通过测试传输层注入，不修改生产代码。验证包括正常页实际位图与文字、原始页码、跳页及旋转、搜索跳转和无未处理异常。报告与截图保存在上述临时证据目录。
+
+本轮内置浏览器连接超时，使用本机 Chrome 回归；未重新执行 Android 实机验收。此改动不涉及服务端解析契约和原桌面 PDF 应用。

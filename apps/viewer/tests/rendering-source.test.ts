@@ -10,11 +10,9 @@ const core = [
   'slides/renderer/animation-play.ts',
   'slides/renderer/components/AnimatedSlide.tsx',
   'slides/renderer/text-warp.ts',
-  'pdf/renderer/PdfPage.tsx',
-  'pdf/renderer/LinkLayer.tsx',
-  'pdf/renderer/form-catalog.ts',
+  // PDF page rendering and auxiliary readers have private failure-isolation
+  // adapters, covered by pdf-page-isolation.test.ts and the browser smoke.
   'pdf/renderer/view-config.ts',
-  'pdf/renderer/heading-outline.ts',
   'pdf/renderer/OutlinePanel.tsx',
   'pdf/renderer/annotation-catalog.ts',
   'pdf/renderer/note-threads.ts',

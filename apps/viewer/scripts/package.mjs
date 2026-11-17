@@ -46,6 +46,9 @@ await cp(
   resolve(root, 'packages/viewer-renderers/src/docs/renderer/fonts/LICENSE-OFL.txt'),
   resolve(output, 'FONT-LICENSE-OFL.txt'),
 )
+for (const name of await readdir(resolve(app, 'src/web/fonts')))
+  if (/^LICENSE-/.test(name))
+    await cp(resolve(app, 'src/web/fonts', name), resolve(output, 'FONT-' + name))
 await writeFile(
   resolve(output, 'README.md'),
   `# GenOffice Web Viewer

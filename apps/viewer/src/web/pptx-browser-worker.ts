@@ -12,7 +12,8 @@ import {
 import { buildRenderSlide } from '@genoffice/pptx-render'
 import { createBrowserMedia, servedMedia } from './browser-media'
 import { createBundledMetrics, type ParsedFace } from './bundled-metrics'
-import { METRIC_FONTS, type MetricFont } from './metric-fonts'
+import { METRIC_FONTS } from './metric-fonts'
+import { createMetricFontLoader } from './load-metric-font'
 import { createFontDemand, type AvailableFont } from './font-demand'
 
 type Opened = Awaited<ReturnType<typeof openPptx>>
@@ -27,6 +28,7 @@ let fontList: Array<{
   italic: boolean
   url?: string
   also?: string[]
+  descriptors?: import('./metric-font-types').MetricFont['descriptors']
 }> = []
 const embedded = new Map<string, Uint8Array>()
 const mediaRefs = new Map<string, string>()
@@ -37,53 +39,7 @@ let rendered: any[] = []
 let dependencies: Array<Set<string>> = []
 let activeKeys: Set<string> | null = null
 
-function tuneCarlito(font: {
-  ascender: number
-  descender: number
-  lineGap?: number
-  tables?: { os2?: { usWinAscent?: number; usWinDescent?: number } }
-}) {
-  const os2 = font.tables?.os2
-  if (os2?.usWinAscent && os2.usWinDescent != null) {
-    font.ascender = os2.usWinAscent
-    font.descender = -Math.abs(os2.usWinDescent)
-    font.lineGap = 0
-  }
-}
-
-async function loadMetric(font: MetricFont): Promise<ParsedFace | null> {
-  const response = await fetch(font.url)
-  if (!response.ok) return null
-  try {
-    const parsed = parseFont(await response.arrayBuffer())
-    if (font.tuneWin) tuneCarlito(parsed)
-    return {
-      family: font.family,
-      bold: font.bold,
-      italic: font.italic,
-      names: font.names,
-      font: parsed,
-    }
-  } catch {
-    return {
-      family: font.family,
-      bold: font.bold,
-      italic: font.italic,
-      names: font.names,
-      font: {
-        unitsPerEm: 1000,
-        ascender: 800,
-        descender: -200,
-        getAdvanceWidth() {
-          throw new Error('font bytes are not measurable')
-        },
-        charToGlyphIndex() {
-          return 0
-        },
-      },
-    }
-  }
-}
+const loadMetric = createMetricFontLoader()
 
 function mediaResolver(path: string) {
   if (!mediaResolvers.has(path))
@@ -149,10 +105,14 @@ async function open(input: { bytes: ArrayBuffer; width: number }) {
     const italic = face.style === 'italic' || face.style === 'boldItalic'
     embeddedFonts.push({ id, family: face.typeface, bold, italic, names: [face.typeface] })
   }
-  const catalog: Array<AvailableFont & { url?: string; tuneWin?: boolean }> = [
-    ...METRIC_FONTS.map((font) => ({ ...font, id: font.url })),
-    ...embeddedFonts,
-  ]
+  const catalog: Array<
+    AvailableFont & {
+      url?: string
+      tuneWin?: boolean
+      metricsUrl?: string
+      descriptors?: import('./metric-font-types').MetricFont['descriptors']
+    }
+  > = [...METRIC_FONTS, ...embeddedFonts]
   const parsedAt = performance.now()
   playback = opened.deck.slides.map((slide, index) => {
     const ids = new Map(slide.elements.map((el) => [elementSpid(el), el]))
@@ -207,6 +167,7 @@ async function open(input: { bytes: ArrayBuffer; width: number }) {
           bold: font.bold,
           italic: font.italic,
           ...(font.url ? { url: font.url } : {}),
+          descriptors: font.descriptors,
           also: font.names.filter((name) => name !== font.family),
         }))
       timings = {

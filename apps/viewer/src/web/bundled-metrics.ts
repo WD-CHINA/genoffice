@@ -4,12 +4,15 @@ import {
   type FontMetricsProvider,
   type RunStyle,
 } from '@genoffice/pptx-render'
+import { fontName, fontVariants, fallbackFamilies } from './font-selection'
+import type { MetricFont } from './metric-font-types'
 
 export interface ParsedFace {
   family: string
   bold: boolean
   italic: boolean
   names: string[]
+  descriptors?: MetricFont['descriptors']
   font: {
     unitsPerEm: number
     ascender: number
@@ -30,65 +33,118 @@ export interface WidthItem {
   kerning?: boolean
 }
 
-function norm(name: string) {
-  return name
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/[\s\-_]/g, '')
-}
-
-function hasCjk(text: string) {
-  return /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/.test(text)
-}
-
-function hasArabic(text: string) {
-  return /[\u0600-\u06ff\u0750-\u077f]/.test(text)
-}
-
 /** opentype metrics over the shipped metric-compatible faces, plus a canvas refine queue. */
 export function createBundledMetrics(
   faces: ParsedFace[],
   onRequest?: (style: RunStyle, text?: string) => void,
   onMeasure?: (key: string) => void,
 ) {
-  const byName = new Map<string, ParsedFace>()
-  for (const face of faces) {
-    byName.set(`${norm(face.family)}|${face.bold ? 1 : 0}${face.italic ? 1 : 0}`, face)
-    for (const name of face.names)
-      byName.set(`${norm(name)}|${face.bold ? 1 : 0}${face.italic ? 1 : 0}`, face)
+  const byName = new Map<string, ParsedFace[]>()
+  for (const face of faces)
+    for (const name of new Set([face.family, ...face.names])) {
+      const key = fontName(name)
+      byName.set(key, [...(byName.get(key) ?? []), face])
+    }
+  const groups = new Map<string, ParsedFace[]>()
+  const group = (name: string, style: RunStyle) => {
+    const key = `${fontName(name)}|${+!!style.bold}${+!!style.italic}`
+    if (!groups.has(key)) groups.set(key, fontVariants(byName.get(fontName(name)) ?? [], style))
+    return groups.get(key)!
   }
   const pending = new Map<string, WidthItem>()
   const cache = new Map<string, number>()
   const fallbacks = new Set<string>()
-  const resolve = (
-    style: RunStyle,
-    text?: string,
-  ): { face: ParsedFace; substituted: boolean } | undefined => {
-    onRequest?.(style, text)
-    const key = `${norm(style.fontFamily)}|${style.bold ? 1 : 0}${style.italic ? 1 : 0}`
-    const exact = byName.get(key) || byName.get(`${norm(style.fontFamily)}|00`)
-    if (exact && (!text || !hasCjk(text) || covers(exact, text)))
-      return { face: exact, substituted: false }
-    if (text && hasCjk(text)) {
-      const cjk =
-        byName.get(`notosanscjksc|${style.bold ? 1 : 0}${style.italic ? 1 : 0}`) ||
-        byName.get('notosanscjksc|00')
-      if (cjk) return { face: cjk, substituted: !exact }
+  const ranges = new WeakMap<ParsedFace, Array<[number, number]>>()
+  const contains = (face: ParsedFace, char: string) => {
+    const range = face.descriptors?.unicodeRange
+    if (range) {
+      if (!ranges.has(face))
+        ranges.set(
+          face,
+          range.split(',').map((part) => {
+            const raw = part.trim().replace(/^U\+/i, '')
+            if (raw.includes('?'))
+              return [parseInt(raw.replace(/\?/g, '0'), 16), parseInt(raw.replace(/\?/g, 'F'), 16)]
+            const [lo, hi = lo] = raw.split('-')
+            return [parseInt(lo!, 16), parseInt(hi!, 16)]
+          }),
+        )
+      const cp = char.codePointAt(0)!
+      if (!ranges.get(face)!.some(([lo, hi]) => cp >= lo && cp <= hi)) return false
     }
-    if (text && hasArabic(text)) {
-      const arabic = byName.get('notonaskharabic|00')
-      if (arabic) return { face: arabic, substituted: !exact }
-    }
-    const latin =
-      byName.get(`carlito|${style.bold ? 1 : 0}${style.italic ? 1 : 0}`) || byName.get('carlito|00')
-    return latin ? { face: latin, substituted: !exact } : undefined
+    const glyph =
+      face.font.charToGlyphIndex ?? ((c: string) => face.font.charToGlyph?.(c)?.index ?? 1)
+    return glyph.call(face.font, char) !== 0
   }
-  const inner = new OpentypeMetrics((style) => resolve(style)?.face.font, new HeuristicMetrics())
+  const pick = (members: ParsedFace[], char: string) => {
+    for (let i = members.length - 1; i >= 0; i--) if (contains(members[i]!, char)) return members[i]
+    return undefined
+  }
+  const covers = (members: ParsedFace[], text: string) =>
+    [...text].every(
+      (char) => !char.trim() || /[\u200c\u200d\ufe0e\ufe0f]/.test(char) || pick(members, char),
+    )
+  const resolve = (style: RunStyle, text = '') => {
+    onRequest?.(style, text)
+    const exact = group(style.fontFamily, style)
+    if (exact.length && covers(exact, text)) return { members: exact, substituted: false }
+    for (const family of fallbackFamilies(style, text)) {
+      const members = group(family, style)
+      if (members.length && covers(members, text)) return { members, substituted: !exact.length }
+    }
+    // Keep an available font's line metrics even for an uncovered glyph; browser
+    // refinement and fallback reporting remain active rather than inventing coverage.
+    const members = exact.length ? exact : group('Carlito', style)
+    return members.length ? { members, substituted: !exact.length } : undefined
+  }
+  const heuristic = new HeuristicMetrics()
+  const inner = (face: ParsedFace) => new OpentypeMetrics(() => face.font, heuristic)
+  const scaleOf = (face: ParsedFace) => parseFloat(face.descriptors?.sizeAdjust ?? '100') / 100
+  const measure = (text: string, style: RunStyle, members: ParsedFace[]) => {
+    let total = 0,
+      fragment = '',
+      previous: ParsedFace | undefined
+    const flush = () => {
+      if (!fragment) return
+      total += previous
+        ? inner(previous).measure(fragment, {
+            ...style,
+            fontSizePx: style.fontSizePx * scaleOf(previous),
+          })
+        : heuristic.measure(fragment, style)
+      fragment = ''
+    }
+    for (const char of text) {
+      const face = pick(members, char)
+      if (face !== previous) flush()
+      previous = face
+      fragment += char
+    }
+    flush()
+    return total
+  }
   const provider: FontMetricsProvider = {
-    metrics: (style) => inner.metrics(style),
+    metrics: (style) => {
+      const found = resolve(style)
+      if (!found) return heuristic.metrics(style)
+      const face = pick(found.members, 'A') ?? found.members[found.members.length - 1]!
+      const scale = scaleOf(face)
+      const metrics = inner(face).metrics({ ...style, fontSizePx: style.fontSizePx * scale })
+      const override = (value: string | undefined, fallback: number) =>
+        value && value !== 'normal'
+          ? (parseFloat(value) / 100) * style.fontSizePx * scale
+          : fallback
+      const ascent = override(face.descriptors?.ascentOverride, metrics.ascent)
+      const descent = override(face.descriptors?.descentOverride, metrics.descent)
+      const externalLeading = override(
+        face.descriptors?.lineGapOverride,
+        metrics.externalLeading ?? 0,
+      )
+      return { ascent, descent, lineHeight: ascent + descent, externalLeading }
+    },
     measure: (text, style) => {
       const found = resolve(style, text)
-      const family = found?.face.family || style.fontFamily
+      const family = found?.members[0]?.family || style.fontFamily
       if (found?.substituted) fallbacks.add(style.fontFamily)
       if (text) {
         const key = `${style.bold ? 'b' : ''}${style.italic ? 'i' : ''}${style.kerning === false ? 'n' : ''}|${family}|${text}`
@@ -104,10 +160,9 @@ export function createBundledMetrics(
           kerning: style.kerning,
         })
       }
-      if (!found) return inner.measure(text, style)
-      return inner.measure(text, { ...style, fontFamily: found.face.family })
+      return found ? measure(text, style, found.members) : heuristic.measure(text, style)
     },
-    displayFamily: (style, text) => resolve(style, text)?.face.family || style.fontFamily,
+    displayFamily: (style, text) => resolve(style, text)?.members[0]?.family || style.fontFamily,
     substituted: (style) => resolve(style)?.substituted === true,
   }
   return {
@@ -127,13 +182,4 @@ export function createBundledMetrics(
       }
     },
   }
-}
-
-function covers(face: ParsedFace, text: string) {
-  const glyph =
-    face.font.charToGlyphIndex || ((char: string) => face.font.charToGlyph?.(char)?.index ?? 1)
-  for (const char of text) {
-    if (char.trim() && glyph.call(face.font, char) === 0) return false
-  }
-  return true
 }

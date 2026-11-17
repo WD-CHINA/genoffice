@@ -10,7 +10,8 @@
 import { parse as parseFont } from 'opentype.js'
 import { buildRenderSlide } from '@genoffice/pptx-render'
 import { createBundledMetrics, type ParsedFace } from './bundled-metrics'
-import { METRIC_FONTS, type MetricFont } from './metric-fonts'
+import { METRIC_FONTS } from './metric-fonts'
+import { createMetricFontLoader } from './load-metric-font'
 import { needsResourceRefresh, originOf } from './signed-url'
 
 interface SessionFont {
@@ -60,37 +61,7 @@ const sources = new Map<number, LayoutSlide>()
 const units = new Map<number, Unit>()
 const dependencies = new Map<number, Set<string>>()
 
-function tuneCarlito(font: {
-  ascender: number
-  descender: number
-  lineGap?: number
-  tables?: { os2?: { usWinAscent?: number; usWinDescent?: number } }
-}) {
-  const os2 = font.tables?.os2
-  if (os2?.usWinAscent && os2.usWinDescent != null) {
-    font.ascender = os2.usWinAscent
-    font.descender = -Math.abs(os2.usWinDescent)
-    font.lineGap = 0
-  }
-}
-
-async function loadMetric(font: MetricFont): Promise<ParsedFace | null> {
-  try {
-    const response = await fetch(font.url)
-    if (!response.ok) return null
-    const parsed = parseFont(await response.arrayBuffer())
-    if (font.tuneWin) tuneCarlito(parsed)
-    return {
-      family: font.family,
-      bold: font.bold,
-      italic: font.italic,
-      names: font.names,
-      font: parsed,
-    }
-  } catch {
-    return null
-  }
-}
+const loadMetric = createMetricFontLoader()
 
 async function loadEmbedded(font: SessionFont): Promise<ParsedFace | null> {
   try {

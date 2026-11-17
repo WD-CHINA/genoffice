@@ -16,6 +16,7 @@ export interface PptxDeck {
     italic: boolean
     url?: string
     also?: string[]
+    descriptors?: import('./metric-font-types').MetricFont['descriptors']
   }>
   fallbacks: string[]
   /** descriptor data url in a render tree → the media part it stands for */

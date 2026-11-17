@@ -1810,6 +1810,33 @@ describe('Symbol-font bullets', () => {
     ])
     expect(plain.text).toBe('')
   })
+
+  it('normalizes dingbat text bytes before NBSP handling and capitalization', () => {
+    for (const fontFamily of [
+      'Wingdings',
+      'Wingdings 2',
+      'Wingdings2',
+      'Wingdings 3',
+      'Webdings',
+    ]) {
+      const lay = layoutText({
+        body: body({
+          paragraphs: [
+            { runs: [{ text: 'p\u00a0 \uf070', fontFamily, fontSize: 20, cap: 'all' }] },
+          ],
+        }),
+        boxWidthPx: 800,
+        boxHeightPx: 200,
+        metrics: new HeuristicMetrics(),
+        vp,
+      })
+      const text = lay.lines
+        .flatMap((line) => line.runs)
+        .map((run) => run.text)
+        .join('')
+      expect(text).toBe('\uf070\uf0a0 \uf070')
+    }
+  })
 })
 
 describe('mixed-script runs', () => {

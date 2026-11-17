@@ -16,6 +16,7 @@ import { createPptxSession, type PptxDeck } from './pptx-session'
 import { createRemotePptxSession } from './pptx-remote-session'
 import { createModelPptxSession } from './pptx-model-session'
 import { METRIC_FONTS } from './metric-fonts'
+import { createPptxFontScope } from './pptx-font-scope'
 import { readViewerUi } from './ui-options'
 import { createViewerTiming } from './performance'
 import { refreshSignedPartUrl } from './part-url'
@@ -60,10 +61,13 @@ async function measureWidths(
   initial: PptxDeck,
   session: MeasureSession,
   cancelled: () => boolean,
+  prepareFonts: (deck: PptxDeck) => Promise<void>,
 ): Promise<PptxDeck> {
   const ctx = document.createElement('canvas').getContext('2d')!
   let data = initial
   for (let round = 0; round < 6 && !cancelled(); round++) {
+    await prepareFonts(data)
+    if (cancelled()) break
     const widths: Record<string, number> = {}
     for (const item of data.measurements) {
       ctx.font =
@@ -84,11 +88,12 @@ async function measureWidths(
 
 /** Faces the Viewer ships for metric-compatible substitution; remote decks use the same list. */
 const REMOTE_FONTS = METRIC_FONTS.map((font) => ({
-  id: font.url,
+  id: font.id,
   family: font.family,
   bold: font.bold,
   italic: font.italic,
   url: font.url,
+  descriptors: font.descriptors,
   also: font.names.filter((name) => name !== font.family),
 }))
 
@@ -195,7 +200,7 @@ export function Slides({
   const timing = useRef<ReturnType<typeof createViewerTiming> | null>(null)
   const pane = useRef<HTMLDivElement>(null),
     visited = useRef<number[]>([]),
-    faces = useRef(new Map<string, FontFace>()),
+    prepareFonts = useRef<(deck: PptxDeck) => Promise<void>>(async () => {}),
     pptx = useRef<ReturnType<typeof createPptxSession> | null>(null),
     deckRef = useRef<any>(null),
     loadingSlides = useRef(new Map<number, Promise<void>>()),
@@ -420,6 +425,9 @@ export function Slides({
               },
             })
         : createPptxSession()
+    const fontScope = createPptxFontScope()
+    const loadFonts = (data: PptxDeck) => fontScope.load(data, (id) => session.font(id))
+    prepareFonts.current = loadFonts
     pptx.current = session
     const parts = partsRef.current
     parts.clear()
@@ -480,43 +488,9 @@ export function Slides({
       stageTiming.mark('workerOpen')
       stageTiming.worker(data.timings)
       ;(window as any).__genofficeDocFontsSynced = false
-      await Promise.all(
-        data.fonts.map(async (font) => {
-          for (let attempt = 0; attempt < 3 && !cancelled; attempt++) {
-            try {
-              let face = faces.current.get(font.id)
-              if (!face) {
-                const source = font.url ? `url(${font.url})` : await session.font(font.id)
-                if (!source) throw new Error('字体下载失败')
-                face = new FontFace(font.family, source, {
-                  weight: font.bold ? '700' : '400',
-                  style: font.italic ? 'italic' : 'normal',
-                })
-                await face.load()
-                if (cancelled) return
-                document.fonts.add(face)
-                for (const name of font.also || []) {
-                  const alias = new FontFace(name, source, {
-                    weight: font.bold ? '700' : '400',
-                    style: font.italic ? 'italic' : 'normal',
-                  })
-                  await alias.load()
-                  if (cancelled) return
-                  document.fonts.add(alias)
-                }
-                faces.current.set(font.id, face)
-              }
-              break
-            } catch {
-              if (attempt < 2)
-                await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)))
-            }
-          }
-        }),
-      )
-      await document.fonts.ready
+      await loadFonts(data)
       stageTiming.mark('fontsReady')
-      data = await measureWidths(data, session, () => cancelled)
+      data = await measureWidths(data, session, () => cancelled, loadFonts)
       if (cancelled) return
       stageTiming.mark('layoutStable')
       stageTiming.worker(data.timings)
@@ -554,6 +528,7 @@ export function Slides({
       queued.clear()
       requestImages.current = () => {}
       loaderRef.current = null
+      fontScope.close()
       session.close()
       loader.dispose()
       thumbLoader.dispose()
@@ -608,7 +583,12 @@ export function Slides({
         // Measure before replacing the placeholder so the first visible frame of a
         // lazily loaded slide is already laid out with browser widths.
         const settled = next.measurements.length
-          ? await measureWidths(next, session as any, () => false)
+          ? await measureWidths(
+              next,
+              session as any,
+              () => pptx.current !== session,
+              prepareFonts.current,
+            )
           : next
         if (pptx.current !== session) return
         deckRef.current = settled

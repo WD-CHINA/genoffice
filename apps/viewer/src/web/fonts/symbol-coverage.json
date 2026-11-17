@@ -1,0 +1,37 @@
+{
+  "Symbol": {
+    "file": "GenOfficeSymbol-Regular.ttf",
+    "encodedCharacters": 438,
+    "glyphs": 248,
+    "mappedCodes": 189
+  },
+  "Wingdings": {
+    "file": "GenOfficeWingdings-Regular.ttf",
+    "encodedCharacters": 444,
+    "glyphs": 185,
+    "mappedCodes": 221
+  },
+  "Wingdings 2": {
+    "file": "GenOfficeWingdings2-Regular.ttf",
+    "encodedCharacters": 434,
+    "glyphs": 128,
+    "mappedCodes": 216
+  },
+  "Wingdings 3": {
+    "file": "GenOfficeWingdings3-Regular.ttf",
+    "encodedCharacters": 416,
+    "glyphs": 87,
+    "mappedCodes": 207
+  },
+  "Webdings": {
+    "file": "GenOfficeWebdings-Regular.ttf",
+    "encodedCharacters": 446,
+    "glyphs": 198,
+    "mappedCodes": 222
+  },
+  "Symbols": {
+    "file": "GenOfficeSymbols-Regular.ttf",
+    "encodedCharacters": 3389,
+    "glyphs": 3389
+  }
+}

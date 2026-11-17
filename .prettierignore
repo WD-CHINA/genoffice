@@ -20,6 +20,9 @@ apps/docs/src/renderer/line-factors.generated.ts
 packages/viewer-renderers/src/docs/renderer/fonts/fonts.generated.css
 packages/viewer-renderers/src/docs/renderer/line-factors.generated.ts
 packages/viewer-renderers/src/docs/renderer/stand-in-chains.generated.ts
+apps/viewer/src/web/metric-fonts.generated.ts
+apps/viewer/src/web/fonts/catalog.json
+apps/viewer/src/web/fonts/metrics/
 
 # Local-only acceptance drivers are intentionally outside CI.
 scripts/drivers/driver.*.mjs

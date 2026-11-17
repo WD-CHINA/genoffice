@@ -211,11 +211,12 @@ export function createModelPptxSession(target: ModelTarget) {
         measurements: opened.measurements,
         fonts: [
           ...METRIC_FONTS.map((font) => ({
-            id: font.url,
+            id: font.id,
             family: font.family,
             bold: font.bold,
             italic: font.italic,
             url: font.url,
+            descriptors: font.descriptors,
             also: font.names.filter((name) => name !== font.family),
           })),
           ...(info.fonts ?? created.fonts ?? []).map((font) => ({

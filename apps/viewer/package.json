@@ -14,6 +14,8 @@
     "test:preview-entry": "node --import tsx scripts/preview-entry-smoke.mts",
     "test:library": "node --import tsx scripts/library-smoke.mts",
     "test:pixel": "node --import tsx scripts/slide-pixel-equivalence.mts",
+    "test:pptx-fonts": "node --import tsx scripts/pptx-font-smoke.mts",
+    "test:android-pptx-fonts": "node scripts/android-pptx-font-smoke.mjs",
     "test:standalone": "node scripts/standalone-smoke.mjs",
     "package": "cross-env VIEWER_BASE=/viewer/ node scripts/build.mjs && node scripts/package.mjs",
     "test:resilience": "node --import tsx scripts/resilience-smoke.mts",

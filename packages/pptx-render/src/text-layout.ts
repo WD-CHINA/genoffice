@@ -350,16 +350,6 @@ const SYMBOL_TO_UNICODE: Record<number, number> = {
   0xf2: 0x222b,
 }
 const SYMBOL_FONT_RE = /^symbol$/i
-const SYMBOL_BULLET_RE = /^(wingdings|webdings)/i
-/** Legacy dingbat bytes are glyph slots, including NBSP and case-sensitive letters. */
-function dingbatRunText(text: string): string {
-  return [...text]
-    .map((char) => {
-      const cp = char.codePointAt(0)!
-      return cp > 0x20 && cp <= 0xff ? String.fromCodePoint(0xf000 + cp) : char
-    })
-    .join('')
-}
 /** Translate a Symbol-encoded run to Unicode (accepts both raw bytes and F0xx PUA storage). */
 function symbolRunText(text: string): string {
   let out = ''
@@ -525,9 +515,7 @@ function tokenizeParagraph(p: Paragraph, scale: number, fontScale: number): Toke
     // Symbol-encoded runs become Unicode before cap/segmentation (cap would uppercase μ→Μ)
     const runText = SYMBOL_FONT_RE.test(style.fontFamily)
       ? symbolRunText(run.text)
-      : SYMBOL_BULLET_RE.test(style.fontFamily)
-        ? dingbatRunText(run.text)
-        : applyCap(run.text, run.cap)
+      : applyCap(run.text, run.cap)
     // Per grapheme cluster: combining marks / ZWJ emoji always share a token with their base char, never split by wrapping
     for (const ch of graphemes(runText)) {
       const cp = ch.codePointAt(0) ?? 0
@@ -704,11 +692,14 @@ function base64Head(b64: string, maxBytes: number): Uint8Array {
  * (files carry either encoding; the shipped fonts map the PUA). Adobe Symbol bullets
  * (U+F0B7 "•", U+F0A7 "▪") go through the Symbol→Unicode table like Symbol runs do.
  */
+const SYMBOL_BULLET_RE = /^(wingdings|webdings)/i
 function symbolBulletText(font: string | undefined, char: string): string | undefined {
   if (!font) return undefined
   if (SYMBOL_FONT_RE.test(font)) return symbolRunText(char)
   if (!SYMBOL_BULLET_RE.test(font)) return undefined
-  return dingbatRunText(char)
+  const cp = char.codePointAt(0) ?? 0
+  if (cp >= 0xf000 && cp <= 0xf0ff) return char
+  return cp >= 0x20 && cp <= 0xff ? String.fromCodePoint(0xf000 + cp) : char
 }
 
 // ── East-Asian kinsoku (PowerPoint default rules, per language) ─────

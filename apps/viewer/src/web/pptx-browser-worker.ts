@@ -12,7 +12,7 @@ import {
 import { buildRenderSlide } from '@genoffice/pptx-render'
 import { createBrowserMedia, servedMedia } from './browser-media'
 import { createBundledMetrics, type ParsedFace } from './bundled-metrics'
-import { METRIC_FONTS } from './metric-fonts'
+import { loadMetricFonts } from './metric-fonts'
 import { createMetricFontLoader } from './load-metric-font'
 import { createFontDemand, type AvailableFont } from './font-demand'
 
@@ -112,7 +112,7 @@ async function open(input: { bytes: ArrayBuffer; width: number }) {
       metricsUrl?: string
       descriptors?: import('./metric-font-types').MetricFont['descriptors']
     }
-  > = [...METRIC_FONTS, ...embeddedFonts]
+  > = [...(await loadMetricFonts()), ...embeddedFonts]
   const parsedAt = performance.now()
   playback = opened.deck.slides.map((slide, index) => {
     const ids = new Map(slide.elements.map((el) => [elementSpid(el), el]))
@@ -191,11 +191,13 @@ async function open(input: { bytes: ArrayBuffer; width: number }) {
         else {
           const bytes = embedded.get(font.id)!
           try {
-            parsed = { ...font, font: parseFont(bytes.slice().buffer) }
+            parsed = { ...font, embedded: true, font: parseFont(bytes.slice().buffer) }
           } catch {
             /* The page still loads the embedded FontFace, as before. */
           }
         }
+        if (!parsed && font.id.startsWith('electron:'))
+          throw new Error('无法加载 Electron 字体：' + font.family)
         if (parsed) parsedFaces.set(font.id, parsed)
         else unavailable.add(font.id)
       }),

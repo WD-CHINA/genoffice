@@ -1,3 +1,8 @@
+import { shapedMetricsReady } from '@genoffice/viewer-services/slides/main/shaped-metrics'
+import {
+  createTransportFontMetrics,
+  registerEmbeddedFonts,
+} from '@genoffice/viewer-services/slides/main/fonts'
 import {
   elementSpid,
   listEmbeddedFonts,
@@ -203,7 +208,8 @@ function layoutSafe(value: unknown): unknown {
 export class PptxCore {
   readonly model: DocModel
   private readonly cache = new Map<number, PptxSlideUnit>()
-  private readonly metrics = new FeedbackMetrics()
+  private readonly fontTransport = createTransportFontMetrics()
+  private readonly metrics = new FeedbackMetrics(this.fontTransport.provider)
   private readonly embeddedFonts: EmbeddedFont[]
   readonly fonts: PptxFontSummary[]
   private lastUsed = Date.now()
@@ -220,6 +226,28 @@ export class PptxCore {
     embeddedFonts: EmbeddedFont[],
   ) {
     this.embeddedFonts = embeddedFonts
+    registerEmbeddedFonts(
+      embeddedFonts.map((font) => ({
+        typeface: font.family,
+        style: font.bold
+          ? font.italic
+            ? 'boldItalic'
+            : 'bold'
+          : font.italic
+            ? 'italic'
+            : 'regular',
+        sfnt: font.bytes,
+      })),
+    )
+    // Electron discovers fonts while laying out the deck. No media decoding is needed here.
+    opened.deck.slides.forEach((slide, index) =>
+      buildRenderSlide(slide, opened.deck.size, {
+        fitWidthPx: width,
+        metrics: this.fontTransport.provider,
+        media: () => undefined,
+        slideNo: index + 1,
+      }),
+    )
     this.fonts = embeddedFonts.map(({ id, family, bold, italic }) => ({
       id,
       family,
@@ -227,6 +255,7 @@ export class PptxCore {
       italic,
       also: [],
     }))
+    this.fonts.push(...this.fontTransport.fonts())
     const slideCount = opened.deck.slides.length
     this.model = {
       format: 'pptx',
@@ -249,6 +278,7 @@ export class PptxCore {
     limits: ServerLimits
     mediaSecret?: string
   }): Promise<PptxCore> {
+    await shapedMetricsReady()
     const slim = await slimPptxFile(input.path, input.limits)
     const opened = await openPptx(slim.bytes, { hash: false })
     const embeddedFonts: EmbeddedFont[] = listEmbeddedFonts(opened.archive).map((face, index) => ({
@@ -369,7 +399,10 @@ export class PptxCore {
   }
 
   fontBytes(fontId: string): Uint8Array | null {
-    return this.embeddedFonts.find((font) => font.id === fontId)?.bytes ?? null
+    return (
+      this.embeddedFonts.find((font) => font.id === fontId)?.bytes ??
+      this.fontTransport.bytes(fontId)
+    )
   }
 
   pendingMeasurements(): WidthItem[] {

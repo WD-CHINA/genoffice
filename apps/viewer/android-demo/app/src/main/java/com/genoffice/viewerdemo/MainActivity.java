@@ -528,7 +528,7 @@ public class MainActivity extends Activity {
                 return;
             }
             view.evaluateJavascript(
-                    "!!document.querySelector('.viewer-slide-stage canvas,.viewer-doc-remote-page,.viewer-doc-reading-unit .doc-page,.pdf-page-content canvas,.viewer-pdf-page canvas')"
+                    "!!document.querySelector('.viewer-slide-stage canvas,.viewer-doc-pages .pv-page .pv-content,.pdf-page-content canvas,.viewer-pdf-page canvas')"
                             + " || !!document.querySelector('[role=alert],iframe,input[type=file]')",
                     value -> {
                         if ("true".equals(value)) {
@@ -557,6 +557,20 @@ public class MainActivity extends Activity {
         settings.setAllowFileAccess(false);
         if (android.os.Build.VERSION.SDK_INT >= 29) settings.setForceDark(WebSettings.FORCE_DARK_OFF);
         view.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean onRenderProcessGone(WebView v, android.webkit.RenderProcessGoneDetail detail) {
+                Log.e(TAG, "preview renderer exited; crashed=" + detail.didCrash());
+                if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
+                if (v == webView) {
+                    webView = null;
+                    if (server != null) { server.shutdown(); server = null; }
+                    setIntent(new Intent());
+                    showSetup();
+                    setStatus("文档预览进程已退出，请重新打开文档。");
+                }
+                v.destroy();
+                return true;
+            }
             @Override
             public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest request) {
                 return false;

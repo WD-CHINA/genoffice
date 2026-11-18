@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Electron 显示对齐工作流'
+  short_description: '以指定 Release 的 Electron 为基线，审计、修复并分别验收 Web、Server、Android 显示'
+  default_prompt: '使用 $genoffice-electron-alignment，按指定 Release Electron 基线和课件目录执行跨端显示审计；依据本次授权选择审计、修复或复测。'

@@ -1600,6 +1600,9 @@ importers:
       '@genoffice/ui':
         specifier: '*'
         version: link:../ui
+      harfbuzzjs:
+        specifier: 1.5.0
+        version: 1.5.0
       officecrypto-tool:
         specifier: ^0.0.19
         version: 0.0.19
@@ -5090,6 +5093,9 @@ packages:
 
   harfbuzzjs@0.10.3:
     resolution: {integrity: sha512-GJnLUrgLMadlMYrBGEXwYEimObbysy3prWT4HyPpFQERvgTU/OZ+ReUlEPOum6w4RBtFXzXiCCmECOr4sz3qwQ==}
+
+  harfbuzzjs@1.5.0:
+    resolution: {integrity: sha512-IYrYhWlY6BqSJlzhYbc2sxuFaJQXGpl74+1060SBDnYLt1gyyyUWM9LUbn8c/IWedmFW7Jgi9l+uI5cj0GN+qA==}
 
   harfbuzzjs@1.6.4:
     resolution: {integrity: sha512-T/PyfhVt1gGR2Tkf5KJUj1DQFkVBXHw552lS1iLEEDhV1Lukb3eq1pk2ov85kgbT2YUiZtJBTak9w+M7YgzUEQ==}
@@ -10870,6 +10876,8 @@ snapshots:
   hachure-fill@0.5.2: {}
 
   harfbuzzjs@0.10.3: {}
+
+  harfbuzzjs@1.5.0: {}
 
   harfbuzzjs@1.6.4: {}
 

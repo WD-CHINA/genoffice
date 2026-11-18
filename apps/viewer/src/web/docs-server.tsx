@@ -16,11 +16,7 @@ interface Props {
   localFallback?: boolean
 }
 
-/**
- * Server-mode DOCX: render the server's original bytes with the same local
- * parser/pagination as local mode whenever the file is small enough. Large
- * documents fall back to the streaming remote renderer.
- */
+/** HTTP models and the explicit local-byte fallback share the same read-only page renderer. */
 export function DocsServer({ server, fileId, token, name, localFallback = false }: Props) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null)
   const [remote, setRemote] = useState(false)
@@ -43,7 +39,8 @@ export function DocsServer({ server, fileId, token, name, localFallback = false 
         // Only reached with the explicit local fallback; thresholds may still be
         // advertised by the deployment capabilities.
         const capabilities = await fetchCapabilities({
-          baseUrl: server, signal: controller.signal,
+          baseUrl: server,
+          signal: controller.signal,
         })
         const metadata = await fetch(
           `${server.replace(/\/+$/, '')}/v1/files/${encodeURIComponent(fileId)}`,
@@ -52,11 +49,13 @@ export function DocsServer({ server, fileId, token, name, localFallback = false 
         if (!metadata.ok) throw new Error(`读取 DOCX 信息失败（HTTP ${metadata.status}）`)
         const info = (await metadata.json()) as { size: number }
         if (!Number.isSafeInteger(info.size) || info.size < 0) throw new Error('DOCX 文件大小无效')
-        if (chooseDocxServerRoute({
-          size: info.size,
-          allowLocalFallback: localFallback,
-          thresholds: thresholdsOf(capabilities),
-        }) === 'remote') {
+        if (
+          chooseDocxServerRoute({
+            size: info.size,
+            allowLocalFallback: localFallback,
+            thresholds: thresholdsOf(capabilities),
+          }) === 'remote'
+        ) {
           setRemote(true)
           return
         }
@@ -99,6 +98,6 @@ export function DocsServer({ server, fileId, token, name, localFallback = false 
       </p>
     )
   if (remote) return <DocsRemote server={server} fileId={fileId} token={token} name={name} />
-  if (blobUrl) return <Docs src={blobUrl} />
+  if (blobUrl) return <Docs src={blobUrl} name={name} />
   return <p className="viewer-status">正在读取 DOCX…</p>
 }

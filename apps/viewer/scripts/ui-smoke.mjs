@@ -109,7 +109,9 @@ async function load(page, format, query = '') {
 async function minimalControls(frame, bar, format) {
   if (format === 'Word') {
     await expect(bar.locator('.viewer-page-controls')).toHaveCount(0)
-    await expect(frame.locator('.pv-page, .viewer-doc-remote-page')).toHaveCount(0)
+    await expect(frame.locator('.pv-page').first()).toBeVisible()
+    await expect(frame.locator('.viewer-doc-reading-paper')).toHaveCount(0)
+    await expect(frame.locator('[aria-label="Word 显示模式"]')).toHaveCount(0)
   } else {
     await expect(bar.getByLabel(`${format} 页码`)).toBeHidden()
     await expect(bar.getByLabel(`${format} 当前页`)).toBeVisible()
@@ -142,12 +144,15 @@ async function toolbarAction(bar, label, format) {
   await expect(bar.locator('details')).not.toHaveAttribute('open')
 }
 async function layout(frame) {
+  await expect(
+    frame.locator('.viewer-slide-stage, .pv-page, .viewer-pdf-page').first(),
+  ).toBeVisible({ timeout: 30000 })
   const result = await frame.locator('.viewer-preview').evaluate((root) => {
     const rect = root.getBoundingClientRect()
-    const bar = root.querySelector(':scope > .viewer-floating-bar')
+    const bar = root.querySelector('.viewer-floating-bar')
     const bounds = bar.getBoundingClientRect()
     const body = root
-      .querySelector('.viewer-reading-body, .viewer-doc-reading-scroll, .viewer-deck')
+      .querySelector('.viewer-reading-body, .pv-scroll, .viewer-deck')
       .getBoundingClientRect()
     const controls = [...bar.querySelectorAll('button, select, summary')].filter((el) =>
       el.checkVisibility(),
@@ -191,10 +196,11 @@ async function layout(frame) {
       `Mobile touch targets are too small: ${JSON.stringify(result.touchTargets)}`,
     )
   }
+  await expect(
+    frame.locator('.viewer-slide-stage, .pv-page, .viewer-pdf-page').first(),
+  ).toBeVisible({ timeout: 30000 })
   const sizes = await frame.locator('.viewer-preview').evaluate(async (root) => {
-    const page = root.querySelector(
-      '.viewer-slide-stage, .viewer-doc-reading-paper, .viewer-pdf-page',
-    )
+    const page = root.querySelector('.viewer-slide-stage, .pv-page, .viewer-pdf-page')
     const read = () => {
       const rect = page.getBoundingClientRect()
       return { width: rect.width, height: rect.height }
@@ -217,7 +223,7 @@ async function layout(frame) {
     `Toolbar visibility changes content fit: ${JSON.stringify(sizes)}`,
   )
   if (await frame.locator('.viewer-doc').count()) {
-    await expect(frame.locator('.viewer-doc-reading-paper')).toHaveCount(1)
+    await expect(frame.locator('.pv-page').first()).toBeVisible()
     await expect(frame.locator('[contenteditable="true"]')).toHaveCount(0)
   }
 }
@@ -250,7 +256,7 @@ try {
       await page.setViewportSize({ width: 1440, height: 820 })
       await page.waitForTimeout(180)
       if (format === 'Word') {
-        const scroll = frame.locator('.viewer-doc-reading-scroll')
+        const scroll = frame.locator('.pv-scroll')
         await scroll.focus()
         await scroll.press('PageDown')
         await expect.poll(() => scroll.evaluate((element) => element.scrollTop)).toBeGreaterThan(0)

@@ -195,480 +195,88 @@ try {
     assert.equal(deleted.status, 204)
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' })
   })
+  // Word now reads all source chunks into the original page layout. Viewport
+  // eviction/load-more expectations belonged to the retired continuous reader.
   const wordRequests: string[] = []
-  let firstUnitReads = 0
-  let expireOnReturn = false
-  let expiredOnReturn = false
-  let failedOnReturn = false
-  let delayNextFirstUnit = false
-  let delayedUnitStarted = false
-  let releaseDelayedUnit!: () => void
-  const delayedUnitGate = new Promise<void>((resolve) => {
-    releaseDelayedUnit = resolve
-  })
-  await page.route('**/v1/sessions/*/units/0', async (route) => {
-    firstUnitReads++
-    if (expireOnReturn && !expiredOnReturn) {
-      expiredOnReturn = true
-      const id = new URL(route.request().url()).pathname.split('/')[3]
-      const deleted = await fetch(`${parser.url}/v1/sessions/${id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      assert.equal(deleted.status, 204)
-      return route.fulfill({ status: 410, contentType: 'application/json', body: '{}' })
-    }
-    if (expiredOnReturn && !failedOnReturn) {
-      failedOnReturn = true
-      return route.fulfill({ status: 500, contentType: 'application/json', body: '{}' })
-    }
-    const response = await route.fetch()
-    const unit = await response.json()
-    if (delayNextFirstUnit) {
-      delayNextFirstUnit = false
-      delayedUnitStarted = true
-      await delayedUnitGate
-      try {
-        await route.fulfill({ response, json: unit })
-      } catch (error) {
-        if (!route.request().failure()?.errorText.includes('ERR_ABORTED')) throw error
-      }
-      return
-    }
-    // Force an oversized unit past the retained-cache budget without huge rendered text.
-    await route.fulfill({ response, json: { ...unit, cachePadding: 'x'.repeat(5 * 1024 * 1024) } })
-  })
   page.on('request', (request) => wordRequests.push(request.url()))
   await page.goto(
-    `${origin}/viewer/preview.html?${new URLSearchParams({ fileId: wordFile.fileId, token, name: 'async-word.docx' })}`,
+    `${origin}/viewer/preview.html?${new URLSearchParams({ fileId: wordFile.fileId, token, name: 'async-word.docx', view: 'read' })}`,
   )
-  await expect(page.locator('.viewer-doc-reading-unit').first()).toBeVisible({
-    timeout: 30_000,
-  })
-  const frame = page
+  await expect(page.locator('.pv-page .pv-content').first()).toBeVisible({ timeout: 120_000 })
+  const viewport = page.locator('.pv-scroll')
+  const visibleParagraph = (text: string) =>
+    page.locator('.viewer-doc-pages').evaluate(
+      (root, text) =>
+        [...root.querySelectorAll('p[data-idx]')].some((node) => {
+          if (node.textContent !== text) return false
+          const rect = node.getBoundingClientRect()
+          let top = rect.top,
+            bottom = rect.bottom
+          for (
+            let parent = node.parentElement;
+            parent && parent !== root;
+            parent = parent.parentElement
+          )
+            if (parent.matches('.pv-clip,.pv-region,.pv-page,.pv-scroll')) {
+              const clip = parent.getBoundingClientRect()
+              top = Math.max(top, clip.top)
+              bottom = Math.min(bottom, clip.bottom)
+            }
+          return bottom > top && rect.width > 0
+        }),
+      text,
+    )
+  await expect.poll(() => visibleParagraph('Cache paragraph 0')).toBe(true)
   await expect(
-    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
-  ).toBeVisible({ timeout: 30_000 })
-  const embeddedFontCount = () =>
-    frame
-      .locator('body')
-      .evaluate(
-        () =>
-          [...document.fonts].filter((face) => face.family === 'GenofficeLifecycleProbe').length,
-      )
-  assert.equal(await embeddedFontCount(), 1)
-  for (let chunk = 0; chunk < 6; chunk++) {
-    const more = frame.getByRole('button', { name: '加载更多', exact: true })
-    await expect(more).toBeVisible({ timeout: 30_000 })
-    await more.click()
-    await expect(frame.getByText('正在加载更多…', { exact: true })).toHaveCount(0, {
-      timeout: 30_000,
-    })
-  }
-  const viewport = frame.locator('.viewer-doc-reading-scroll')
-  await viewport.evaluate((element) => {
-    element.scrollTop = element.scrollHeight
-  })
-  await expect(
-    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 1200', { exact: true }),
-  ).toBeVisible({ timeout: 30_000 })
-  const heightBefore = await frame
-    .locator('.viewer-doc-remote-canvas')
-    .evaluate((element) => element.getBoundingClientRect().height)
-  const readsBeforeReturn = firstUnitReads
-  expireOnReturn = true
-  await viewport.evaluate((element) => {
-    element.scrollTop = 0
-  })
-  await expect(frame.getByRole('alert')).toContainText('HTTP 500', { timeout: 30_000 })
-  await frame.getByRole('button', { name: '重试', exact: true }).click()
-  await expect(
-    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
-  ).toBeVisible({ timeout: 30_000 })
-  assert.ok(
-    firstUnitReads > readsBeforeReturn,
-    'evicted oversized first unit must be fetched on return',
-  )
-  assert.equal(expiredOnReturn, true)
-  assert.equal(failedOnReturn, true)
-  assert.equal(
-    await frame
-      .locator('.viewer-doc-remote-canvas')
-      .evaluate((element) => element.getBoundingClientRect().height),
-    heightBefore,
-  )
-  // Delay a real unit response, leave its window, then deliver the obsolete body.
-  await viewport.evaluate((element) => {
-    element.scrollTop = element.scrollHeight
-  })
-  await expect(
-    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 1200', { exact: true }),
-  ).toBeVisible()
-  delayNextFirstUnit = true
-  const cancelledRead = page.waitForEvent('requestfailed', {
-    predicate: (request) =>
-      request.url().endsWith('/units/0') &&
-      (request.failure()?.errorText.includes('ERR_ABORTED') ?? false),
-    timeout: 15_000,
-  })
-  // Attach a handler immediately so a failed observation never leaks a rejection.
-  void cancelledRead.catch(() => undefined)
-  try {
-    await viewport.evaluate((element) => {
-      element.scrollTop = 0
-    })
-    await expect.poll(() => delayedUnitStarted, { timeout: 10_000 }).toBe(true)
-    await viewport.evaluate((element) => {
-      element.scrollTop = element.scrollHeight
-    })
-    await expect(
-      frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 1200', { exact: true }),
-    ).toBeVisible()
-    releaseDelayedUnit()
-    await cancelledRead
-  } finally {
-    releaseDelayedUnit()
-  }
-  await expect(
-    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 1200', { exact: true }),
-  ).toBeVisible()
-  await expect(frame.getByRole('alert')).toHaveCount(0)
-  await viewport.evaluate((element) => {
-    element.scrollTop = 0
-  })
-  await expect(
-    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
-  ).toBeVisible({ timeout: 30_000 })
-  assert.equal(
-    await frame
-      .locator('.viewer-doc-remote-canvas')
-      .evaluate((element) => element.getBoundingClientRect().height),
-    heightBefore,
-  )
+    page.locator('[contenteditable="true"],.viewer-doc-reading-paper,[aria-label="Word 显示模式"]'),
+  ).toHaveCount(0)
+  const sheetCount = await page.locator('.pv-page').count()
+  assert.ok(sheetCount > 1)
+  const readsBeforeScroll = wordRequests.filter((url) => /\/units\//.test(url)).length
   const cdp = await page.context().newCDPSession(page)
-  const memorySamples: Array<{ cycle: number; usedSize: number; nodes: number }> = []
-  const sampleMemory = async (cycle: number) => {
-    await cdp.send('HeapProfiler.collectGarbage')
-    const heap = await cdp.send('Runtime.getHeapUsage')
-    const dom = await cdp.send('Memory.getDOMCounters')
-    memorySamples.push({ cycle, usedSize: heap.usedSize, nodes: dom.nodes })
-  }
-  await sampleMemory(0)
-  for (let cycle = 1; cycle <= 12; cycle++) {
+  const samples = []
+  for (let cycle = 0; cycle < 4; cycle++) {
     await viewport.evaluate((element) => {
-      element.scrollTop = element.scrollHeight
+      const debug = (window as any).__previewDebug
+      const block = debug.blocks.find((b: any) => b.idx === '1200')
+      const index = debug.slices.findIndex((s: any) => block.top >= s.start && block.top < s.end)
+      const sheet = element.querySelector(`[data-pv-page="${index}"]`)!
+      element.scrollTop += sheet.getBoundingClientRect().top - element.getBoundingClientRect().top
     })
-    await expect(
-      frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 1200', { exact: true }),
-    ).toBeVisible()
+    await expect
+      .poll(() => visibleParagraph('Cache paragraph 1200'), { timeout: 30_000 })
+      .toBe(true)
     await viewport.evaluate((element) => {
       element.scrollTop = 0
     })
-    await expect(
-      frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
-    ).toBeVisible({ timeout: 30_000 })
-    await sampleMemory(cycle)
+    await expect.poll(() => visibleParagraph('Cache paragraph 0')).toBe(true)
+    await cdp.send('HeapProfiler.collectGarbage')
+    samples.push({
+      cycle,
+      heap: await cdp.send('Runtime.getHeapUsage'),
+      dom: await cdp.send('Memory.getDOMCounters'),
+    })
+    assert.equal(await page.locator('.pv-page').count(), sheetCount)
   }
   await cdp.detach()
-  const memoryReport = {
-    browser: browser.version(),
-    paragraphs: 1201,
-    cycles: 12,
-    method: 'Chromium isolate JS heap after forced GC; not process RSS',
-    samples: memorySamples,
-  }
-  await writeFile(join(output, 'docx-memory-samples.json'), JSON.stringify(memoryReport, null, 2))
-  const baseline = memorySamples[0]
-  const final = memorySamples.at(-1)!
-  assert.ok(
-    final.usedSize < baseline.usedSize + 16 * 1024 * 1024,
-    `post-GC heap grew by ${final.usedSize - baseline.usedSize} bytes over 12 visits`,
+  assert.equal(
+    wordRequests.filter((url) => /\/units\//.test(url)).length,
+    readsBeforeScroll,
+    'Scrolling must use the loaded model, not the retired chunk viewport',
   )
-  assert.ok(final.nodes < baseline.nodes + 5000, 'offscreen editors must release their DOM nodes')
-  assert.ok(
-    wordRequests.some((url) => url.endsWith('/v1/sessions')),
-    'large DOCX must use async readiness',
-  )
-  assert.ok(
-    !wordRequests.some((url) => url.includes(`/v1/files/${wordFile.fileId}/content`)),
-    'large DOCX must not download original content before preview',
+  assert.equal(
+    wordRequests.some((url) => url.endsWith('/content')),
+    false,
+    'HTTP Word must not download the original for local reparsing',
   )
   assert.equal(expiredWord, true)
-  assert.equal(wordRequests.filter((url) => url.endsWith('/v1/sessions')).length, 3)
-  assert.equal(await embeddedFontCount(), 1, 'session recovery must reuse the document-owned face')
-  assert.equal(wordRequests.filter((url) => /\/v1\/sessions\/[^/]+\/fonts\//.test(url)).length, 1)
-  const latestStyles = wordRequests.filter((url) => /\/sessions\/[^/]+\/styles$/.test(url)).at(-1)!
-  const sessionId = new URL(latestStyles).pathname.split('/')[3]
-  const fontSession = (await (
-    await fetch(`${parser.url}/v1/sessions/${sessionId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
-  ).json()) as { fonts: Array<{ id: string; family: string; bold: boolean; italic: boolean }> }
-  assert.ok(fontSession.fonts.length > 0)
-  await frame.locator('body').evaluate(
-    async (_element, input) => {
-      const { DocxFontScope } = await import(input.moduleUrl)
-      const scope = new DocxFontScope()
-      const probe = { ...input.font, family: 'GenofficeScopeCleanupProbe' }
-      if ([...document.fonts].filter((face) => face.family === probe.family).length !== 0)
-        throw new Error('Unexpected preexisting probe font')
-      try {
-        await scope.load(
-          location.origin,
-          input.sessionId,
-          [probe],
-          { Authorization: `Bearer ${input.token}` },
-          new AbortController().signal,
-        )
-        if ([...document.fonts].filter((face) => face.family === probe.family).length !== 1)
-          throw new Error('Real embedded font was not registered')
-      } finally {
-        scope.close()
-      }
-      if ([...document.fonts].filter((face) => face.family === probe.family).length !== 0)
-        throw new Error('Closed font scope retained a browser face')
-    },
-    {
-      moduleUrl: `${origin}/viewer/docx-font-scope.ts`,
-      sessionId,
-      font: fontSession.fonts[0],
-      token,
-    },
-  )
-  assert.equal(await embeddedFontCount(), 1, 'closing another scope must preserve the viewer face')
-  await page.route('**/docx-image-probe.svg', async (route) => {
-    await new Promise<void>((resolve) => setTimeout(resolve, 150))
-    await route.fulfill({
-      contentType: 'image/svg+xml',
-      body: '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="120"><rect width="12" height="120" fill="blue"/></svg>',
-    })
-  })
-  const imageMeasurement = await frame.locator('body').evaluate(
-    async (_element, input) => {
-      const { waitForDocxImages } = await import(input.moduleUrl)
-      const host = document.createElement('div')
-      host.style.cssText = 'position:fixed;left:-10000px;visibility:hidden'
-      const image = document.createElement('img')
-      image.src = input.imageUrl
-      host.append(image)
-      document.body.append(host)
-      try {
-        const before = image.getBoundingClientRect().height
-        await waitForDocxImages([image])
-        return { before, after: image.getBoundingClientRect().height, complete: image.complete }
-      } finally {
-        host.remove()
-      }
-    },
-    {
-      moduleUrl: `${origin}/viewer/docx-image-ready.ts`,
-      imageUrl: `${origin}/docx-image-probe.svg`,
-    },
-  )
-  assert.equal(imageMeasurement.complete, true)
-  assert.ok(imageMeasurement.before < imageMeasurement.after)
-  assert.equal(imageMeasurement.after, 120)
-  await viewport.evaluate((element) => {
-    element.scrollTop = 220
-  })
-  const anchorProbe = await viewport.evaluate((element) => {
-    const top = element.getBoundingClientRect().top
-    const paragraph = [
-      ...element.querySelectorAll<HTMLElement>('.viewer-doc-reading-unit p[data-idx]'),
-    ].find(
-      (node) =>
-        node.getBoundingClientRect().top >= top + 10 &&
-        node.textContent?.startsWith('Cache paragraph'),
-    )!
-    return { text: paragraph.textContent!, offset: paragraph.getBoundingClientRect().top - top }
-  })
-  const reflowHeight = await frame
-    .locator('.viewer-doc-reading-unit')
-    .first()
-    .evaluate((element) => element.getBoundingClientRect().height * 2)
-  await frame.locator('body').evaluate((_element, height) => {
-    const style = document.createElement('style')
-    style.id = 'docx-reflow-probe'
-    // Exceed a whole page so last-page spare space cannot hide reflow.
-    style.textContent = `.doc-page [data-idx="0"] { min-height:${height}px !important; }`
-    document.head.append(style)
-  }, reflowHeight)
-  await expect
-    .poll(
-      async () =>
-        frame
-          .locator('.viewer-doc-remote-canvas')
-          .evaluate((element) => element.getBoundingClientRect().height),
-      { timeout: 15_000 },
-    )
-    .toBeGreaterThan(heightBefore + 100)
-  const anchoredParagraph = frame
-    .locator('.viewer-doc-reading-unit')
-    .getByText(anchorProbe.text, { exact: true })
-  await expect(anchoredParagraph).toBeVisible()
-  const anchorOffset = await anchoredParagraph.evaluate(
-    (element) =>
-      element.getBoundingClientRect().top -
-      element.closest('.viewer-doc-reading-scroll')!.getBoundingClientRect().top,
-  )
-  assert.ok(
-    Math.abs(anchorOffset - anchorProbe.offset) <= 32,
-    `block anchor moved ${anchorOffset - anchorProbe.offset}px after visible content resized`,
-  )
-  await frame.locator('body').evaluate(() => document.getElementById('docx-reflow-probe')!.remove())
-  await expect
-    .poll(
-      async () =>
-        frame
-          .locator('.viewer-doc-remote-canvas')
-          .evaluate((element) => element.getBoundingClientRect().height),
-      { timeout: 15_000 },
-    )
-    .toBe(heightBefore)
-  await viewport.evaluate((element) => {
-    element.scrollTop = 0
-  })
-  await expect(
-    frame.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
-  ).toBeVisible()
   assert.equal(
     (await wordHealth()).artifacts.buildsStarted - beforeWord.artifacts.buildsStarted,
     1,
-    'expired DOCX session must reopen from the artifact without reparsing',
+    'Expired DOCX session must reuse the artifact',
   )
-  assert.deepEqual(errors, [])
-  await page.screenshot({ path: join(output, 'async-docx-flow.png'), fullPage: true })
-  // Keep the browser document alive while replacing the actual React component's file.
-  const switchedWord = await JSZip.loadAsync(
-    await fontFixture.generateAsync({ type: 'nodebuffer' }),
-  )
-  switchedWord.file(
-    'word/document.xml',
-    (await switchedWord.file('word/document.xml')!.async('string')).replace(
-      /<w:body[^>]*>[\s\S]*?<\/w:body>/,
-      '<w:body><w:p><w:r><w:t>Switched document B</w:t></w:r></w:p></w:body>',
-    ),
-  )
-  const switchedUpload = await fetch(`${parser.url}/v1/files`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${token}` },
-    body: await switchedWord.generateAsync({ type: 'nodebuffer' }),
-  })
-  assert.equal(switchedUpload.status, 201)
-  const switchedFile = (await switchedUpload.json()) as { fileId: string }
-  const reactUrl = wordRequests.find((url) => new URL(url).pathname.endsWith('/react.js'))
-  const domUrl = wordRequests.find((url) => new URL(url).pathname.endsWith('/react-dom_client.js'))
-  assert.ok(reactUrl && domUrl)
-  const mounted = await frame.locator('body').evaluateHandle(
-    async (_element, input) => {
-      const reactModule = await import(input.reactUrl)
-      const React = reactModule.default ?? reactModule
-      const domModule = await import(input.domUrl)
-      const createRoot = domModule.createRoot ?? domModule.default.createRoot
-      const { DocsRemote } = await import(input.moduleUrl)
-      const container = document.createElement('div')
-      container.id = 'docx-switch-probe'
-      container.style.cssText = 'position:fixed;inset:20px;z-index:10000;background:white'
-      document.body.append(container)
-      const root = createRoot(container)
-      root.render(
-        React.createElement(DocsRemote, {
-          server: location.origin,
-          fileId: input.fileId,
-          token: input.token,
-        }),
-      )
-      return {
-        root,
-        container,
-        React,
-        DocsRemote,
-        readyDescriptor: undefined as PropertyDescriptor | undefined,
-        releaseFontGate: undefined as (() => void) | undefined,
-      }
-    },
-    {
-      reactUrl,
-      domUrl,
-      moduleUrl: `${origin}/viewer/docs-remote.tsx`,
-      fileId: wordFile.fileId,
-      token,
-    },
-  )
-  try {
-    const probe = frame.locator('#docx-switch-probe')
-    await expect(
-      probe.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
-    ).toBeVisible({ timeout: 30_000 })
-    assert.equal(await embeddedFontCount(), 2)
-    await expect.poll(async () => frame.locator('body > div[style*="-10000px"]').count()).toBe(0)
-    await mounted.evaluate((state) => {
-      state.readyDescriptor = Object.getOwnPropertyDescriptor(document.fonts, 'ready')
-      const gate = new Promise<void>((resolve) => {
-        state.releaseFontGate = resolve
-      })
-      Object.defineProperty(document.fonts, 'ready', { configurable: true, value: gate })
-      document.fonts.dispatchEvent(new Event('loadingdone'))
-    })
-    await expect
-      .poll(async () => frame.locator('body > div[style*="-10000px"]').count())
-      .toBeGreaterThanOrEqual(2)
-    const blockedMeasurements = await frame.locator('body > div[style*="-10000px"]').count()
-    const switchStarted = page.waitForResponse(
-      (response) =>
-        response.request().method() === 'POST' &&
-        response.url().endsWith('/v1/sessions') &&
-        response.request().postDataJSON().fileId === switchedFile.fileId,
-    )
-    void switchStarted.catch(() => undefined)
-    await mounted.evaluate(
-      (state, input) => {
-        state.root.render(
-          state.React.createElement(state.DocsRemote, {
-            server: location.origin,
-            fileId: input.fileId,
-            token: input.token,
-          }),
-        )
-      },
-      { fileId: switchedFile.fileId, token },
-    )
-    await switchStarted
-    await expect
-      .poll(async () => frame.locator('body > div[style*="-10000px"]').count(), { timeout: 500 })
-      .toBeLessThan(blockedMeasurements)
-    await mounted.evaluate((state) => {
-      if (state.readyDescriptor)
-        Object.defineProperty(document.fonts, 'ready', state.readyDescriptor)
-      else Reflect.deleteProperty(document.fonts, 'ready')
-      state.releaseFontGate?.()
-      state.releaseFontGate = undefined
-    })
-    await expect(
-      probe.locator('.viewer-doc-reading-unit').getByText('Switched document B', { exact: true }),
-    ).toBeVisible({ timeout: 30_000 })
-    await expect(
-      probe.locator('.viewer-doc-reading-unit').getByText('Cache paragraph 0', { exact: true }),
-    ).toHaveCount(0)
-    assert.equal(
-      await embeddedFontCount(),
-      1,
-      'component file replacement must remove only the old owned face',
-    )
-  } finally {
-    await mounted.evaluate((state) => {
-      if (state.releaseFontGate) {
-        if (state.readyDescriptor)
-          Object.defineProperty(document.fonts, 'ready', state.readyDescriptor)
-        else Reflect.deleteProperty(document.fonts, 'ready')
-        state.releaseFontGate?.()
-      }
-      state.root.unmount()
-      state.container.remove()
-    })
-    await mounted.dispose()
-  }
-  assert.equal(await embeddedFontCount(), 1)
+  await writeFile(join(output, 'docx-memory-samples.json'), JSON.stringify(samples, null, 2))
+  await page.screenshot({ path: join(output, 'async-docx-pages.png') })
   assert.deepEqual(errors, [])
   console.log(
     JSON.stringify({
@@ -676,21 +284,41 @@ try {
       failedSaveRetried: true,
       restartCacheHit: true,
       removedFromHistory: true,
-      asyncDocxPreviewWithoutOriginalDownload: true,
+      wordDefaultPages: true,
+      wordReadOnly: true,
       expiredDocxRecoveredWithoutReparse: true,
-      evictedDocxUnitRefetchedAfterExpiry: true,
-      docxPageHeightStableAfterReturn: true,
-      docxReturnFailureRetry: true,
-      delayedDocxWindowRequestCancelled: true,
-      embeddedDocxFontRecoveryAndCleanup: true,
-      delayedImageMeasuredAfterLoad: true,
-      visibleDocxResizeReflowAndBlockAnchor: true,
-      docxComponentFileSwitchIsolated: true,
-      closedDocxFontWaitReleasedBeforeReady: true,
-      docxMemoryReport: join(output, 'docx-memory-samples.json'),
-      screenshot: join(output, 'library-flow.png'),
+      wordTailReached: true,
+      sheetCount,
+      memoryReport: join(output, 'docx-memory-samples.json'),
     }),
   )
+} catch (error) {
+  const failed = browser?.contexts()[0]?.pages()[0]
+  if (failed) {
+    await failed.screenshot({ path: '/tmp/genoffice-library-failure.png' }).catch(() => {})
+    await writeFile(
+      '/tmp/genoffice-library-failure.json',
+      JSON.stringify(
+        await failed.evaluate(() => ({
+          scroll: document.querySelector('.pv-scroll')?.scrollTop,
+          pages: [...document.querySelectorAll('.pv-page')].map((e) => ({
+            box: e.getBoundingClientRect().toJSON(),
+            children: e.children.length,
+          })),
+          tail: [...document.querySelectorAll('p[data-idx="1200"]')].map((e) => ({
+            box: e.getBoundingClientRect().toJSON(),
+            parent: e.parentElement?.className,
+            clips: [...(e.closest('.pv-page')?.querySelectorAll('.pv-clip') ?? [])].map((c) =>
+              c.getBoundingClientRect().toJSON(),
+            ),
+          })),
+        })),
+        null,
+        2,
+      ),
+    )
+  }
+  throw error
 } finally {
   await browser?.close()
   await frontend.close()

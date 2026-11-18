@@ -13,7 +13,7 @@ export type ParseMode = 'auto' | 'local' | 'server'
 export const FORMAT_POLICY = {
   /** Anything larger is rejected before upload, matching the server default. */
   maxFileBytes: 1024 * 1024 * 1024,
-  /** Local DOCX rendering reads the whole file; larger ones must go remote. */
+  /** Automatic routing prefers the service above this size; manual local mode remains available. */
   docxAutoRemoteBytes: 32 * 1024 * 1024,
   /** auto mode sends larger PPTX/PDF to the server; smaller ones stay local. */
   pptxAutoRemoteBytes: 64 * 1024 * 1024,
@@ -59,9 +59,18 @@ export function thresholdsOf(capabilities?: ServerCapabilities): FormatThreshold
   const pick = (value: number | undefined, fallback: number): number =>
     typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : fallback
   return {
-    docxAutoRemoteBytes: pick(advertised?.docxAutoRemoteBytes, DEFAULT_THRESHOLDS.docxAutoRemoteBytes),
-    pptxAutoRemoteBytes: pick(advertised?.pptxAutoRemoteBytes, DEFAULT_THRESHOLDS.pptxAutoRemoteBytes),
-    docxFullRenderBytes: pick(advertised?.docxFullRenderBytes, DEFAULT_THRESHOLDS.docxFullRenderBytes),
+    docxAutoRemoteBytes: pick(
+      advertised?.docxAutoRemoteBytes,
+      DEFAULT_THRESHOLDS.docxAutoRemoteBytes,
+    ),
+    pptxAutoRemoteBytes: pick(
+      advertised?.pptxAutoRemoteBytes,
+      DEFAULT_THRESHOLDS.pptxAutoRemoteBytes,
+    ),
+    docxFullRenderBytes: pick(
+      advertised?.docxFullRenderBytes,
+      DEFAULT_THRESHOLDS.docxFullRenderBytes,
+    ),
   }
 }
 
@@ -82,8 +91,8 @@ export function chooseDocxServerRoute(input: {
 }
 
 /**
- * Cheap pre-read check so a user learns about an impossible local route before
- * the whole file is read. Only known extensions are inspected.
+ * Cheap pre-read size validation before a local file is read. DOCX automatic
+ * thresholds choose a route; they do not reject the explicit local renderer.
  */
 export function precheckLocalFile(input: {
   name: string
@@ -91,17 +100,8 @@ export function precheckLocalFile(input: {
   serverUrl?: string
   capabilities?: ServerCapabilities
 }): void {
-  if (!Number.isFinite(input.size) || input.size < 0)
-    throw new FormatPolicyError('文件大小无效')
+  if (!Number.isFinite(input.size) || input.size < 0) throw new FormatPolicyError('文件大小无效')
   if (input.size > FORMAT_POLICY.maxFileBytes) throw new FormatPolicyError('文件超过 1 GiB')
-  const extension = input.name.split('.').pop()?.toLowerCase()
-  if (extension !== 'docx') return
-  if (input.serverUrl) return
-  const thresholds = thresholdsOf(input.capabilities)
-  if (input.size > thresholds.docxAutoRemoteBytes)
-    throw new FormatPolicyError(
-      `大 DOCX 本地预览上限 ${Math.floor(thresholds.docxAutoRemoteBytes / (1024 * 1024))} MiB；请配置解析服务`,
-    )
 }
 
 function serverSupports(capabilities: ServerCapabilities | undefined, format: DocFormat): boolean {
@@ -112,8 +112,7 @@ function serverSupports(capabilities: ServerCapabilities | undefined, format: Do
 
 /** Decide local vs server and fail with a user-facing message when no route works. */
 export function decideRoute(input: RouteInput): RouteDecision {
-  if (!Number.isFinite(input.size) || input.size < 0)
-    throw new FormatPolicyError('文件大小无效')
+  if (!Number.isFinite(input.size) || input.size < 0) throw new FormatPolicyError('文件大小无效')
   const thresholds = thresholdsOf(input.capabilities)
   if (input.mode === 'server') {
     if (!input.serverUrl) throw new FormatPolicyError('没有配置解析服务地址（?server=http://…）')
@@ -121,30 +120,13 @@ export function decideRoute(input: RouteInput): RouteDecision {
       throw new FormatPolicyError(`解析服务不支持该格式：${input.format}`)
     return { mode: 'server', reason: 'manual server mode' }
   }
-  if (input.mode === 'local') {
-    if (input.format === 'docx' && input.size > thresholds.docxAutoRemoteBytes)
-      throw new FormatPolicyError(
-        `大 DOCX 本地预览上限 ${Math.floor(thresholds.docxAutoRemoteBytes / (1024 * 1024))} MiB；请切换到服务端解析`,
-      )
-    return { mode: 'local', reason: 'manual local mode' }
-  }
-  // auto: prefer server for large files, local for small ones.
-  if (!input.serverUrl) {
-    if (input.format === 'docx' && input.size > thresholds.docxAutoRemoteBytes)
-      throw new FormatPolicyError(
-        `大 DOCX 本地预览上限 ${Math.floor(thresholds.docxAutoRemoteBytes / (1024 * 1024))} MiB；请配置解析服务`,
-      )
-    return { mode: 'local', reason: 'no server configured' }
-  }
-  if (!serverSupports(input.capabilities, input.format)) {
-    if (input.format === 'docx' && input.size > thresholds.docxAutoRemoteBytes)
-      throw new FormatPolicyError(`解析服务不支持 ${input.format}，且文件超过本地预览上限`)
+  if (input.size > FORMAT_POLICY.maxFileBytes) throw new FormatPolicyError('文件超过 1 GiB')
+  if (input.mode === 'local') return { mode: 'local', reason: 'manual local mode' }
+  if (!input.serverUrl) return { mode: 'local', reason: 'no server configured' }
+  if (!serverSupports(input.capabilities, input.format))
     return { mode: 'local', reason: 'server does not advertise this format' }
-  }
   const threshold =
-    input.format === 'docx'
-      ? thresholds.docxAutoRemoteBytes
-      : thresholds.pptxAutoRemoteBytes
+    input.format === 'docx' ? thresholds.docxAutoRemoteBytes : thresholds.pptxAutoRemoteBytes
   return input.size > threshold
     ? { mode: 'server', reason: 'auto: above local threshold' }
     : { mode: 'local', reason: 'auto: below local threshold' }

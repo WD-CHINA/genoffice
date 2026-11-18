@@ -12,8 +12,12 @@
 import { existsSync, readFileSync } from 'node:fs'
 // Deep-path import (the package exports only expose an ESM wrapper with a top-level await,
 // which the CJS main process cannot bundle)
-import createHarfBuzz from '../../../../../node_modules/harfbuzzjs/dist/harfbuzz.js'
-import hbWasmPath from '../../../../../node_modules/harfbuzzjs/dist/harfbuzz.wasm?asset'
+import { createRequire } from 'node:module'
+import { dirname, join } from 'node:path'
+const requireFont = createRequire(import.meta.url)
+const hbRoot = dirname(requireFont.resolve('harfbuzzjs'))
+const createHarfBuzz = requireFont(join(hbRoot, 'harfbuzz.js')).default
+const hbWasmPath = join(hbRoot, 'harfbuzz.wasm')
 
 type Script = 'arabic' | 'hebrew' | 'thai' | 'devanagari'
 
@@ -406,13 +410,24 @@ export function shapedFamily(
 
 /** Read the original pending set without clearing unavailable font requests. */
 export function pendingWidthMeasurements() {
-  return [...gtPending].map(key => { const [flags = '', family = '', ...rest] = key.split('|');
-    return { key, family, text: rest.join('|'), bold: flags.includes('b'), italic: flags.includes('i') }
+  return [...gtPending].map((key) => {
+    const [flags = '', family = '', ...rest] = key.split('|')
+    return {
+      key,
+      family,
+      text: rest.join('|'),
+      bold: flags.includes('b'),
+      italic: flags.includes('i'),
+    }
   })
 }
 export function acceptWidthMeasurements(widths: Record<string, number>) {
   for (const [key, width] of Object.entries(widths)) {
-    if (!gtPending.has(key) || !Number.isFinite(width) || width < 0) throw new Error('Invalid measurement')
+    if (!gtPending.has(key) || !Number.isFinite(width) || width < 0)
+      throw new Error('Invalid measurement')
   }
-  for (const [key, width] of Object.entries(widths)) { gtCache.set(key, width); gtPending.delete(key) }
+  for (const [key, width] of Object.entries(widths)) {
+    gtCache.set(key, width)
+    gtPending.delete(key)
+  }
 }

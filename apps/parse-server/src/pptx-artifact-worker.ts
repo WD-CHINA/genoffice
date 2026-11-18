@@ -1,3 +1,8 @@
+import { shapedMetricsReady } from '@genoffice/viewer-services/slides/main/shaped-metrics'
+import {
+  createSystemFontMetrics,
+  registerEmbeddedFonts,
+} from '@genoffice/viewer-services/slides/main/fonts'
 import { ArtifactGenerations } from './artifact-generations'
 import { parentPort } from './worker-channel'
 import { buildRenderSlide } from '@genoffice/pptx-render'
@@ -10,7 +15,7 @@ const port = parentPort
 if (!port) throw new Error('artifact renderer requires an isolated process')
 let reader: ArtifactReader | null = null
 let input: { fileId: string; baseUrl: string; mediaSecret?: string; width: number }
-let metrics = new FeedbackMetrics()
+let metrics = new FeedbackMetrics(createSystemFontMetrics())
 // Serial processing avoids text-width feedback racing asynchronous disk reads.
 let queue = Promise.resolve()
 port.on('message', (request: { id: number; op: string; input: any }) => {
@@ -18,15 +23,44 @@ port.on('message', (request: { id: number; op: string; input: any }) => {
     try {
       let result: unknown
       if (request.op === 'open') {
+        await shapedMetricsReady()
         input = request.input
         if (request.input.generation) {
-          if (request.input.generation.key !== request.input.artifactKey) throw new Error('generation key mismatch')
-          reader = await new ArtifactGenerations(request.input.artifactRoot).open(request.input.generation)
-        } else reader = await new ArtifactStore(request.input.artifactRoot).find(request.input.artifactKey)
+          if (request.input.generation.key !== request.input.artifactKey)
+            throw new Error('generation key mismatch')
+          reader = await new ArtifactGenerations(request.input.artifactRoot).open(
+            request.input.generation,
+          )
+        } else
+          reader = await new ArtifactStore(request.input.artifactRoot).find(
+            request.input.artifactKey,
+          )
         if (!reader) throw new Error('parsed artifact is missing')
-        metrics = new FeedbackMetrics()
+        metrics = new FeedbackMetrics(createSystemFontMetrics())
         metrics.restore(request.input.measuredWidths ?? {})
         result = await reader.read('document')
+        const fonts =
+          (
+            result as {
+              fonts?: Array<{ id: string; family: string; bold: boolean; italic: boolean }>
+            }
+          ).fonts ?? []
+        for (const font of fonts.filter((font) => font.id.startsWith('embed:'))) {
+          const bytes = (await reader.read(`font:${font.id}`)) as Uint8Array
+          registerEmbeddedFonts([
+            {
+              typeface: font.family,
+              style: font.bold
+                ? font.italic
+                  ? 'boldItalic'
+                  : 'bold'
+                : font.italic
+                  ? 'italic'
+                  : 'regular',
+              sfnt: bytes,
+            },
+          ])
+        }
       } else {
         if (!reader) throw new Error('artifact renderer is not open')
         if (request.op === 'unit') {
@@ -66,9 +100,10 @@ port.on('message', (request: { id: number; op: string; input: any }) => {
         error: error instanceof Error ? error.message : String(error),
         // Let the HTTP process distinguish damaged persisted bytes from a crash
         // and withdraw only the matching ready generation.
-        code: error instanceof ArtifactCorruptionError
-          ? error.code
-          : (error as { code?: string })?.code,
+        code:
+          error instanceof ArtifactCorruptionError
+            ? error.code
+            : (error as { code?: string })?.code,
       })
     }
   })

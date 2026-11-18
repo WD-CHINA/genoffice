@@ -7,6 +7,13 @@ export const json = (body: unknown, status = 200) =>
 export async function loadModelSession() {
   const assets = registerHooks({
     load(url, context, nextLoad) {
+      if (url.endsWith('/electron-font-catalog.ts'))
+        return {
+          format: 'module',
+          source:
+            'export const loadElectronFonts = async () => []; export const electronFontResolution = () => undefined',
+          shortCircuit: true,
+        }
       if (/\.(ttf|woff2)(\?url)?$/.test(url))
         return {
           format: 'module',

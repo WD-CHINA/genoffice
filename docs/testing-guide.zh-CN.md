@@ -1,5 +1,15 @@
 # 三端测试、精简映射与验收指南
 
+## 2026-11-18 Word 默认页面版式取代连续阅读
+
+三端 Word 现统一使用 Electron v0.13.18 的默认页面版式，保留原文档纸张/分节、页眉页脚与页码。旧连续阅读模式、模式切换和 `view=read` 分支已移除；正文只读，不能输入、粘贴或拖动编辑，表单控件不可修改。HTTP 接口仍为现有 v1，没有修改协议或离线包版本。
+
+`test:docx-layout` 取代 `test:docx-reading`：实际本地文件与真实 HTTP 模型分别验证页面、行网格、首屏绘制、末页、只读输入和旧模式退出；覆盖长表格、脚注、不同纸张分节、连续分节、双栏与重复表头。可设置 `WORD_BUSINESS_FILE` 加入业务原文件，`VIEWER_URL`、`PARSE_SERVER_URL` 选择当前入口，`WORD_EVIDENCE_DIR` 保存证据。
+
+`test:android-docx` 同步验证真实 WebView 的在线与下载校验后断开后端的离线页面，逐页滚动检查挂载和末页。保留应用数据和本轮以外的USB映射。旧连续阅读验收记录仅作为历史，不代表当前实现。
+
+修复来源为主包 App.tsx 的文档级 docGrid/charSpace/页面边距样式；隐藏测量与实际分页克隆必须同时获得这些规则。不能仅凭页数或正文齐全判断显示对齐。来源清单见 `packages/viewer-renderers/docs-sources.json` 的 hostIntegrations；本轮证据见 [Word页面修复报告](/Users/dddd/Downloads/genoffice-f143-20261118-audit/repair/report.md)。
+
 ## 2026-11-17 阅读纸层最小页高补齐
 
 修复前 Viewer 纸层的 `min-height: 0` 会让短文档缩至正文高度，未对齐 Electron。现复用主包 `.doc-page` 的 `min-height: var(--page-h, 1056px)` 到单个阅读纸层，内部虚拟单元仍不重复撑高。`01_Word_明文对照.docx` 在 Electron、Web 本地/HTTP 服务端及 Android 在线/离线均实测纸高 1122.53125px（文档声明约 1122.53 CSS px），原 Viewer 约 562.64px。长表格回归确认内容仍可自然撑高；连续阅读与有界加载保留。

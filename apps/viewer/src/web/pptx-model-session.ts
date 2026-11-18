@@ -7,7 +7,7 @@ import { openServerSession, openingStateText, updateSessionLayoutPrefs } from '.
  * into the deck; all layout work happens in pptx-model-worker.
  */
 import type { PptxDeck } from './pptx-session'
-import { METRIC_FONTS } from './metric-fonts'
+import { loadMetricFonts } from './metric-fonts'
 import { needsResourceRefresh, originOf } from './signed-url'
 
 export interface ModelTarget {
@@ -210,7 +210,7 @@ export function createModelPptxSession(target: ModelTarget) {
         ),
         measurements: opened.measurements,
         fonts: [
-          ...METRIC_FONTS.map((font) => ({
+          ...(await loadMetricFonts()).map((font) => ({
             id: font.id,
             family: font.family,
             bold: font.bold,

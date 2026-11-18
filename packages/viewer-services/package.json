@@ -7,7 +7,10 @@
   "exports": {
     "./slides/main/media": "./src/slides/main/media.ts",
     "./shared/ooxml-encryption": "./src/shared/ooxml-encryption.ts",
-    "./*": "./src/*"
+    "./*": "./src/*",
+    "./slides/main/fonts": "./src/slides/main/fonts.ts",
+    "./slides/main/shaped-metrics": "./src/slides/main/shaped-metrics.ts",
+    "./slides/shared/metafile-fonts": "./src/slides/shared/metafile-fonts.ts"
   },
   "description": "Viewer-owned rendering snapshot; original applications are unchanged.",
   "dependencies": {
@@ -15,6 +18,7 @@
     "@genoffice/pptx-engine": "*",
     "@genoffice/pptx-render": "*",
     "@genoffice/ui": "*",
+    "harfbuzzjs": "1.5.0",
     "officecrypto-tool": "^0.0.19",
     "opentype.js": "^2.0.0",
     "playwright-core": "^1.61.1",

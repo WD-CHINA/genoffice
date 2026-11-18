@@ -34,12 +34,30 @@ function pdfjsAssets(): Plugin {
   }
 }
 
+function electronFontAssets(): Plugin {
+  const fontRoot = resolve(app, 'dist/web/electron-fonts')
+  return {
+    name: 'electron-font-assets',
+    configureServer(server) {
+      server.middlewares.use(`${base.replace(/\/$/, '')}/electron-fonts`, (req, res, next) => {
+        const path = decodeURIComponent((req.url || '/').split('?')[0]).replace(/^\/+/, '')
+        const file = resolve(fontRoot, path)
+        if (!file.startsWith(fontRoot + sep) || !existsSync(file) || !statSync(file).isFile())
+          return next()
+        res.setHeader('Content-Type', extname(file) === '.json' ? 'application/json' : 'font/ttf')
+        createReadStream(file).pipe(res)
+      })
+    },
+  }
+}
+
 export default defineConfig({
   base,
   root: resolve(app, 'src/web'),
   plugins: [
     react(),
     pdfjsAssets(),
+    electronFontAssets(),
     {
       name: 'viewer-runtime-boundary',
       async generateBundle() {

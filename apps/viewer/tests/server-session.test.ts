@@ -366,3 +366,56 @@ test('offline replay keeps layout preferences local while remote sessions still 
   assert.equal(new Headers(calls[0].init.headers).get('Authorization'), 'Bearer secret')
   assert.deepEqual(JSON.parse(calls[0].init.body as string), { layoutPrefs: prefs })
 })
+
+test('raw model preview units stay in loading state until the ready render tree arrives', async (context) => {
+  const { createRemotePptxSession } = await import('../src/web/pptx-remote-session.ts')
+  context.mock.timers.enable({ apis: ['setInterval'] })
+  const frames: unknown[] = [],
+    statuses: string[] = []
+  let ready = false
+  context.mock.method(globalThis, 'fetch', async (url: string, init: RequestInit) => {
+    if (init.method === 'DELETE') return new Response(null, { status: 204 })
+    if (init.method === 'POST')
+      return json(
+        {
+          sessionId: 'raw-preview',
+          state: 'building',
+          previewable: true,
+          pollAfterMs: 1,
+          progress: { unitsProduced: 1, unitCount: 1 },
+          availableUnits: { from: 0, to: 1 },
+        },
+        202,
+      )
+    if (url.endsWith('/document')) return json({ model: { unitCount: 1 }, complete: false })
+    if (url.endsWith('/units/0'))
+      return json(
+        ready
+          ? firstUnit
+          : {
+              slide: { path: 'ppt/slides/slide1.xml', elements: [] },
+              playback: firstUnit.playback,
+            },
+      )
+    if (url.endsWith('/v1/sessions/raw-preview')) {
+      ready = true
+      return json({ sessionId: 'raw-preview', state: 'ready', model: { unitCount: 1 }, fonts: [] })
+    }
+    return json({})
+  })
+  const session = createRemotePptxSession({
+    server: 'http://parse',
+    fileId: 'file',
+    onPreviewFrame: (frame) => frames.push(frame),
+    onStatus: (text) => statuses.push(text),
+  })
+  try {
+    const deck = await session.open(new ArrayBuffer(0))
+    assert.equal(frames.length, 0)
+    assert.ok(Array.isArray(deck.slides[0].nodes))
+    assert.ok(statuses.every((text) => !text.includes('可预览')))
+  } finally {
+    session.close()
+    context.mock.timers.reset()
+  }
+})

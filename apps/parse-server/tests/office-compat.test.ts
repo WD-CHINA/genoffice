@@ -212,3 +212,31 @@ for (const hostile of [false, true])
     }
     expect(replay.media).toEqual(layout.media)
   })
+
+it('HTTP Word keeps an OLE preview URL after media bytes leave the slim ZIP', async () => {
+  const { buildDocx } = await import('../../../packages/docx-engine/tests/helpers/build-docx')
+  const request = await setup()
+  const xml =
+    '<w:p><w:r><w:object><v:shape xmlns:v="urn:schemas-microsoft-com:vml" style="width:32pt;height:32pt"><v:imagedata r:id="rId10"/></v:shape><o:OLEObject xmlns:o="urn:schemas-microsoft-com:office:office" Type="Embed" ProgID="Excel.Sheet.12"/></w:object></w:r></w:p>'
+  const bytes = await buildDocx({ bodyXml: xml, withImage: true })
+  const response = await request('/v1/files', { method: 'POST', body: bytes })
+  expect(response.status).toBe(201)
+  const { fileId } = (await response.json()) as { fileId: string }
+  const opened = await request('/v1/sessions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fileId }),
+  })
+  expect(opened.status).toBe(201)
+  const { sessionId } = (await opened.json()) as { sessionId: string }
+  const chunk = (await (await request(`/v1/sessions/${sessionId}/units/0`)).json()) as {
+    blocks: Array<{ oleProgId?: string; imageDataUrl?: string }>
+  }
+  const preview = chunk.blocks.find((block) => block.oleProgId === 'Excel.Sheet.12')
+  expect(preview?.imageDataUrl).toContain(`/v1/files/${fileId}/parts/word/media/`)
+  const resource = await request(
+    new URL(preview!.imageDataUrl!).pathname + new URL(preview!.imageDataUrl!).search,
+  )
+  expect(resource.status).toBe(200)
+  expect((await resource.arrayBuffer()).byteLength).toBeGreaterThan(0)
+})

@@ -20,3 +20,7 @@
 - 规则不改变用户已授权的工作范围；新增适配按当前任务执行，不另设审批步骤。
 
 具体流程及当前 PDF 改动的来源核对见 [Viewer 移植规则与来源说明](docs/viewer-porting-rules.zh-CN.md)。
+
+## 显示对齐工作流入口
+
+执行指定 Release Electron 基线的跨端显示审计、修复或复测时，使用 [Electron 显示对齐工作流](docs/workflows/electron-display-alignment.zh-CN.md)；可通过 `$genoffice-electron-alignment` 调用[项目技能](.agents/skills/genoffice-electron-alignment/SKILL.md)。执行模式、依赖安装和接受设计按当次有效授权记录，历史案例不作为其他版本的默认结论。

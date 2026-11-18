@@ -83,6 +83,9 @@ function looksLikeWmf(bytes: Uint8Array): boolean {
  * (non-renderer environments), so callers keep their existing empty-frame
  * degrade. Failures are logged instead of silently swallowed.
  */
+// Browser font preflight shares the original bounded inflation path.
+export { gunzip as inflateMetafile }
+
 export interface MetafileRasterOptions {
   /** Longest raster side in device px; the converter scales down preserving the aspect ratio */
   maxSidePx?: number

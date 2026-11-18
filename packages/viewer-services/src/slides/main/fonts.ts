@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url'
 /**
  * System font metrics (main process) — parse real font files with opentype.js and inject them
  * into pptx-render's OpentypeMetrics, replacing heuristic estimation for accurate line
@@ -28,7 +29,10 @@ import {
 import { join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { createHash } from 'node:crypto'
-import * as opentype from 'opentype.js'
+import { createRequire } from 'node:module'
+const requireTypeface = createRequire(import.meta.url)
+const opentype: { parse(bytes: ArrayBuffer, options?: { lowMemory?: boolean }): unknown } =
+  requireTypeface('opentype.js')
 import type { EmbeddedFontFace } from '@genoffice/pptx-engine'
 import {
   OpentypeMetrics,
@@ -47,10 +51,18 @@ import {
   type ShapedPrefFace,
   gtMeasure,
 } from './shaped-metrics'
-import carlitoRegular from '@genoffice/ui/fonts/Carlito-Regular.ttf?asset'
-import carlitoBold from '@genoffice/ui/fonts/Carlito-Bold.ttf?asset'
-import carlitoItalic from '@genoffice/ui/fonts/Carlito-Italic.ttf?asset'
-import carlitoBoldItalic from '@genoffice/ui/fonts/Carlito-BoldItalic.ttf?asset'
+const carlitoRegular = fileURLToPath(
+  new URL('../../../../ui/src/fonts/Carlito-Regular.ttf', import.meta.url),
+)
+const carlitoBold = fileURLToPath(
+  new URL('../../../../ui/src/fonts/Carlito-Bold.ttf', import.meta.url),
+)
+const carlitoItalic = fileURLToPath(
+  new URL('../../../../ui/src/fonts/Carlito-Italic.ttf', import.meta.url),
+)
+const carlitoBoldItalic = fileURLToPath(
+  new URL('../../../../ui/src/fonts/Carlito-BoldItalic.ttf', import.meta.url),
+)
 
 /** Fonts shipped with the app (metric substitutes for fonts most decks assume, e.g. Calibri→Carlito). */
 const BUNDLED_FONTS: Record<string, string> = {
@@ -1633,4 +1645,66 @@ export function createSystemFontMetrics(): FontMetricsProvider {
     substituted: (style) => resolveEntry(style)?.substituted === true,
   }
   return provider
+}
+
+/** Thin non-Electron transport boundary: export the same resolved face, never an alias lookalike. */
+export function resolvedFontResource(style: RunStyle, family: string) {
+  const hit = getRegistry().resolve({ ...style, fontFamily: family })
+  if (!hit) return undefined
+  const base =
+    style.bold || style.italic
+      ? getRegistry().resolve({ ...style, fontFamily: family, bold: false, italic: false })
+      : hit
+  const same = base?.path === hit.path && base?.offset === hit.offset
+  const os2 = (
+    hit.font as { tables?: { os2?: { usWeightClass?: number }; post?: { italicAngle?: number } } }
+  ).tables
+  const bold = !!style.bold && (!same || (os2?.os2?.usWeightClass ?? 400) >= 600)
+  const italic = !!style.italic && (!same || !!os2?.post?.italicAngle)
+  return { family, bold, italic, bytes: () => extractFace(readFileSync(hit.path), hit.offset) }
+}
+
+/** HTTP/bundle counterpart of slides-main's private FontFace channel. */
+export function createTransportFontMetrics() {
+  const original = createSystemFontMetrics()
+  const faces = new Map<string, ReturnType<typeof resolvedFontResource>>()
+  const capture = (style: RunStyle, text?: string) => {
+    const family = original.displayFamily?.(style, text) ?? style.fontFamily
+    const face = resolvedFontResource(style, family)
+    if (face) faces.set(`native:${family}|${+face.bold}${+face.italic}`, face)
+    return family
+  }
+  const provider: FontMetricsProvider = {
+    metrics: (style) => {
+      capture(style)
+      return original.metrics(style)
+    },
+    measure: (text, style) => {
+      capture(style, text)
+      return original.measure(text, style)
+    },
+    displayFamily: capture,
+    substituted: (style) => original.substituted?.(style) ?? false,
+  }
+  return {
+    provider,
+    fonts: () =>
+      [...faces].flatMap(([id, face]) =>
+        face
+          ? [
+              {
+                id,
+                family: face.family,
+                bold: face.bold,
+                italic: face.italic,
+                also: [] as string[],
+              },
+            ]
+          : [],
+      ),
+    bytes: (id: string) => {
+      const face = faces.get(id)
+      return face ? new Uint8Array(face.bytes()) : null
+    },
+  }
 }

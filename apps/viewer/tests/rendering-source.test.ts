@@ -1,3 +1,4 @@
+import ts from 'typescript'
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
@@ -43,7 +44,6 @@ test('keeps core drawing, playback and Word pagination identical to original sou
 test('keeps private font resolution and media decoding identical to original services', async () => {
   const repo = new URL('../../../', import.meta.url)
   for (const path of [
-    'slides/main/fonts.ts',
     'slides/main/font-scan.ts',
     'slides/main/tiff-decode.ts',
     'slides/main/jpeg-orientation.ts',
@@ -55,4 +55,86 @@ test('keeps private font resolution and media decoding identical to original ser
       path,
     )
   }
+})
+
+/** Only the enumerated module/asset bindings and transport exports are private.
+ * Every token of the resolver, byte extraction, shaping and scan core stays checked. */
+function nativeCore(text: string, kind: 'fonts' | 'shaped') {
+  const file = ts.createSourceFile('native.ts', text, ts.ScriptTarget.Latest, true)
+  const bindings = new Set(
+    kind === 'fonts'
+      ? [
+          'carlitoRegular',
+          'carlitoBold',
+          'carlitoItalic',
+          'carlitoBoldItalic',
+          'requireTypeface',
+          'opentype',
+        ]
+      : ['requireFont', 'hbRoot', 'createHarfBuzz', 'hbWasmPath'],
+  )
+  const adapters = new Set([
+    'resolvedFontResource',
+    'createTransportFontMetrics',
+    'pendingWidthMeasurements',
+    'acceptWidthMeasurements',
+  ])
+  const keep = file.statements
+    .filter((node) => {
+      if (ts.isImportDeclaration(node)) {
+        const path = (node.moduleSpecifier as ts.StringLiteral).text
+        return (
+          !['node:url', 'node:module', 'node:path', 'opentype.js'].includes(path) &&
+          !path.endsWith('?asset') &&
+          !path.includes('harfbuzzjs/')
+        )
+      }
+      if (
+        ts.isVariableStatement(node) &&
+        node.declarationList.declarations.every(
+          (d) => ts.isIdentifier(d.name) && bindings.has(d.name.text),
+        )
+      )
+        return false
+      return !(ts.isFunctionDeclaration(node) && node.name && adapters.has(node.name.text))
+    })
+    .map((n) => n.getText(file))
+    .join('\n')
+  return ts
+    .createPrinter({ removeComments: true })
+    .printFile(ts.createSourceFile('core.ts', keep, ts.ScriptTarget.Latest, true))
+}
+test('native font resolver and HarfBuzz cores retain all upstream tokens outside named host bindings', async () => {
+  const repo = new URL('../../../', import.meta.url)
+  for (const [name, kind] of [
+    ['fonts', 'fonts'],
+    ['shaped-metrics', 'shaped'],
+  ] as const) {
+    const original = await readFile(new URL(`apps/slides/src/main/${name}.ts`, repo), 'utf8')
+    const snapshot = await readFile(
+      new URL(`packages/viewer-services/src/slides/main/${name}.ts`, repo),
+      'utf8',
+    )
+    assert.deepEqual(nativeCore(snapshot, kind), nativeCore(original, kind), name)
+  }
+})
+
+test('browser metafile font record scanners retain the original EMF/WMF implementations', async () => {
+  const repo = new URL('../../../', import.meta.url)
+  const names = new Set(['utf16', 'add', 'scanEmfPlus', 'scanEmf', 'scanWmf'])
+  const scanners = (text: string) => {
+    const source = ts.createSourceFile('scan.ts', text, ts.ScriptTarget.Latest, true)
+    const nodes = source.statements.filter(
+      (node) => ts.isFunctionDeclaration(node) && names.has(node.name?.text ?? ''),
+    )
+    assert.equal(nodes.length, names.size)
+    return nodes.map((node) =>
+      ts.createPrinter({ removeComments: true }).printNode(ts.EmitHint.Unspecified, node, source),
+    )
+  }
+  const [original, browser] = await Promise.all([
+    readFile(new URL('apps/slides/src/main/metafile-fonts.ts', repo), 'utf8'),
+    readFile(new URL('packages/viewer-services/src/slides/shared/metafile-fonts.ts', repo), 'utf8'),
+  ])
+  assert.deepEqual(scanners(browser), scanners(original))
 })

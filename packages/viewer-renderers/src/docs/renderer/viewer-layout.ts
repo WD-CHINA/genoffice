@@ -1,7 +1,8 @@
 import { cssFontFamily } from './text-layout/font-rules'
 import { readSectionSettings, readSections } from '@genoffice/docx-engine'
 // Read-only page-preview calculations excerpted from App.tsx and re-synced with the
-// 2026-10-22 upstream snapshot (v0.12.29): the note helpers, noteRenderInfoOf,
+// upstream helpers, with v0.13.18 modernAnchorFloats synchronized from App.tsx:
+// the note helpers, noteRenderInfoOf,
 // pageFootnotesOf, blockMetaOf and the column-mode predicates match App.tsx verbatim;
 // only the assembly around them (no editor state, parsed-doc inputs) is viewer-specific.
 import { type Block, type NoteInfo, type SectionSettings } from '@genoffice/docx-engine'
@@ -189,9 +190,11 @@ export function viewerLayout(
       : imageParaPaginationMeta(b.originalXml, styleOf, doc?.parsed.docDefaults)
     const fnBands = footnoteBandsOf(b)
     const fnExtra = fnBands.reduce((s, band) => s + band.heightPx, 0)
-    if (!flags && fnExtra === 0) return undefined
+    const modern = (doc?.parsed.compatibilityMode ?? 0) >= 15
+    if (!flags && fnExtra === 0 && !modern) return undefined
     return {
       ...flags,
+      ...(modern ? { modernAnchorFloats: true } : {}),
       ...(fnExtra > 0 ? { footnoteExtraPx: fnExtra, footnoteBands: fnBands } : {}),
     }
   }

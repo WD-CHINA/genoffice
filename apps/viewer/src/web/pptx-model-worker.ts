@@ -10,7 +10,9 @@
 import { parse as parseFont } from 'opentype.js'
 import { buildRenderSlide } from '@genoffice/pptx-render'
 import { createBundledMetrics, type ParsedFace } from './bundled-metrics'
-import { METRIC_FONTS } from './metric-fonts'
+import { loadMetricFonts } from './metric-fonts'
+import { createFontDemand } from './font-demand'
+import type { MetricFont } from './metric-font-types'
 import { createMetricFontLoader } from './load-metric-font'
 import { needsResourceRefresh, originOf } from './signed-url'
 
@@ -62,6 +64,12 @@ const units = new Map<number, Unit>()
 const dependencies = new Map<number, Set<string>>()
 
 const loadMetric = createMetricFontLoader()
+let catalog: MetricFont[] = []
+let demand: ReturnType<typeof createFontDemand>
+const parsedFaces = new Map<string, ParsedFace>(),
+  attempted = new Set<string>(),
+  unavailable = new Set<string>(),
+  accepted = new Map<string, number>()
 
 async function loadEmbedded(font: SessionFont): Promise<ParsedFace | null> {
   try {
@@ -72,6 +80,7 @@ async function loadEmbedded(font: SessionFont): Promise<ParsedFace | null> {
     if (!response.ok) return null
     return {
       family: font.family,
+      embedded: true,
       bold: font.bold,
       italic: font.italic,
       names: font.also ?? [],
@@ -129,7 +138,31 @@ function build(index: number, source: LayoutSlide): Unit {
 async function ensureUnit(index: number): Promise<Unit> {
   const cached = units.get(index)
   if (cached) return cached
-  return build(index, await fetchSource(index))
+  const source = await fetchSource(index)
+  for (;;) {
+    metrics = createBundledMetrics(
+      [
+        ...catalog.flatMap((font) => (parsedFaces.has(font.id) ? [parsedFaces.get(font.id)!] : [])),
+        ...[...parsedFaces.values()].filter((face) => face.embedded),
+      ],
+      demand.request,
+      (key) => activeKeys?.add(key),
+    )
+    metrics.restoreWidthMeasurements(accepted)
+    const unit = build(index, source)
+    const needed = catalog.filter((font) => demand.ids().has(font.id) && !attempted.has(font.id))
+    if (!needed.length) return unit
+    await Promise.all(
+      needed.map(async (font) => {
+        attempted.add(font.id)
+        const parsed = await loadMetric(font)
+        if (!parsed && font.id.startsWith('electron:'))
+          throw new Error('无法加载 Electron 字体：' + font.family)
+        if (parsed) parsedFaces.set(font.id, parsed)
+        else unavailable.add(font.id)
+      }),
+    )
+  }
 }
 
 function measurements() {
@@ -163,12 +196,16 @@ async function handleMessage(event: MessageEvent) {
       baseOrigin = originOf(sessionBase)
       token = open.token ?? ''
       width = open.width || 960
-      const [metricFaces, embedded] = await Promise.all([
-        Promise.all(METRIC_FONTS.map(loadMetric)),
-        Promise.all((open.fonts ?? []).map(loadEmbedded)),
-      ])
-      const faces = [...metricFaces, ...embedded].filter((face): face is ParsedFace => !!face)
-      metrics = createBundledMetrics(faces, undefined, (key) => activeKeys?.add(key))
+      catalog = await loadMetricFonts()
+      parsedFaces.clear()
+      attempted.clear()
+      unavailable.clear()
+      accepted.clear()
+      demand = createFontDemand(catalog, unavailable)
+      for (const font of open.fonts ?? []) {
+        const face = await loadEmbedded(font)
+        if (face) parsedFaces.set(font.id, face)
+      }
       sources.clear()
       units.clear()
       dependencies.clear()
@@ -185,6 +222,7 @@ async function handleMessage(event: MessageEvent) {
           pendingKeys.has(key),
         ),
       )
+      for (const [key, value] of Object.entries(widths)) accepted.set(key, value)
       metrics.acceptWidthMeasurements(widths)
       const keys = new Set(Object.keys(widths))
       const updates: Array<[number, Unit]> = []

@@ -10,12 +10,18 @@ import type {
   ParsedDocFull,
   SectionSettings,
 } from '@genoffice/docx-engine'
+import { readSections } from '@genoffice/docx-engine'
 import {
   docBodyFont,
   docStyleCss,
   docThemeCss,
 } from '@genoffice/viewer-renderers/docs/renderer/doc-style-css'
-import { sectionGridPitchPt } from '@genoffice/viewer-renderers/docs/renderer/pagination'
+import {
+  docCharSpacePt,
+  docGridPitchPt,
+  sectionGridPitchPt,
+  singleByteCharSpacePt,
+} from '@genoffice/viewer-renderers/docs/renderer/pagination'
 import { noteEmbeddedFontsChanged } from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
 
 export const DOCX_THEME_SANS = 'GenOffice Theme Sans SC'
@@ -120,4 +126,46 @@ export function docxSectionTypography(settings?: SectionSettings): Record<string
         ? `${grid.charSpace / 4096}pt`
         : 'normal',
   }
+}
+
+/** Original canvas leaves an untyped grid absent: a dummy pitch disables lineLeadPx. */
+export function docxCanvasTypography(settings?: SectionSettings): Record<string, string> {
+  const vars = docxSectionTypography(settings)
+  if (
+    !settings ||
+    sectionGridPitchPt({ settings } as Parameters<typeof sectionGridPitchPt>[0]) == null
+  )
+    delete vars['--doc-grid-pitch']
+  return vars
+}
+
+/** App.tsx's document-wide canvas/preview rules (v0.13.18:3753–3775,8279–8301).
+ * Pagination clones are siblings of the measurement canvas, so these rules must
+ * reach every .doc-page rather than inherit from the hidden .page-wrap alone.
+ * Mixed-section overrides continue to come from the original layout controller.
+ */
+export function docxDocumentTypography(parsed: ParsedDocFull): string {
+  const sections = readSections(parsed)
+  const gridPitchPt = docGridPitchPt(sections)
+  const mixedGridPitchPt = sections.map(sectionGridPitchPt).find((pitch) => pitch != null)
+  const pitch = gridPitchPt ?? mixedGridPitchPt
+  const charSpacePt = docCharSpacePt(sections)
+  const balancedGrid = parsed.balanceDbcsSpacing === true
+  const section = sections[0]?.settings
+  return [
+    pitch != null ? `.doc-page { --doc-grid-pitch:${pitch}pt }` : '',
+    charSpacePt != null
+      ? `.doc-page { --doc-char-space:${Math.round(charSpacePt * 10000) / 10000}pt${
+          balancedGrid
+            ? `; --doc-char-space-sb:${Math.round(singleByteCharSpacePt(charSpacePt, true) * 10000) / 10000}pt`
+            : ''
+        } }`
+      : '',
+    balancedGrid
+      ? `.doc-page .doc-east-asian-font:not(.doc-east-asian-halfwidth, [style*='letter-spacing'] .doc-east-asian-font, .page-gap-hf *) { letter-spacing: var(--doc-char-space, normal) }`
+      : '',
+    section
+      ? `.doc-page { --doc-margin-left:${section.marginLeft / 15}px; --doc-margin-right:${section.marginRight / 15}px; --doc-margin-top:${section.marginTop / 15}px }`
+      : '',
+  ].join('\n')
 }

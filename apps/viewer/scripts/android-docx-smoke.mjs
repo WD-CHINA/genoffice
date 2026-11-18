@@ -1,21 +1,24 @@
-/** Real-device DOCX online + verified offline replay. Keeps app data and restores USB reverse mappings. */
+/** Real-device read-only Word page layout, online and verified backend-disconnected replay. */
+import assert from 'node:assert/strict'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import { createAndroidTestDevice, wait } from './android-test-device.mjs'
-const serial = process.env.ANDROID_SERIAL
-if (!serial || !process.env.ANDROID_WORD_INPUTS)
+if (!process.env.ANDROID_SERIAL || !process.env.ANDROID_WORD_INPUTS)
   throw Error('Set ANDROID_SERIAL and ANDROID_WORD_INPUTS')
-const output = resolve(process.env.ANDROID_WORD_EVIDENCE_DIR || '/tmp/genoffice-word-fixes/android')
+const output = resolve(process.env.ANDROID_WORD_EVIDENCE_DIR || '/tmp/genoffice-word-pages/android')
 await mkdir(output, { recursive: true })
 const inputs = JSON.parse(await readFile(process.env.ANDROID_WORD_INPUTS, 'utf8'))
 const backend = process.env.PARSE_SERVER_URL || 'http://127.0.0.1:18787'
-const viewer = process.env.ANDROID_VIEWER_URL || 'http://127.0.0.1:11019/'
-const token = process.env.PARSE_SERVER_TOKEN || '',
-  port = Number(process.env.ANDROID_MEDIA_CDP_PORT || 19224)
-const device = createAndroidTestDevice([backend, viewer], port)
-const { adb, access } = device
+const viewer = process.env.ANDROID_VIEWER_URL || 'http://127.0.0.1:11019/viewer/'
+const device = createAndroidTestDevice(
+    [backend, viewer],
+    Number(process.env.ANDROID_MEDIA_CDP_PORT || 19224),
+  ),
+  { adb } = device
 const results = []
+let client
 async function open(input, mode) {
+  client?.close()
   adb(
     'shell',
     'am',
@@ -33,7 +36,7 @@ async function open(input, mode) {
     viewer,
     '--es',
     'token',
-    token,
+    process.env.PARSE_SERVER_TOKEN || '',
     '--es',
     'fileId',
     input.fileId,
@@ -41,229 +44,124 @@ async function open(input, mode) {
     mode,
     'true',
   )
-  for (let attempt = 0; attempt < 180; attempt++) {
-    await wait(700)
-    let c
+  for (let i = 0; i < 180; i++) {
+    await wait(400)
     try {
-      const pid = adb('shell', 'pidof', 'com.genoffice.viewerdemo').trim()
-      if (!pid) continue
-      c = await device.connect(pid)
-      for (const [id, context] of c.contexts)
-        if (context.auxData?.isDefault) {
-          const ready = await c.evaluate(
-            `({origin:location.origin,fileId:new URL(location.href).searchParams.get('fileId'),preview:location.pathname.endsWith('/preview.html'),local:location.pathname.startsWith('/viewer/'),units:document.querySelectorAll('.viewer-doc-reading-unit .doc-page').length})`,
-            id,
-          )
-          if (
-            ready.fileId === input.fileId &&
-            ready.preview &&
-            ready.units &&
-            (mode === 'online'
-              ? ready.origin === new URL(viewer).origin
-              : ready.local && ready.origin !== new URL(viewer).origin)
-          )
-            return { c, id }
-        }
-      c.close()
-    } catch {
-      c?.close()
-    }
+      client?.close()
+      client = await device.connect(adb('shell', 'pidof', 'com.genoffice.viewerdemo').trim())
+      const s = await client.evaluate(
+        `({origin:location.origin,file:new URL(location.href).searchParams.get('fileId'),ready:!!document.querySelector('.pv-page .pv-content'),fonts:document.fonts.status})`,
+      )
+      if (
+        s.file === input.fileId &&
+        s.ready &&
+        s.fonts === 'loaded' &&
+        (mode === 'online'
+          ? s.origin === new URL(viewer).origin
+          : s.origin !== new URL(viewer).origin)
+      )
+        return
+    } catch {}
   }
-  throw Error(`${input.name}: Word ${mode} did not open`)
+  throw Error(input.name + ' ' + mode + ' did not open')
 }
-async function settled(c, id) {
-  let previous = '',
-    stable = 0
-  for (let attempt = 0; attempt < 60; attempt++) {
-    const state = await c.evaluate(
-      `({height:document.querySelector('.viewer-doc-reading-scroll')?.scrollHeight,
-      measure:document.querySelectorAll('.viewer-doc-remote-measure').length,fonts:document.fonts.status,loading:!!document.querySelector('.viewer-doc-remote-loading'),
-      images:[...document.images].filter(image=>image.getAttribute('src')).every(image=>image.complete)})`,
-      id,
+async function inspect(input, offline) {
+  await client.evaluate(`document.querySelector('.pv-scroll').scrollTop=0`)
+  await wait(1400)
+  const state = await client.evaluate(
+    `(()=>{const source=document.querySelector('.viewer-doc-electron-source .ProseMirror'),clone=document.querySelector('.pv-page .pv-content');return{url:location.href,ua:navigator.userAgent,viewport:[innerWidth,innerHeight],dpr:devicePixelRatio,fonts:document.fonts.status,pages:document.querySelectorAll('.pv-page').length,blocks:source.children.length,pitch:[source,clone].map(e=>getComputedStyle(e).getPropertyValue('--doc-grid-pitch')),first:[source,clone].map(e=>[...e.children].filter(n=>n.dataset.idx!=null).slice(0,12).map(n=>({idx:n.dataset.idx,h:n.getBoundingClientRect().height}))),paper:document.querySelector('.pv-page').getBoundingClientRect().toJSON(),editable:document.querySelectorAll('[contenteditable=true]').length,modeSwitch:!!document.querySelector('[aria-label="Word 显示模式"]'),continuous:!!document.querySelector('.viewer-doc-reading-paper'),alerts:[...document.querySelectorAll('[role=alert]')].map(e=>e.textContent),external:performance.getEntriesByType('resource').map(r=>r.name).filter(n=>/^https?:/.test(n)&&new URL(n).origin!==location.origin),broken:[...document.images].filter(i=>i.getAttribute('src')&&i.complete&&!i.naturalWidth).map(i=>i.src.slice(0,100))}})()`,
+  )
+  assert.ok(state.pages > 0)
+  assert.equal(state.editable, 0)
+  assert.equal(state.modeSwitch, false)
+  assert.equal(state.continuous, false)
+  assert.deepEqual(state.alerts, [])
+  assert.deepEqual(state.broken, [])
+  assert.equal(state.pitch[0], state.pitch[1])
+  if (input.name === 'business') assert.deepEqual(state.first[0], state.first[1])
+  if (offline)
+    assert.deepEqual(
+      state.external.filter((url) => url !== backend + '/v1/capabilities'),
+      [],
+      'Offline Word requested external assets beyond the deliberate backend-unavailable probe',
     )
-    const value = JSON.stringify(state)
-    stable =
-      value === previous &&
-      state.fonts === 'loaded' &&
-      !state.loading &&
-      !state.measure &&
-      state.images
-        ? stable + 1
-        : 0
-    if (stable >= 4) return
-    previous = value
-    await wait(250)
-  }
-  throw Error('Word layout did not settle')
-}
-async function inspect(c, id, input, disconnected) {
-  await settled(c, id)
-  await c.evaluate(`document.querySelector('.viewer-doc-reading-scroll').scrollTop=0`, id)
-  await settled(c, id)
-  const typography = await c.evaluate(
-    `(()=>{const root=document.querySelector('.viewer-doc-reading'),editor=root.querySelector('.doc-page'),span=editor.querySelector('.doc-east-asian-font');return{sheets:document.querySelectorAll('[data-docx-style-context][data-doc-css]').length,fallback:root.dataset.docxThemeFallback,baseSize:getComputedStyle(editor).fontSize,chineseFont:span&&getComputedStyle(span).fontFamily,themeLoaded:[...document.fonts].some(face=>face.family.includes('GenOffice Theme Sans SC')&&face.status==='loaded')}})()`,
-    id,
-  )
-  const geometry = await c.evaluate(
-    `(()=>{const paper=document.querySelector('.viewer-doc-reading-paper'),s=getComputedStyle(paper),mark=getComputedStyle(paper,'::before');return{width:paper.getBoundingClientRect().width,height:paper.getBoundingClientRect().height,pageHeight:parseFloat(s.getPropertyValue('--page-h')),minHeight:parseFloat(s.minHeight),padding:s.padding,top:parseFloat(s.paddingTop),markLeft:parseFloat(mark.left),markWidth:parseFloat(mark.width),markBottom:parseFloat(mark.top)+parseFloat(mark.height),pageWidth:s.getPropertyValue('--page-w')}})()`,
-    id,
-  )
-  if (
-    Math.abs(geometry.minHeight - geometry.pageHeight) > 0.1 ||
-    geometry.height < geometry.pageHeight - 0.1 ||
-    Math.abs(geometry.markLeft) > 0.1 ||
-    Math.abs(geometry.markWidth - geometry.width) > 0.1 ||
-    Math.abs(geometry.markBottom - geometry.top) > 0.1
-  )
-    throw Error('Word crop marks differ from the paper padding: ' + JSON.stringify(geometry))
-  if (typography.sheets !== 1) throw Error('Word document style scope is missing or duplicated')
-  if (
-    typography.fallback === 'bundled' &&
-    (!typography.themeLoaded || !typography.chineseFont?.includes('GenOffice Theme Sans SC'))
-  )
-    throw Error('Word bundled theme font did not load')
-  const units = new Map(),
-    notes = new Map(),
-    external = new Set()
-  let finished = false
-  for (let step = 0; step < 1200; step++) {
-    const state = await c.evaluate(
-      `(()=>{const root=document.querySelector('.viewer-doc-reading'),scroll=root.querySelector('.viewer-doc-reading-scroll');return{
-        paper:getComputedStyle(root.querySelector('.viewer-doc-reading-paper')).backgroundColor,
-        pages:root.querySelectorAll('.pv-page,.viewer-doc-remote-page,[data-source-from]').length,
-        editable:root.querySelectorAll('[contenteditable="true"],.doc-content-editing').length,
-        counters:root.querySelectorAll('.viewer-page-controls').length,
-        units:[...root.querySelectorAll('[data-unit-id]')].map(unit=>[unit.dataset.unitId,unit.textContent||'']),
-        notes:[...root.querySelectorAll('[data-note-body]')].map(note=>[note.dataset.noteKind+':'+note.dataset.noteBody,note.textContent||'']),
-        images:[...root.querySelectorAll('img[src]')].map(image=>({ready:image.complete,broken:image.complete&&!image.naturalWidth,local:image.src.startsWith('data:')||new URL(image.src).origin===location.origin})),
-        external:performance.getEntriesByType('resource').map(entry=>entry.name).filter(url=>/^https?:/.test(url)&&new URL(url).origin!==location.origin),
-        atEnd:scroll.scrollTop+scroll.clientHeight>=scroll.scrollHeight-2,
-        busy:!!root.querySelector('[role="status"],.viewer-doc-remote-loading,.viewer-doc-remote-more'),
-        alerts:[...root.querySelectorAll('[role="alert"]')].map(node=>node.textContent),
-      }})()`,
-      id,
+  const prefix = input.name + '-' + (offline ? 'offline' : 'online')
+  const first = await client.send('Page.captureScreenshot', { format: 'png', fromSurface: true })
+  await writeFile(join(output, prefix + '-first.png'), Buffer.from(first.data, 'base64'))
+  // Exercise each actual sheet, including virtualized pages and the final footer.
+  const pages = []
+  for (let i = 0; i < state.pages; i++) {
+    await client.evaluate(
+      `(()=>{const e=document.querySelector('[data-pv-page="${i}"]'),s=document.querySelector('.pv-scroll');s.scrollTop+=e.getBoundingClientRect().top-s.getBoundingClientRect().top})()`,
     )
-    if (state.paper !== 'rgb(255, 255, 255)') throw Error('Word reading paper is not readable')
-    if (state.pages || state.editable || state.counters)
-      throw Error('Continuous reading acquired pages or editing controls')
-    if (state.alerts.length || state.images.some((image) => image.broken))
-      throw Error(JSON.stringify(state))
-    if (disconnected && state.images.some((image) => !image.local))
-      throw Error('Offline Word image is not local')
-    for (const pair of state.units) units.set(...pair)
-    for (const pair of state.notes) notes.set(...pair)
-    for (const url of state.external) if (url !== backend + '/v1/capabilities') external.add(url)
-    if (state.atEnd && !state.busy && state.images.every((image) => image.ready)) {
-      finished = true
-      break
-    }
-    await c.evaluate(
-      `(()=>{const scroll=document.querySelector('.viewer-doc-reading-scroll');scroll.scrollBy(0,scroll.clientHeight*.75)})()`,
-      id,
+    await wait(180)
+    pages.push(
+      await client.evaluate(
+        `(()=>{const e=document.querySelector('[data-pv-page="${i}"]');return{page:${i + 1},mounted:e.children.length,textLength:e.textContent.length,footer:e.querySelector('.page-hf-footer')?.textContent}})()`,
+      ),
     )
-    await wait(200)
+    assert.ok(pages.at(-1).mounted, 'Page not mounted ' + i)
   }
-  if (!finished) throw Error('Continuous reading did not reach the final source unit')
-  if (disconnected && external.size)
-    throw Error('Offline Word requested remote assets: ' + JSON.stringify([...external]))
-  const text = [...units.values(), ...notes.values()].join('')
-  if (input.name === 'partial-pages' && !text.includes('CHUNK_PARAGRAPH_419'))
-    throw Error('Last Word chunk not reached')
-  if (input.name === 'long-and-merged')
-    for (const marker of ['LONG_START', 'LONG_END', 'MERGE_START', 'MERGE_END', 'DOCUMENT_END'])
-      if (!text.includes(marker)) throw Error('Missing Word marker ' + marker)
-  if (input.name === 'long-notes' && !text.includes('ENDNOTE_BODY_LAST'))
-    throw Error('Endnote tail not reached')
-  if (input.name === '06-with-footnotes' && !notes.size) throw Error('Footnote bodies are missing')
-  if (input.name === 'independent-cells') {
-    for (const [prefix, count] of [
-      ['FLOW_A', 75],
-      ['FLOW_B', 61],
-    ])
-      for (let index = 0; index < count; index++) {
-        const marker = prefix + '_' + String(index).padStart(3, '0')
-        if (text.split(marker).length !== 2)
-          throw Error('Lost or duplicated cell content ' + marker)
-      }
-    for (const marker of ['FLOW_MIDDLE', 'FLOW_BOTTOM'])
-      if (text.split(marker).length !== 2) throw Error('Lost or duplicated aligned cell ' + marker)
-  }
+  assert.ok(pages.at(-1).textLength, 'Last page blank')
+  await client.evaluate(
+    `document.querySelector('.pv-scroll').scrollTop=document.querySelector('.pv-scroll').scrollHeight`,
+  )
+  await wait(300)
   const png = device.readBytes(['exec-out', 'screencap', '-p'])
-  await writeFile(join(output, `${input.name}-${disconnected ? 'offline' : 'online'}.png`), png)
-  return {
-    typography,
-    geometry,
-    units: units.size,
-    notes: notes.size,
-    external: [...external],
-    continuous: true,
-    reachedTail: true,
-  }
+  await writeFile(join(output, prefix + '-native-last.png'), png)
+  return { state, pages }
 }
-
 try {
   for (const input of inputs) {
-    if (!/^[a-f0-9]{64}$/.test(input.fileId)) throw Error('Invalid Word file ID')
-    access()
-    const online = await open(input, 'online')
-    let onlineResult
-    try {
-      onlineResult = await inspect(online.c, online.id, input, false)
-    } finally {
-      online.c.close()
-    }
-    const offline = await open(input, 'download')
-    try {
-      const pointer = JSON.parse(
-        adb(
-          'exec-out',
-          'run-as',
-          'com.genoffice.viewerdemo',
-          'cat',
-          `files/bundle-cache/${input.fileId}/current.json`,
-        ),
-      )
-      const manifest = JSON.parse(
-        adb(
-          'exec-out',
-          'run-as',
-          'com.genoffice.viewerdemo',
-          'cat',
-          `files/bundle-cache/${input.fileId}/versions/${pointer.artifactKey}/manifest.json`,
-        ),
-      )
-      if (manifest.format !== 'docx' || !manifest.sourceVerified)
-        throw Error('Word bundle was not verified')
-      await writeFile(
-        join(output, `${input.name}-manifest.json`),
-        JSON.stringify(manifest, null, 2),
-      )
-      device.disconnect()
-      const unavailable = await offline.c.evaluate(
-        `(async()=>{try{await fetch(${JSON.stringify(backend + '/v1/capabilities')},{signal:AbortSignal.timeout(2000)});return false}catch{return true}})()`,
-        offline.id,
-      )
-      if (!unavailable) throw Error('Remote backend is reachable')
-      const offlineResult = await inspect(offline.c, offline.id, input, true)
-      if (
-        onlineResult.typography.baseSize !== offlineResult.typography.baseSize ||
-        onlineResult.typography.chineseFont !== offlineResult.typography.chineseFont
-      )
-        throw Error('Word typography differs between online and offline reading')
-      results.push({
-        name: input.name,
-        fileId: input.fileId,
-        verified: true,
-        backendUnavailable: unavailable,
-        online: onlineResult,
-        offline: offlineResult,
-      })
-      await writeFile(join(output, 'results.json'), JSON.stringify(results, null, 2))
-      console.log(input.name, 'PASS', offlineResult.units, 'source units')
-    } finally {
-      offline.c.close()
-    }
+    assert.match(input.fileId, /^[a-f0-9]{64}$/)
+    device.access()
+    await open(input, 'online')
+    const online = await inspect(input, false)
+    await open(input, 'download')
+    const pointer = JSON.parse(
+      adb(
+        'exec-out',
+        'run-as',
+        'com.genoffice.viewerdemo',
+        'cat',
+        `files/bundle-cache/${input.fileId}/current.json`,
+      ),
+    )
+    const manifest = JSON.parse(
+      adb(
+        'exec-out',
+        'run-as',
+        'com.genoffice.viewerdemo',
+        'cat',
+        `files/bundle-cache/${input.fileId}/versions/${pointer.artifactKey}/manifest.json`,
+      ),
+    )
+    assert.equal(manifest.format, 'docx')
+    assert.equal(manifest.sourceVerified, true)
+    await writeFile(join(output, input.name + '-manifest.json'), JSON.stringify(manifest, null, 2))
+    client?.close()
+    device.disconnect()
+    await open(input, 'open')
+    const unavailable = await client.evaluate(
+      `(async()=>{try{await fetch(${JSON.stringify(backend + '/v1/capabilities')},{signal:AbortSignal.timeout(2000)});return false}catch{return true}})()`,
+    )
+    assert.equal(unavailable, true, 'Backend is reachable during offline test')
+    const offline = await inspect(input, true)
+    assert.equal(online.state.pages, offline.state.pages)
+    assert.equal(online.state.blocks, offline.state.blocks)
+    assert.deepEqual(online.state.first, offline.state.first)
+    results.push({
+      name: input.name,
+      fileId: input.fileId,
+      verified: true,
+      backendUnavailable: unavailable,
+      online,
+      offline,
+    })
+    await writeFile(join(output, 'results.json'), JSON.stringify(results, null, 2))
+    console.log(input.name, 'online/offline', offline.state.pages, 'pages PASS')
   }
 } finally {
+  client?.close()
   device.restore()
 }

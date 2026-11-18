@@ -1,3 +1,4 @@
+import { electronFontResolution } from './electron-font-catalog'
 import type { RunStyle } from '@genoffice/pptx-render'
 import { fontName, fontVariants, fallbackFamilies } from './font-selection'
 import { createScriptFallback } from '@genoffice/viewer-services/slides/shared/script-fallback'
@@ -34,7 +35,7 @@ export function createFontDemand(fonts: AvailableFont[], unavailable = new Set<s
   }
   return {
     request(style: RunStyle, text = '') {
-      add(style.fontFamily, style)
+      add(electronFontResolution(style, text)?.family ?? style.fontFamily, style)
       add('Carlito', style)
       const preferred = scriptFallback(text, undefined, style)
       if (preferred) add(preferred, style)

@@ -1811,7 +1811,7 @@ describe('Symbol-font bullets', () => {
     expect(plain.text).toBe('')
   })
 
-  it('normalizes dingbat text bytes before NBSP handling and capitalization', () => {
+  it('preserves v0.13.18 Electron dingbat text while applying ordinary NBSP and capitalization rules', () => {
     for (const fontFamily of [
       'Wingdings',
       'Wingdings 2',
@@ -1834,7 +1834,8 @@ describe('Symbol-font bullets', () => {
         .flatMap((line) => line.runs)
         .map((run) => run.text)
         .join('')
-      expect(text).toBe('\uf070\uf0a0 \uf070')
+      // v0.13.18 ac19c54 text-layout.ts: no private byte-to-PUA rewrite; the real face maps the glyphs.
+      expect(text).toBe('P  \uf070')
     }
   })
 })

@@ -1,3 +1,4 @@
+import { electronFontResolution, type ElectronFontResolution } from './electron-font-catalog'
 import {
   HeuristicMetrics,
   OpentypeMetrics,
@@ -13,6 +14,7 @@ export interface ParsedFace {
   bold: boolean
   italic: boolean
   names: string[]
+  embedded?: boolean
   descriptors?: MetricFont['descriptors']
   font: {
     unitsPerEm: number
@@ -97,9 +99,23 @@ export function createBundledMetrics(
       : undefined
   }
   const scriptFallback = createScriptFallback(scriptEntry)
-  const resolve = (style: RunStyle, text = '') => {
+  const resolve = (
+    style: RunStyle,
+    text = '',
+  ):
+    | { members: ParsedFace[]; substituted: boolean; native?: ElectronFontResolution }
+    | undefined => {
     onRequest?.(style, text)
     const exact = group(style.fontFamily, style)
+    const native = electronFontResolution(style, text)
+    if (
+      native &&
+      !(
+        exact.some((face) => face.embedded) &&
+        fontName(native.family) !== fontName(style.fontFamily)
+      )
+    )
+      return { members: group(native.family, style), substituted: native.substituted, native }
     const preferred = scriptFallback(text, scriptEntry(style), style)
     if (preferred) {
       const members = group(preferred, style)
@@ -144,7 +160,17 @@ export function createBundledMetrics(
   const provider: FontMetricsProvider = {
     metrics: (style) => {
       const found = resolve(style)
-      if (!found) return heuristic.metrics(style)
+      if (found?.native) {
+        const m = found.native.metrics,
+          scale = style.fontSizePx / 100
+        return {
+          ascent: m.ascent * scale,
+          descent: m.descent * scale,
+          lineHeight: m.lineHeight * scale,
+          ...(m.externalLeading == null ? {} : { externalLeading: m.externalLeading * scale }),
+        }
+      }
+      if (!found?.members.length) return heuristic.metrics(style)
       const face = pick(found.members, 'A') ?? found.members[found.members.length - 1]!
       const scale = scaleOf(face)
       const metrics = inner(face).metrics({ ...style, fontSizePx: style.fontSizePx * scale })
@@ -162,8 +188,9 @@ export function createBundledMetrics(
     },
     measure: (text, style) => {
       const found = resolve(style, text)
-      const family = found?.members[0]?.family || style.fontFamily
-      if (found?.substituted) fallbacks.add(style.fontFamily)
+      const family = found?.native?.family ?? found?.members[0]?.family ?? style.fontFamily
+      if (found?.substituted && (!found.native || !found.members.length))
+        fallbacks.add(style.fontFamily)
       if (text) {
         const key = `${style.bold ? 'b' : ''}${style.italic ? 'i' : ''}${style.kerning === false ? 'n' : ''}|${family}|${text}`
         onMeasure?.(key)
@@ -178,14 +205,23 @@ export function createBundledMetrics(
           kerning: style.kerning,
         })
       }
-      return found ? measure(text, style, found.members) : heuristic.measure(text, style)
+      return found?.members.length
+        ? measure(text, style, found.members)
+        : heuristic.measure(text, style)
     },
-    displayFamily: (style, text) => resolve(style, text)?.members[0]?.family || style.fontFamily,
+    displayFamily: (style, text) => {
+      const found = resolve(style, text)
+      return found?.native?.family ?? found?.members[0]?.family ?? style.fontFamily
+    },
     substituted: (style) => resolve(style)?.substituted === true,
   }
   return {
     provider,
     fallbacks: () => [...fallbacks],
+    restoreWidthMeasurements(widths: ReadonlyMap<string, number>) {
+      for (const [key, width] of widths)
+        if (Number.isFinite(width) && width >= 0) cache.set(key, width)
+    },
     pendingWidthMeasurements: () => [...pending.values()],
     retainWidthMeasurements(keys: ReadonlySet<string>) {
       for (const key of cache.keys()) if (!keys.has(key)) cache.delete(key)

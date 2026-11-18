@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process'
 import { build as viteBuild } from 'vite'
 import { mkdir, cp } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -16,4 +17,10 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
     base: process.env.VIEWER_BASE || '/viewer/',
   })
   await copyPdfAssets()
+  const fonts = spawnSync(
+    process.execPath,
+    ['--import', 'tsx', resolve(app, 'scripts/build-electron-fonts.mts')],
+    { cwd: root, stdio: 'inherit' },
+  )
+  if (fonts.status !== 0) throw new Error('Electron font snapshot failed')
 }

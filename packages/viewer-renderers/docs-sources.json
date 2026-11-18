@@ -309,7 +309,7 @@
   ],
   "sourceTag": "v0.13.18",
   "adaptations": [
-    "Read-only Viewer adapters and continuous DOCX reading remain private.",
+    "Read-only Viewer adapters remain private; Word uses only the original default page layout for local, HTTP and Android inputs. The former continuous reading display and mode switch are removed.",
     "Desktop font-rule entry points are mapped to private modules; missing-theme SC fallback is recognized.",
     "PPT canvas kerning is installed in Viewer; browser width feedback separates kerning modes.",
     "Remote metafile limits, retry, decode concurrency and image release are retained."
@@ -321,9 +321,25 @@
     "docs/renderer/editor/protected-render.ts": "Private UI import.",
     "docs/renderer/editor/shape-svg.ts": "Private UI import.",
     "docs/renderer/font-list.ts": "Private UI import.",
-    "docs/renderer/components/PaginationPreview.tsx": "Viewer measurement and settling callbacks and sanitized reading snapshots.",
+    "docs/renderer/components/PaginationPreview.tsx": "Viewer measurement and settling callbacks and sanitized read-only snapshots; restore BlockBox type import. Optional visiblePages mounts only nearby original page JSX while retaining all original sheet boxes, cuts, coordinates, HTML, HF and drawing rules. Omitted by upstream callers. Android viewport memory boundary; no pagination or painting algorithm replaced. Optional pruneClones selects the original prunedCloneHtml/cloneChildrenOf path even for small documents, preventing full-document DOM duplication on Android; the source pruning algorithm, placement and page cuts remain unchanged.",
     "docs/renderer/components/HeaderFooterArea.tsx": "Private UI import.",
     "docs/renderer/text-layout/face-info.ts": "Private font-list import.",
-    "docs/renderer/fonts/fonts.generated.css": "Whitespace-only snapshot formatting."
-  }
+    "docs/renderer/fonts/fonts.generated.css": "Whitespace-only snapshot formatting.",
+    "docs/renderer/viewer-layout.ts": "Read-only assembly excerpt of upstream App.tsx. v0.13.18 blockMetaOf includes the original compatibility-mode >=15 modernAnchorFloats flag (App.tsx:3896-3900). Other note, column and section helpers retain their upstream logic."
+  },
+  "hostIntegrations": [
+    {
+      "target": "apps/viewer/src/web/docx-style-context.ts#docxDocumentTypography",
+      "source": "apps/docs/src/renderer/App.tsx",
+      "sourceCommit": "ac19c54111849d9d8fb2c508223a0389b805c247",
+      "sourceRanges": ["3753-3775", "8279-8301"],
+      "integration": "Preserve document-wide grid pitch (including first-typed mixed-grid fallback), balanced character spacing and margin rules on every .doc-page, including sibling preview clones. Original pagination helpers and per-section layout overrides are reused unchanged. No file-specific numeric compensation."
+    },
+    {
+      "target": "apps/viewer/src/web/docx-display.tsx",
+      "source": "apps/docs/src/renderer/components/PaginationPreview.tsx",
+      "sourceCommit": "ac19c54111849d9d8fb2c508223a0389b805c247",
+      "integration": "Fixed default page-layout read-only host. No print/read mode or legacy view=read branch. Uses the original preview, page settings, page-number and note layouts; sanitized immutable clones and noneditable measurement editor. Actual viewport controls and source anchors are private host adapters."
+    }
+  ]
 }

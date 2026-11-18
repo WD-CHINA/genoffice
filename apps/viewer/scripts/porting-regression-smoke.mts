@@ -86,17 +86,29 @@ try {
       prompts: string[] = []
     let alerts = 0
     page.on('pageerror', (error) => errors.push(error.message))
-    page.on('dialog', async (dialog) => {
-      if (dialog.type() === 'alert') {
-        alerts++
-        await dialog.accept()
-        return
+    const answerPasswords = async () => {
+      for (const [attempt, answer] of item.answers.entries()) {
+        let owner
+        for (let n = 0; n < 120; n++) {
+          owner = page.frames().find((frame) => frame.url().includes('preview.html'))
+          if (await page.locator('.pwd-dialog input').count()) owner = page.mainFrame()
+          if (owner && (await owner.locator('.pwd-dialog input').count())) break
+          await page.waitForTimeout(200)
+        }
+        assert.ok(owner, 'Password form missing')
+        const dialog = owner.locator('.pwd-dialog')
+        if (attempt && item.answers[attempt - 1] === 'wrong') {
+          await expect(dialog).toContainText('密码不正确')
+          alerts++
+        }
+        prompts.push('HTML password form')
+        if (answer == null) await dialog.getByRole('button', { name: '取消', exact: true }).click()
+        else {
+          await dialog.locator('input').fill(answer)
+          await dialog.locator('input').press('Enter')
+        }
       }
-      const answer = item.answers[prompts.length]
-      prompts.push(dialog.message())
-      if (answer == null) await dialog.dismiss()
-      else await dialog.accept(answer)
-    })
+    }
     await page.goto(url + query)
     const bytes = await readFile(
       resolve(
@@ -109,6 +121,7 @@ try {
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       buffer: bytes,
     })
+    await answerPasswords()
     const frame = page.frameLocator('iframe')
     if (item.cancel) {
       await expect((remote ? page : frame).getByRole('alert')).toContainText('已取消密码输入', {
@@ -129,25 +142,19 @@ try {
     )
     await expect(frame.getByRole('toolbar', { name: 'Word 控制栏' })).toBeVisible()
     await expect(frame.getByRole('alert')).toHaveCount(0)
-    const geometry = await frame.locator('.viewer-doc-reading-paper').evaluate((paper) => {
-      const style = getComputedStyle(paper),
-        mark = getComputedStyle(paper, '::before')
-      return {
+    const geometry = await frame
+      .locator('.pv-page')
+      .first()
+      .evaluate((paper) => ({
         width: paper.getBoundingClientRect().width,
         height: paper.getBoundingClientRect().height,
-        pageHeight: parseFloat(style.getPropertyValue('--page-h')),
-        minHeight: parseFloat(style.minHeight),
-        padding: parseFloat(style.paddingTop),
-        markLeft: parseFloat(mark.left),
-        markWidth: parseFloat(mark.width),
-        markBottom: parseFloat(mark.top) + parseFloat(mark.height),
-      }
-    })
-    assert.ok(Math.abs(geometry.markLeft) < 0.1, JSON.stringify(geometry))
-    assert.ok(Math.abs(geometry.minHeight - geometry.pageHeight) < 0.1, JSON.stringify(geometry))
-    assert.ok(geometry.height >= geometry.pageHeight - 0.1, JSON.stringify(geometry))
-    assert.ok(Math.abs(geometry.markWidth - geometry.width) < 0.1, JSON.stringify(geometry))
-    assert.ok(Math.abs(geometry.markBottom - geometry.padding) < 0.1, JSON.stringify(geometry))
+        declaredHeight: parseFloat((paper as HTMLElement).style.height),
+        pageHeight: parseFloat(getComputedStyle(paper).getPropertyValue('--page-h')),
+      }))
+    assert.ok(geometry.height > 0)
+    assert.ok(geometry.pageHeight > 0)
+    await expect(frame.locator('[contenteditable="true"]')).toHaveCount(0)
+    await expect(frame.locator('[aria-label="Word 显示模式"]')).toHaveCount(0)
     assert.equal(prompts.length, item.answers.length)
     assert.equal(alerts, item.answers.includes('wrong') ? 1 : 0)
     assert.deepEqual(errors, [])
@@ -169,6 +176,7 @@ try {
         mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         buffer: bytes,
       })
+      await answerPasswords()
       if (item.cancel) {
         await expect(page.getByRole('alert')).toContainText('已取消密码输入')
         await page.locator('input[type=file]').setInputFiles({

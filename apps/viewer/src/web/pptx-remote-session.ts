@@ -123,6 +123,7 @@ export function createRemotePptxSession(target: RemoteTarget) {
   }
 
   let previewSent = false
+  let previewDisplayed = false
   /**
    * Fetch the already-committed first unit while the shared build is still
    * running. Preview records are never cached into `units`: the ready path
@@ -139,6 +140,10 @@ export function createRemotePptxSession(target: RemoteTarget) {
       )
       const first = await json<RemoteUnit>(`${root}/units/0`)
       if (closed) return
+      // Build-time artifact units can still be parsed slide models. They have
+      // `elements`, not the original renderer's `nodes`; keep the loading view
+      // until ready rather than handing an unlaid-out model to NodeBody.
+      if (!Array.isArray(first.slide?.nodes)) return
       const total = Math.max(1, notice.unitCount || info.model.unitCount || 1)
       const widthPx = Number(first.slide?.widthPx) || 960
       const heightPx = Number(first.slide?.heightPx) || 540
@@ -166,6 +171,7 @@ export function createRemotePptxSession(target: RemoteTarget) {
         timings: {},
         preview: true,
       }
+      previewDisplayed = true
       target.onPreviewFrame({
         deck,
         unitsProduced: notice.unitsProduced,
@@ -192,7 +198,10 @@ export function createRemotePptxSession(target: RemoteTarget) {
           return layoutPrefs ? { layoutPrefs } : {}
         })(),
         signal: abort.signal,
-        onState: (state) => target.onStatus?.(openingStateText(state)),
+        onState: (state) =>
+          target.onStatus?.(
+            openingStateText(state === 'previewable' && !previewDisplayed ? 'building' : state),
+          ),
         onPreview: (notice) => void prefetchPreview(notice),
       })
       sessionId = created.sessionId

@@ -21,7 +21,7 @@ export interface WidthItem {
  * like the Viewer worker's bundled metrics.
  */
 export class FeedbackMetrics implements FontMetricsProvider {
-  private readonly fallback = new HeuristicMetrics()
+  constructor(private readonly fallback: FontMetricsProvider = new HeuristicMetrics()) {}
   private readonly cache = new Map<string, number>()
   private readonly pending = new Map<string, WidthItem>()
 
@@ -31,18 +31,26 @@ export class FeedbackMetrics implements FontMetricsProvider {
 
   measure(text: string, style: RunStyle): number {
     if (!text) return this.fallback.measure(text, style)
-    const key = `${style.bold ? 'b' : ''}${style.italic ? 'i' : ''}${style.kerning === false ? 'n' : ''}|${style.fontFamily}|${text}`
+    const family = this.fallback.displayFamily?.(style, text) ?? style.fontFamily
+    const key = `${style.bold ? 'b' : ''}${style.italic ? 'i' : ''}${style.kerning === false ? 'n' : ''}|${family}|${text}`
     const known = this.cache.get(key)
     if (known != null) return (known / 100) * style.fontSizePx
     this.pending.set(key, {
       key,
-      family: style.fontFamily,
+      family,
       text,
       bold: style.bold,
       italic: style.italic,
       kerning: style.kerning,
     })
     return this.fallback.measure(text, style)
+  }
+
+  displayFamily(style: RunStyle, text?: string) {
+    return this.fallback.displayFamily?.(style, text) ?? style.fontFamily
+  }
+  substituted(style: RunStyle) {
+    return this.fallback.substituted?.(style) ?? false
   }
 
   pendingWidthMeasurements(): WidthItem[] {

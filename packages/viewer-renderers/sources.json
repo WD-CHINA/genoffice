@@ -141,7 +141,11 @@
     "apps/pdf/src/renderer/page-probe.ts",
     "packages/ui/src/font-list.ts",
     "packages/ui/src/popover-dismiss.ts",
-    "packages/ui/src/wordart-presets.ts"
+    "packages/ui/src/wordart-presets.ts",
+    "apps/docs/src/renderer/components/PasswordDialog.tsx",
+    "apps/docs/src/renderer/components/PasswordInput.tsx",
+    "apps/docs/src/renderer/components/icons.tsx",
+    "apps/docs/src/renderer/editor/toc-refresh.ts"
   ],
   "typeFiles": [
     "apps/slides/src/shared/ipc.ts",
@@ -362,6 +366,22 @@
     {
       "source": "packages/ui/src/wordart-presets.ts",
       "target": "ui/wordart-presets.ts"
+    },
+    {
+      "source": "apps/docs/src/renderer/components/PasswordDialog.tsx",
+      "target": "docs/renderer/components/PasswordDialog.tsx"
+    },
+    {
+      "source": "apps/docs/src/renderer/components/PasswordInput.tsx",
+      "target": "docs/renderer/components/PasswordInput.tsx"
+    },
+    {
+      "source": "apps/docs/src/renderer/components/icons.tsx",
+      "target": "docs/renderer/components/icons.tsx"
+    },
+    {
+      "source": "apps/docs/src/renderer/editor/toc-refresh.ts",
+      "target": "docs/renderer/editor/toc-refresh.ts"
     }
   ],
   "adaptedFiles": {

@@ -79,7 +79,7 @@ function Preview() {
             localFallback={target.docxLocalFallback}
           />
         ) : (
-          <Docs src={src} />
+          <Docs src={src} name={name} />
         )}
       </Suspense>
     </Boundary>

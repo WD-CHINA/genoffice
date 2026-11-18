@@ -64,7 +64,7 @@ try {
       body: await readFile(
         resolve(import.meta.dirname, '../../parse-server/tests/fixtures/docx/table.docx'),
       ),
-      selector: '.viewer-doc-reading-unit .doc-page',
+      selector: '.viewer-doc-pages .pv-page .pv-content',
     },
     { format: 'pdf', body: Buffer.from(pdf), selector: '.viewer-pdf-page canvas' },
   ]

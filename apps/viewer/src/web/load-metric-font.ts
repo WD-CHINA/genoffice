@@ -41,7 +41,9 @@ export function createMetricFontLoader(fetcher: typeof fetch = fetch) {
           const response = await fetcher(face.metricsUrl ?? face.url)
           if (!response.ok) throw new Error('Font download failed')
           if (face.metricsUrl) return fontFromAdvances(await response.json())
-          const parsed = parseFont(await response.arrayBuffer()) as ReturnType<typeof parseFont> & {
+          const parsed = parseFont(await response.arrayBuffer(), { lowMemory: true }) as ReturnType<
+            typeof parseFont
+          > & {
             lineGap?: number
           }
           const hhea = parsed.tables.hhea

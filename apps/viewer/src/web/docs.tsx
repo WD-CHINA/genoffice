@@ -1,14 +1,20 @@
+import { collectDocFonts } from '@genoffice/viewer-renderers/docs/renderer/font-check'
+import { loadBundledStandIns } from '@genoffice/viewer-renderers/docs/renderer/line-metrics'
+import { applyDocxGridCompat } from './docx-grid-compat'
+import { createDocxImageScope } from './docx-image-scope'
+import { createDocxNativeFonts } from './docx-native-fonts'
+import { docxDocumentTypography } from './docx-style-context'
+import type { DocxDisplayPosition } from './docx-display-position'
+import { DocxDisplay } from './docx-display'
+import { createWordPasswordDialog } from './word-password'
+import { PHASED_APPEND } from '@genoffice/viewer-renderers/docs/renderer/editor/streaming-tail-guard'
+import { TRACK_IGNORE } from '@genoffice/viewer-renderers/docs/renderer/editor/revisions'
+import { TABLE_TRAILING_SKIP } from '@genoffice/viewer-renderers/docs/renderer/editor/extensions'
 import { setDocFontTable } from '@genoffice/viewer-renderers/docs/renderer/text-layout/font-rules'
-import React, { useEffect, useState, useRef, useMemo } from 'react'
-import { EditorContent, useEditor } from '@tiptap/react'
+import React, { useEffect, useState, useRef } from 'react'
+import { useEditor } from '@tiptap/react'
 import { parseLazyMediaUrl } from '@genoffice/docx-engine/lazy-media'
-import {
-  readPageColor,
-  readSections,
-  readSectionSettings,
-  setAltChunkHtmlConverter,
-  type DocxReadingContext,
-} from '@genoffice/docx-engine'
+import { readSections, setAltChunkHtmlConverter } from '@genoffice/docx-engine'
 import JSZip from 'jszip'
 import {
   decryptDocx,
@@ -36,20 +42,27 @@ import {
   waitForFullContent,
   cancelPhasedContent,
 } from '@genoffice/viewer-renderers/docs/renderer/phased-content'
-import { DocxReadingBar, DocxReadingHf, DocxReadingNotes, useDocxReadingZoom } from './docx-reading'
-import { docxSectionTypography } from './docx-style-context'
-import { docxReadingPageStyle } from './docx-reading-page'
 import '@genoffice/viewer-renderers/docs/renderer/styles.css'
 import '@genoffice/viewer-renderers/docs/renderer/fonts/fonts.css'
 
-export function Docs({ src }: { src: string }) {
+export function Docs({
+  src,
+  name,
+  model,
+  position,
+}: {
+  src: string
+  name?: string
+  model?: any
+  position?: DocxDisplayPosition
+}) {
   const [parsed, setParsed] = useState<any>(null)
   const [error, setError] = useState('')
   const [ready, setReady] = useState(false)
   const [revision, setRevision] = useState('all')
-  const viewport = useRef<HTMLDivElement>(null)
+  const nativeFonts = useRef<ReturnType<typeof createDocxNativeFonts> | null>(null)
   const conversionError = useRef<string | null>(null)
-  const opening = useRef<{ src: string; promise: Promise<any> } | null>(null)
+  const opening = useRef<{ src: string; promise: Promise<any>; signal: AbortSignal } | null>(null)
   const editor = useEditor({
     ...viewerEditorOptions,
     editorProps: { attributes: { class: 'doc-page' } },
@@ -57,33 +70,47 @@ export function Docs({ src }: { src: string }) {
   useEffect(() => {
     if (!editor) return
     let cancelled = false
+    const controller = new AbortController()
+    const images = createDocxImageScope()
+    const fonts = createDocxNativeFonts()
+    nativeFonts.current = fonts
+    setReady(false)
+    setError('')
     setAltChunkHtmlConverter(async () => {
       const message = '纯前端无法转换内嵌 HTML/MHT，这类内容需要服务端 Chrome。'
       conversionError.current = message
       throw new Error(message)
     })
     void (async () => {
-      if (!opening.current || opening.current.src !== src) {
+      if (!opening.current || opening.current.src !== src || opening.current.signal.aborted) {
         conversionError.current = null
         opening.current = {
           src,
+          signal: controller.signal,
           promise: (async () => {
+            if (model) return model
             const response = await fetch(src)
             if (!response.ok) throw new Error('无法读取文档')
             let bytes = new Uint8Array(await response.arrayBuffer())
             if (isEncryptedDocx(bytes)) {
-              let unlocked = false
-              while (!unlocked) {
-                const password = window.prompt('请输入 Word 打开密码')
-                if (password === null) throw new Error('已取消密码输入')
-                try {
-                  bytes = new Uint8Array(await decryptDocx(bytes, password))
-                  unlocked = true
-                } catch (error) {
-                  if (!(error instanceof DocxDecryptError) || error.reason !== 'wrong-password')
-                    throw error
-                  window.alert('密码不正确，请重试。')
+              const dialog = createWordPasswordDialog(name, controller.signal)
+              let wrong = false
+              try {
+                for (;;) {
+                  const password = await dialog.ask(wrong)
+                  if (password === null) throw new Error('已取消密码输入')
+                  try {
+                    bytes = new Uint8Array(await decryptDocx(bytes, password))
+                    if (dialog.cancelled) throw new Error('已取消密码输入')
+                    break
+                  } catch (error) {
+                    if (!(error instanceof DocxDecryptError) || error.reason !== 'wrong-password')
+                      throw error
+                    wrong = true
+                  }
                 }
+              } finally {
+                dialog.close()
               }
             }
             const zip = await JSZip.loadAsync(bytes.slice())
@@ -149,9 +176,14 @@ export function Docs({ src }: { src: string }) {
       const doc = await opening.current.promise
       if (conversionError.current) throw new Error('嵌入 HTML 转换失败：' + conversionError.current)
       if (cancelled) return
+      images.adopt(doc)
       setLazyMediaHashes(doc.extras.lazyMediaHashes)
       await adoptEmbeddedFonts(doc.embeddedFonts)
       setDocFontTable(doc.fontTable)
+      const declaredFonts = collectDocFonts(doc)
+      await fonts.loadFamilies(declaredFonts)
+      await loadBundledStandIns(declaredFonts)
+      if (cancelled) return
       editor.storage.listNumbering.styles = doc.styles
       editor.storage.listNumbering.docDefaults = doc.docDefaults
       editor.storage.listNumbering.defs = doc.numbering
@@ -159,14 +191,24 @@ export function Docs({ src }: { src: string }) {
       setContentPhased(
         {
           setContent: (value) => {
-            editor.commands.setContent(value as any, { emitUpdate: false })
+            editor
+              .chain()
+              .setMeta('addToHistory', false)
+              .setMeta(TRACK_IGNORE, true)
+              .setMeta(TABLE_TRAILING_SKIP, true)
+              .setMeta(PHASED_APPEND, true)
+              .setContent(value as any, { emitUpdate: false })
+              .run()
           },
           appendNodes: (nodes) => {
             const fragment = editor.schema.nodeFromJSON({ type: 'doc', content: nodes }).content
             editor.view.dispatch(
               editor.state.tr
                 .insert(editor.state.doc.content.size, fragment)
-                .setMeta('addToHistory', false),
+                .setMeta('addToHistory', false)
+                .setMeta(PHASED_APPEND, true)
+                .setMeta(TRACK_IGNORE, true)
+                .setMeta(TABLE_TRAILING_SKIP, true),
             )
           },
           isDestroyed: () => cancelled || editor.isDestroyed,
@@ -186,92 +228,41 @@ export function Docs({ src }: { src: string }) {
     })
     return () => {
       cancelled = true
+      controller.abort()
+      images.close()
+      fonts.close()
+      if (nativeFonts.current === fonts) nativeFonts.current = null
       cancelPhasedContent()
       setAltChunkHtmlConverter(null)
     }
-  }, [editor, src])
+  }, [editor, src, name, model])
   useEffect(() => {
     if (!parsed) return
     let cancelled = false
+    const fonts = nativeFonts.current
     const frame = () => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
     void (async () => {
       await frame()
       await frame()
       await document.fonts.ready
-      if (!cancelled) setReady(true)
-    })()
+      if (editor)
+        await fonts?.load(editor.view.dom.closest<HTMLElement>('.page-wrap') ?? editor.view.dom)
+      if (!cancelled) {
+        if (editor) applyDocxGridCompat(editor.view.dom)
+        setReady(true)
+      }
+    })().catch((error) => {
+      if (!cancelled) setError(error.message)
+    })
     return () => {
       cancelled = true
     }
-  }, [parsed])
-  const context = useMemo<DocxReadingContext | undefined>(
-    () =>
-      parsed
-        ? {
-            sections: readSections(parsed),
-            hfParts: parsed.hfParts ?? {},
-            evenAndOddHeaders: !!parsed.evenOddHf,
-            mirrorMargins: !!parsed.mirrorMargins,
-            footnotes: parsed.footnotes ?? [],
-            endnotes: parsed.endnotes ?? [],
-            noteNumbers: parsed.noteNumbers ?? {},
-            footnoteProps: parsed.footnoteProps,
-            endnoteProps: parsed.endnoteProps,
-          }
-        : undefined,
-    [parsed],
-  )
-  const section = parsed ? readSectionSettings(parsed) : undefined
-  const width = section ? section.pageWidth / 15 : 794
-  const controls = useDocxReadingZoom(viewport, width)
-  const pageColor = parsed ? readPageColor(parsed) : null
-  const follow = (event: React.MouseEvent) => {
-    const link = (event.target as Element).closest('a')
-    if (!link) return
-    const href = link.getAttribute('href') ?? ''
-    if (href.startsWith('#')) {
-      event.preventDefault()
-      try {
-        const name = decodeURIComponent(href.slice(1))
-        const target = viewport.current?.querySelector<HTMLElement>(
-          `[data-bookmarks~="${CSS.escape(name)}"], [id="${CSS.escape(name)}"]`,
-        )
-        target?.scrollIntoView({ block: 'center' })
-      } catch {
-        /* Ignore malformed bookmark names. */
-      }
-    } else if (/^https?:|^mailto:/i.test(href)) {
-      link.target = '_blank'
-      link.rel = 'noopener noreferrer'
-    } else event.preventDefault()
-  }
+  }, [parsed, editor])
   return (
     <LocaleProvider initial="zh">
       <div
-        className={`viewer-doc viewer-preview viewer-doc-reading read-mode rev-display-${revision === 'final' ? 'none' : revision}`}
-        onKeyDown={(event) => {
-          if ((event.ctrlKey || event.metaKey) && ['+', '=', '-'].includes(event.key)) {
-            event.preventDefault()
-            controls.changeZoom(event.key === '-' ? -1 : 1)
-          }
-        }}
+        className={`viewer-doc viewer-preview rev-display-${revision === 'final' ? 'none' : revision}`}
       >
-        {ready && (
-          <DocxReadingBar controls={controls}>
-            <label className="viewer-revision-control">
-              修订
-              <select
-                aria-label="修订显示"
-                value={revision}
-                onChange={(event) => setRevision(event.target.value)}
-              >
-                <option value="all">全部标记</option>
-                <option value="final">最终版本</option>
-                <option value="original">原始版本</option>
-              </select>
-            </label>
-          </DocxReadingBar>
-        )}
         {error && (
           <p role="alert" className="viewer-error">
             {error}
@@ -285,40 +276,32 @@ export function Docs({ src }: { src: string }) {
         {parsed && (
           <style data-doc-css>
             {docStyleCss(parsed) +
-              docThemeCss(parsed.themeFonts, parsed.themeColors, !!docBodyFont(parsed))}
+              docThemeCss(parsed.themeFonts, parsed.themeColors, !!docBodyFont(parsed)) +
+              docxDocumentTypography(parsed)}
           </style>
         )}
-        <div
-          ref={viewport}
-          className="viewer-doc-reading-scroll editor-scroll"
-          tabIndex={0}
-          onClick={follow}
-        >
-          {parsed && context && section && (
-            <div className="doc-zoom" style={{ zoom: controls.zoom }}>
-              <div
-                className="page-wrap viewer-doc-reading-paper"
-                style={{
-                  ...docxReadingPageStyle(section),
-                  ...(pageColor ? { background: `#${pageColor}` } : {}),
-                  ...docxSectionTypography(section),
-                }}
+        {parsed && editor && (
+          <DocxDisplay
+            parsed={parsed}
+            editor={editor}
+            ready={ready}
+            revision={revision}
+            position={position}
+          >
+            <label className="viewer-revision-control">
+              修订
+              <select
+                aria-label="修订显示"
+                value={revision}
+                onChange={(event) => setRevision(event.target.value)}
               >
-                <DocxReadingHf context={context} kind="header" />
-                {parsed.watermark && (
-                  <div className="page-watermark" aria-hidden="true">
-                    {parsed.watermark}
-                  </div>
-                )}
-                <div role="document" aria-label="Word 文档正文">
-                  <EditorContent editor={editor} />
-                </div>
-                <DocxReadingNotes context={context} styles={parsed} />
-                <DocxReadingHf context={context} kind="footer" />
-              </div>
-            </div>
-          )}
-        </div>
+                <option value="all">全部标记</option>
+                <option value="final">最终版本</option>
+                <option value="original">原始版本</option>
+              </select>
+            </label>
+          </DocxDisplay>
+        )}
       </div>
     </LocaleProvider>
   )

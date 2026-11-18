@@ -9091,6 +9091,9 @@ async function oleDisplay(
   if (progId) out.oleProgId = progId
   const path = relPartPath(ctx, /<v:imagedata[^>]*r:id="([^"]+)"/.exec(xml)?.[1])
   const file = path ? ctx.zip.file(path) : null
+  // Remote parser omits media bytes; keep the original preview for the renderer's converter.
+  const remotePreview = path && remoteMediaByZip.get(ctx.zip)
+  if (!file && path && remotePreview) out.imageDataUrl = remotePreview(path)
   if (file && path) {
     const mime = await imagePartMime(ctx.zip, path)
     if (isMetafileMime(mime)) {
@@ -9287,8 +9290,16 @@ export async function createDocxBlockParser(
     xmlSpacePreserve: false,
     resolver,
   } as unknown as BuildContext
-  const { notes: footnotes, separator: footnoteSeparator } = await parseNotesPart(zip, 'footnote', noteCtx)
-  const { notes: endnotes, separator: endnoteSeparator } = await parseNotesPart(zip, 'endnote', noteCtx)
+  const { notes: footnotes, separator: footnoteSeparator } = await parseNotesPart(
+    zip,
+    'footnote',
+    noteCtx,
+  )
+  const { notes: endnotes, separator: endnoteSeparator } = await parseNotesPart(
+    zip,
+    'endnote',
+    noteCtx,
+  )
   const noteXml = documentXml ?? metadata?.noteReferenceXml ?? ''
   const { footnoteProps, endnoteProps } = await parseNoteProps(zip, noteXml)
   const noteNumbers = noteNumbersOf(noteXml, footnotes, endnotes, footnoteProps, endnoteProps)
@@ -9340,30 +9351,49 @@ export async function createDocxBlockParser(
   let reading: Promise<DocxReadingContext> | undefined
   return {
     readingContext() {
-      return reading ??= (async () => {
+      return (reading ??= (async () => {
         let first = 0
         const sectionInfos = sections.map((section) => {
-          const last = 'docxIndex' in section && section.docxIndex !== undefined
-            ? section.docxIndex as number
-            : scan.elements.findIndex((element) => element.end >= section.end)
+          const last =
+            'docxIndex' in section && section.docxIndex !== undefined
+              ? (section.docxIndex as number)
+              : scan.elements.findIndex((element) => element.end >= section.end)
           const result = sectionFromSectPr(section.xml, first, Math.max(first, last), gutterAtTop)
           first = result.lastBlockIndex + 1
           return result
         })
         if (!sectionInfos.length)
-          sectionInfos.push(sectionFromSectPr('', 0, Math.max(0, (metadata?.blockCount ?? scan.elements.length) - 1), gutterAtTop))
+          sectionInfos.push(
+            sectionFromSectPr(
+              '',
+              0,
+              Math.max(0, (metadata?.blockCount ?? scan.elements.length) - 1),
+              gutterAtTop,
+            ),
+          )
         return {
           sections: sectionInfos,
-          hfParts: await parseAllHfParts(zip, rels, styles, theme.colors, compatibilityMode, theme.fonts, resolver, docPath),
+          hfParts: await parseAllHfParts(
+            zip,
+            rels,
+            styles,
+            theme.colors,
+            compatibilityMode,
+            theme.fonts,
+            resolver,
+            docPath,
+          ),
           evenAndOddHeaders: await parseSettingsFlag(zip, 'w:evenAndOddHeaders'),
           mirrorMargins: await parseSettingsFlag(zip, 'w:mirrorMargins'),
-          footnotes, endnotes, noteNumbers: Object.fromEntries(noteNumbers),
+          footnotes,
+          endnotes,
+          noteNumbers: Object.fromEntries(noteNumbers),
           ...(footnoteSeparator ? { footnoteSeparator } : {}),
           ...(endnoteSeparator ? { endnoteSeparator } : {}),
           ...(footnoteProps ? { footnoteProps } : {}),
           ...(endnoteProps ? { endnoteProps } : {}),
         }
-      })()
+      })())
     },
     async parseBlock(xml: string, index = 0, offset = 0): Promise<Block> {
       const name = /^<([^\s/>]+)/.exec(xml)?.[1] ?? 'w:p'

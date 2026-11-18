@@ -567,64 +567,15 @@ html[data-viewer-errors='false'] #root .viewer-warning {
 .viewer-doc-pages [data-viewer-focus] {
   outline: 2px solid var(--accent);
 }
-/* Match apps/docs Read Mode: one continuous body, with no paper-height slicing. */
-.viewer-doc-reading.viewer-doc-remote {
-  padding: 0;
-  overflow: hidden;
-}
-.viewer-doc-reading-scroll.editor-scroll {
+/* Hidden original canvas is measured at its document width and 100% zoom. */
+.viewer-doc-measure-scroll.editor-scroll {
   flex: 1;
   min-width: 0;
   min-height: 0;
   overflow: auto;
   padding: 44px 24px 72px;
-  background: var(--docs-pv-canvas);
 }
-.viewer-doc-reading .doc-zoom {
-  width: max-content;
-  min-width: 0;
-  margin: 0 auto;
-}
-.viewer-doc-reading .viewer-doc-reading-paper {
-  position: relative;
-  /* Match Electron's paper minimum without fixing the continuous body's height. */
-  min-height: var(--page-h, 1056px);
-  box-sizing: border-box;
-  margin: 0 auto;
-  background: var(--docs-paper, white);
-  color: var(--docs-paper-ink, black);
-  box-shadow: var(--shadow-modal-strong);
-}
-.viewer-doc-reading .doc-page {
-  width: auto;
-  min-height: 0;
-  padding: 0;
-  margin: 0;
-  border: 0;
-  box-shadow: none;
-  background: transparent;
-}
-.viewer-doc-reading .page-hf > * {
-  opacity: 1;
-}
-.viewer-doc-reading .page-hf {
-  border-color: transparent;
-}
-.viewer-doc-reading :is(.page-hf-tags, .doc-sectbreak-label, .doc-field-pagebreak),
-.viewer-doc-reading .page-break-before:where(:not(.doc-li))::before,
-.viewer-doc-reading .doc-li.page-break-before::after {
-  display: none;
-}
-.viewer-doc-reading-notes {
-  border-top: 1px solid currentColor;
-  margin-top: 16px;
-  padding-top: 8px;
-  line-height: 1.4;
-}
-.viewer-doc-reading-notes sup {
-  font-size: 0.65em;
-  margin-right: 4px;
-}
+
 .viewer-info {
   position: absolute;
   z-index: 95;
@@ -1306,4 +1257,42 @@ html[data-viewer-toolbar='false'] .viewer-preview {
   font: inherit;
   font-size: 12px;
   cursor: pointer;
+}
+
+/* Electron's zero-padding wrapper, body padding and absolute header/footer geometry. */
+.viewer-doc-electron-source {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.viewer-doc-electron-source .page-wrap {
+  padding: 0;
+  position: relative;
+  background: var(--docs-paper);
+}
+.viewer-doc-electron-source .doc-page {
+  width: var(--page-w);
+  min-height: var(--page-h);
+  padding: var(--page-pad);
+  margin: 0;
+  box-sizing: border-box;
+}
+.viewer-doc-measure-source {
+  position: fixed !important;
+  left: -100000px !important;
+  top: 0;
+  width: 1200px;
+  height: 900px;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.viewer-doc-surface {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+  position: relative;
 }

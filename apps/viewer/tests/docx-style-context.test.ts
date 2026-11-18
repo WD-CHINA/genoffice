@@ -4,6 +4,8 @@ import { sectionFromSectPr, type DocxStyleContext } from '@genoffice/docx-engine
 import {
   reviveDocxStyles,
   docxSectionTypography,
+  docxCanvasTypography,
+  docxDocumentTypography,
   DOCX_THEME_SANS,
 } from '../src/web/docx-style-context'
 
@@ -120,4 +122,26 @@ test('remote editor initialization retains document-specific note numbering', ()
   const context = reviveDocxStyles(base(), reading)
   assert.deepEqual(context.footnoteProps, reading.footnoteProps)
   assert.deepEqual(context.endnoteProps, reading.endnoteProps)
+})
+
+test('the original canvas keeps an untyped grid absent so page-top leading stays suppressible', () => {
+  assert.equal(Object.hasOwn(docxCanvasTypography(), '--doc-grid-pitch'), false)
+})
+
+test('page clones receive the original document grid, including the mixed-grid fallback', () => {
+  const parsed = (...sections: string[]) =>
+    ({
+      blocks: sections.map((originalXml, docxIndex) => ({ originalXml, docxIndex })),
+    }) as any
+  const grid = '<w:sectPr><w:docGrid w:type="lines" w:linePitch="312"/></w:sectPr>'
+  const uniform = docxDocumentTypography(parsed(grid, grid))
+  assert.match(uniform, /\.doc-page \{ --doc-grid-pitch:15.6pt \}/)
+  assert.doesNotMatch(uniform, /page-wrap/)
+  assert.match(docxDocumentTypography(parsed('<w:sectPr/>', grid)), /--doc-grid-pitch:15.6pt/)
+  assert.doesNotMatch(docxDocumentTypography(parsed('<w:sectPr/>')), /--doc-grid-pitch/)
+  const chars = parsed(
+    '<w:sectPr><w:docGrid w:type="linesAndChars" w:linePitch="360" w:charSpace="4096"/></w:sectPr>',
+  )
+  chars.balanceDbcsSpacing = true
+  assert.match(docxDocumentTypography(chars), /--doc-char-space:1pt; --doc-char-space-sb:0.5pt/)
 })

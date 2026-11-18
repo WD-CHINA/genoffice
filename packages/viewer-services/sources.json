@@ -21,7 +21,9 @@
     "docs/decrypt.ts": "Uint8Array/Buffer adapter over the exact shared OOXML module; docs-main now uses docx-encryption.ts re-exports.",
     "slides/shared/themed-svg.ts": "retintThemedSvg and SVG_THEME_SLOTS extracted from apps/slides/src/main/session-state.ts; browser and Node share this pure module.",
     "slides/shared/tiff-pixels.ts": "TIFF IFD selection, integer/dimension/pixel guards and post-decode validation extracted from apps/slides/src/main/tiff-decode.ts. Browser PNG encoding remains an adapter.",
-    "slides/shared/script-fallback.ts": "Exact language/glyph decisions and probe patterns extracted from createSystemFontMetrics in apps/slides/src/main/fonts.ts; font lookup is injected."
+    "slides/shared/script-fallback.ts": "Exact language/glyph decisions and probe patterns extracted from createSystemFontMetrics in apps/slides/src/main/fonts.ts; font lookup is injected.",
+    "slides/main/fonts.ts": "Original resolver and sfnt extraction core retained token-for-token; Node package/asset bindings and named resolvedFontResource/createTransportFontMetrics exports adapt the transport. Native faces are served by HTTP and included in offline bundles.",
+    "slides/main/shaped-metrics.ts": "Original shaping core retained; resolve HarfBuzz 1.5.0 factory/WASM beside its package entry. Existing pendingWidthMeasurements/acceptWidthMeasurements hooks expose the same original queue/cache, without changing shaping."
   },
   "sourceTag": "v0.13.18",
   "adaptations": [
@@ -54,6 +56,16 @@
       "source": "apps/slides/src/main/fonts.ts",
       "target": "slides/shared/script-fallback.ts",
       "symbols": ["ETHIOPIC_RE", "SYMBOL_BULLET_GLYPH_RE", "scriptFallbackFor"]
+    },
+    {
+      "source": "apps/slides/src/main/fonts.ts",
+      "target": "slides/shared/font-family-class.ts",
+      "symbols": ["SERIF_RE", "MONO_RE", "classifyFamily"]
+    },
+    {
+      "source": "apps/slides/src/main/shaped-metrics.ts",
+      "target": "slides/shared/font-text-script.ts",
+      "symbols": ["SCRIPT_RES", "complexScriptOf"]
     }
   ],
   "hostIntegrations": [
@@ -67,7 +79,7 @@
         "apps/viewer/android-demo/app/src/main/java/com/genoffice/viewerdemo/MainActivity.java",
         "apps/viewer/src/web/upload.tsx"
       ],
-      "adaptation": "Shared Electron decrypt core runs in a bounded child process; HTTP password retry and masked Android prompt are host adapters. Passwords are request-only. Successful upload stores the decrypted parsing copy under its own content hash; client original is unchanged. Both the preview host and standalone XHR upload page share the same password/retry adapter; upload progress remains a transport concern."
+      "adaptation": "Original Electron decryption core runs in a bounded HTTP child process. The original PasswordDialog and form CSS now run in all browser, upload and Android WebView hosts; retries keep the same form and inline error. Passwords remain request-only."
     },
     {
       "source": "apps/slides/src/main/session-state.ts",
@@ -83,12 +95,44 @@
         "apps/viewer/src/web/docx-block-measure.ts",
         "apps/viewer/src/web/docx-table-measure.ts"
       ],
-      "adaptation": "Reuse the ported sectionPageBox geometry and App docZoomStyle CSS variables. Continuous reading carries padding on one paper wrapper, while source-unit editors keep zero padding. Measurements inherit identical geometry variables. Preserve continuous height and bounded source units; remove remote-only filename spacing."
+      "adaptation": "Superseded by the original shared measureBlocks/prepareFlow/sliceFlow/PaginationPreview/HeaderFooterArea pipeline for both print and read modes. HTTP supplies server-parsed source blocks/styles/sections; no client reparse of the original archive. The client assembles the model before shared layout; server remains streaming/bounded. User accepted the floating toolbar design."
     },
     {
       "source": "apps/docs/src/renderer/styles.css",
-      "targets": ["apps/viewer/src/web/viewer.css"],
-      "adaptation": "Mirror .doc-page min-height:var(--page-h,1056px) on the single continuous paper wrapper. Keep virtual source-unit editors at min-height:0 so the minimum is applied once, and allow long content to grow without clipping."
+      "targets": [
+        "apps/viewer/src/web/password-dialog.css",
+        "apps/viewer/src/web/docx-grid-compat.ts",
+        "apps/viewer/src/web/docx-page-window.ts"
+      ],
+      "adaptation": "Extract only original password form selectors and tokens. For WebViews without CSS round(), materialize original snapLineToPitch results as numeric grid custom properties. Mount nearby original print sheets while preserving all original geometry and pagination."
+    },
+    {
+      "source": "apps/slides/src/main/fonts.ts",
+      "targets": [
+        "apps/viewer/scripts/build-electron-fonts.mts",
+        "apps/viewer/src/web/electron-font-catalog.ts",
+        "apps/viewer/src/web/docx-native-fonts.ts",
+        "apps/parse-server/src/pptx-core.ts",
+        "apps/parse-server/src/pptx-artifact-worker.ts",
+        "apps/parse-server/src/metrics.ts",
+        "apps/viewer/scripts/electron-local-faces.mts",
+        "apps/viewer/src/web/docx-image-scope.ts"
+      ],
+      "adaptation": "Run the original resolver for deployment font snapshots and actual Node layout. Preserve style, script, Latin-only and complex-script resolution separately from CSS aliases; transport original sfnt bytes through HTTP/fonts and offline bundles. Frontend local and model workers use the same snapshot; Word only loads real system faces already named in its original CSS chains. Word font-face local() snapshots retain original exact full/PostScript face names, unicode ranges and metric descriptors; source images use shared blob URLs without pixel changes to avoid duplicated base64 in print clones. Before OLE rasterization, the macOS baseline Canvas fallback for unavailable Microsoft YaHei UI is supplied as a PingFang SC face alias, verified with CSS.getPlatformFontsForNode; converter code is unchanged. This alias is scoped to Android metafile conversion workers, not installed globally; desktop retains the original native Canvas path."
+    },
+    {
+      "source": "apps/slides/src/main/metafile-fonts.ts",
+      "targets": [
+        "packages/viewer-services/src/slides/shared/metafile-fonts.ts",
+        "apps/viewer/src/web/docx-metafile.ts",
+        "apps/viewer/src/web/docx-metafile-worker.ts"
+      ],
+      "adaptation": "Reuse original EMF/WMF record font scanners. Browser wrapper reuses the original bounded docx-engine inflateMetafile path instead of Node zlib, and owns temporary actual baseline font faces only during original metafile rasterization. Microsoft YaHei UI fallback to PingFang SC is verified on baseline macOS Canvas via CSS.getPlatformFontsForNode; share original exported SFNT bytes. Do not preload irrelevant fonts for large bitmap WMFs. Android invokes the original converter in a one-shot worker, terminates it after the PNG returns, and cancels it on session abort. Drawing code and original dimensions are unchanged. docx-engine/metafile.ts only exports its existing bounded gunzip function; its body is unmodified."
+    },
+    {
+      "source": "apps/slides/src/renderer/App.tsx",
+      "targets": ["apps/viewer/src/web/pptx-remote-session.ts"],
+      "adaptation": "Source applyOpen at line 876. Electron applyOpen receives a completed render tree. The HTTP build-preview transport can carry raw slide models with elements; do not publish them as renderer frames. Keep loading until a valid nodes tree or ready response is available, preserving valid rendered previews. Layout and drawing cores are unchanged."
     }
   ]
 }
